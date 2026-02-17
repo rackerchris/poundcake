@@ -8,7 +8,7 @@ apiVersion: v2
 name: poundcake
 description: All-in-one auto-remediation platform with integrated StackStorm, bridging Prometheus Alertmanager with automated remediation actions
 type: application
-version: 0.0.4
+version: 0.0.6
 appVersion: "main"
 maintainers:
   - name: Jake Briggs
