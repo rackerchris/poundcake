@@ -28,6 +28,7 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
+        {{- include "poundcake.waitForStackstormBootstrapInitContainer" . | nindent 8 }}
         - name: wait-for-db
           image: busybox:latest
           command:
@@ -65,7 +66,7 @@ spec:
             - name: DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "poundcake.fullname" . }}-bakery-db
+                  name: {{ include "poundcake.bakeryDbSecretName" . }}
                   key: password
             - name: MESSAGE_RETENTION_HOURS
               value: {{ .Values.bakery.config.messageRetentionHours | quote }}

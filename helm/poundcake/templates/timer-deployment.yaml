@@ -32,6 +32,7 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
+        {{- include "poundcake.waitForStackstormBootstrapInitContainer" . | nindent 8 }}
         - name: wait-for-api
           image: curlimages/curl:latest
           command:
@@ -96,7 +97,7 @@ spec:
             - name: POUNDCAKE_API_URL
               value: "http://{{ include "poundcake.fullname" . }}:{{ .Values.service.port }}/api/v1"
             - name: ST2_API_URL
-              value: "{{ .Values.stackstorm.url }}/v1"
+              value: "{{ include "poundcake.stackstormApiUrl" . }}/v1"
             - name: TIMER_INTERVAL
               value: {{ .Values.timer.interval | quote }}
             - name: SLA_BUFFER_PERCENT

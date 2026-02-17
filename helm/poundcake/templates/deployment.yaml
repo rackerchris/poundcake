@@ -30,6 +30,8 @@ spec:
       serviceAccountName: {{ include "poundcake.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        {{- include "poundcake.waitForStackstormBootstrapInitContainer" . | nindent 8 }}
       containers:
         - name: api
           securityContext:
@@ -120,7 +122,6 @@ spec:
                 secretKeyRef:
                   name: {{ include "poundcake.stackstormApiKeySecret" . }}
                   key: {{ include "poundcake.stackstormApiKeySecretKey" . }}
-                  optional: true
             {{- if .Values.stackstorm.adminUser }}
             - name: POUNDCAKE_STACKSTORM_ADMIN_USER
               value: {{ .Values.stackstorm.adminUser | quote }}
@@ -131,6 +132,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.stackstorm.adminPasswordSecret }}
                   key: {{ .Values.stackstorm.adminPasswordSecretKey }}
+                  optional: true
             {{- end }}
             {{- if .Values.redis.enabled }}
             - name: POUNDCAKE_REDIS_URL

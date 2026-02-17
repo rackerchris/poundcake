@@ -76,4 +76,12 @@ jobs:
 
       - name: Run integration tests
         run: |
+          set +e
           pytest -m "integration" tests/ -v
+          rc=$?
+          set -e
+          if [ "$rc" -eq 5 ]; then
+            echo "No integration tests collected; treating as success."
+            exit 0
+          fi
+          exit "$rc"

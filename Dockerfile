@@ -13,7 +13,7 @@ FROM python:3.11-slim AS builder
 WORKDIR /build
 
 # Install build dependencies (needed for compiling Python packages)
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     default-libmysqlclient-dev \
     pkg-config \
@@ -27,8 +27,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Install Python dependencies into the venv
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-prod.txt .
+RUN pip install --no-cache-dir -r requirements-prod.txt
 
 # ============================================================================
 # Stage 2: Runtime - Minimal production image
@@ -38,9 +38,8 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install only runtime dependencies (no build tools)
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    default-libmysqlclient-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

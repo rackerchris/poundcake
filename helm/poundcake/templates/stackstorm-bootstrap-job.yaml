@@ -43,6 +43,7 @@ spec:
           ST2_ADMIN_PASSWORD_KEY="{{ .Values.stackstorm.adminPasswordSecretKey }}"
           ST2_AUTH_URL="{{ include "poundcake.stackstormAuthUrl" . }}"
           ST2_API_URL="{{ include "poundcake.stackstormApiUrl" . }}"
+          READY_SECRET="{{ include "poundcake.stackstormBootstrapReadySecret" . }}"
           TIMEOUT="600s"
 
           for cmd in kubectl curl sed base64; do
@@ -130,6 +131,18 @@ spec:
             fi
           }
 
+          upsert_ready_secret() {
+            ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            if kubectl -n "${NS}" get secret "${READY_SECRET}" >/dev/null 2>&1; then
+              kubectl -n "${NS}" patch secret "${READY_SECRET}" --type merge \
+                -p "{\"stringData\":{\"ready\":\"true\",\"updatedAt\":\"${ts}\"}}" >/dev/null
+            else
+              kubectl -n "${NS}" create secret generic "${READY_SECRET}" \
+                --from-literal=ready=true \
+                --from-literal=updatedAt="${ts}" >/dev/null
+            fi
+          }
+
           ensure_api_key_secret() {
             st2_auth_user="${ST2_AUTH_USER_DEFAULT}"
             st2_auth_password=""
@@ -181,6 +194,9 @@ spec:
           echo "StackStorm Bootstrap Job"
           echo "========================================"
 
+          # Clear stale readiness marker for this run.
+          kubectl -n "${NS}" delete secret "${READY_SECRET}" --ignore-not-found >/dev/null
+
           {{- if .Values.stackstorm.startupOrder.enabled }}
           # Stage 1: keep only auth+api up while bootstrap prerequisites complete.
           scale_if_exists "${ST2_PREFIX}-st2stream" 0
@@ -218,6 +234,9 @@ spec:
           scale_if_exists "${ST2_PREFIX}-st2chatops" {{ .Values.stackstorm.startupOrder.replicas.st2chatops | int }}
           scale_if_exists "${ST2_PREFIX}-st2web" {{ .Values.stackstorm.startupOrder.replicas.st2web | int }}
           {{- end }}
+
+          # Mark bootstrap as complete only after all stages have succeeded.
+          upsert_ready_secret
 
           echo "========================================"
           echo "Bootstrap Complete"

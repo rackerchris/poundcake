@@ -209,7 +209,7 @@ stackstorm:
     # Example "st2" yields resources like st2-st2api, st2-st2auth, st2-st2client.
     fullnameOverride: "st2"
     apiKeySecretName: ""
-    apiKeySecretKey: "api-key"
+    apiKeySecretKey: "st2_api_key"
   # Auto-discovery settings
   autoDiscover: true
   discoverAcrossNamespaces: true

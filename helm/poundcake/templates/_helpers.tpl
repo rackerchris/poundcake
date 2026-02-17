@@ -300,5 +300,73 @@ Get StackStorm API key secret name
 Get StackStorm API key secret key
 */}}
 {{- define "poundcake.stackstormApiKeySecretKey" -}}
-{{- .Values.stackstorm.subchart.apiKeySecretKey | default "api-key" }}
+{{- .Values.stackstorm.subchart.apiKeySecretKey | default "st2_api_key" }}
+{{- end }}
+
+{{/*
+Marker secret written by stackstorm-bootstrap when StackStorm initialization is complete.
+*/}}
+{{- define "poundcake.stackstormBootstrapReadySecret" -}}
+{{- printf "%s-stackstorm-bootstrap-ready" (include "poundcake.fullname" .) }}
+{{- end }}
+
+{{/*
+Init container that blocks PoundCake components until StackStorm bootstrap is complete.
+*/}}
+{{- define "poundcake.waitForStackstormBootstrapInitContainer" -}}
+- name: wait-for-stackstorm-bootstrap
+  image: bitnami/kubectl:1.30
+  imagePullPolicy: IfNotPresent
+  command:
+    - /bin/sh
+    - -c
+    - |
+      set -e
+      NS="{{ .Release.Namespace }}"
+      READY_SECRET="{{ include "poundcake.stackstormBootstrapReadySecret" . }}"
+      API_KEY_SECRET="{{ include "poundcake.stackstormApiKeySecret" . }}"
+      API_KEY_FIELD="{{ include "poundcake.stackstormApiKeySecretKey" . }}"
+      MAX_WAIT=900
+      ELAPSED=0
+      INTERVAL=5
+
+      echo "Waiting for StackStorm bootstrap marker secret: ${READY_SECRET}"
+      echo "Waiting for StackStorm API key secret: ${API_KEY_SECRET}"
+
+      while [ "${ELAPSED}" -lt "${MAX_WAIT}" ]; do
+        api_key_value="$(kubectl -n "${NS}" get secret "${API_KEY_SECRET}" -o "jsonpath={.data['${API_KEY_FIELD}']}" 2>/dev/null || true)"
+        if kubectl -n "${NS}" get secret "${READY_SECRET}" >/dev/null 2>&1 && \
+           [ -n "${api_key_value}" ]; then
+          echo "StackStorm bootstrap prerequisites satisfied."
+          exit 0
+        fi
+        sleep "${INTERVAL}"
+        ELAPSED=$((ELAPSED + INTERVAL))
+      done
+
+      echo "Timed out waiting for StackStorm bootstrap completion."
+      exit 1
+{{- end }}
+
+{{/*
+Get bakery MariaDB root secret name
+*/}}
+{{- define "poundcake.bakeryMariadbRootSecretName" -}}
+{{- .Values.mariadbOperator.server.rootPasswordSecret | default (printf "%s-bakery-mariadb-root" (include "poundcake.fullname" .)) }}
+{{- end }}
+
+{{/*
+Get bakery DB user password secret name
+*/}}
+{{- define "poundcake.bakeryDbSecretName" -}}
+{{- .Values.bakery.database.user.passwordSecret | default (printf "%s-bakery-db" (include "poundcake.fullname" .)) }}
+{{- end }}
+
+{{/*
+Standard annotations for chart-managed secrets that must exist before workloads start.
+*/}}
+{{- define "poundcake.preInstallSecretAnnotations" -}}
+"helm.sh/hook": pre-install,pre-upgrade
+"helm.sh/hook-weight": "-20"
+"helm.sh/hook-delete-policy": before-hook-creation
 {{- end }}

@@ -72,7 +72,8 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          no-cache: true
+          cache-from: type=gha,scope=poundcake-api
+          cache-to: type=gha,mode=max,scope=poundcake-api
           platforms: linux/amd64
 
       - name: Extract metadata for UI Docker
@@ -96,7 +97,8 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta-ui.outputs.tags }}
           labels: ${{ steps.meta-ui.outputs.labels }}
-          no-cache: true
+          cache-from: type=gha,scope=poundcake-ui
+          cache-to: type=gha,mode=max,scope=poundcake-ui
           platforms: linux/amd64
 
       - name: Make UI Docker image public
@@ -140,7 +142,8 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta-bakery.outputs.tags }}
           labels: ${{ steps.meta-bakery.outputs.labels }}
-          no-cache: true
+          cache-from: type=gha,scope=poundcake-bakery
+          cache-to: type=gha,mode=max,scope=poundcake-bakery
           platforms: linux/amd64
 
       - name: Make Bakery Docker image public

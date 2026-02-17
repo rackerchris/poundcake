@@ -10,7 +10,7 @@ metadata:
     app.kubernetes.io/component: bakery-database
 spec:
   rootPasswordSecretKeyRef:
-    name: {{ .Values.mariadbOperator.server.rootPasswordSecret | default (printf "%s-bakery-mariadb-root" (include "poundcake.fullname" .)) }}
+    name: {{ include "poundcake.bakeryMariadbRootSecretName" . }}
     key: {{ .Values.mariadbOperator.server.rootPasswordSecretKey | default "password" }}
 
   image: {{ .Values.mariadbOperator.server.image.repository }}:{{ .Values.mariadbOperator.server.image.tag }}
@@ -43,14 +43,24 @@ spec:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: {{ .Values.mariadbOperator.server.rootPasswordSecret | default (printf "%s-bakery-mariadb-root" (include "poundcake.fullname" .)) }}
+  name: {{ include "poundcake.bakeryMariadbRootSecretName" . }}
   namespace: {{ .Values.mariadbOperator.namespace | default .Release.Namespace }}
   labels:
     {{- include "poundcake.labels" . | nindent 4 }}
     app.kubernetes.io/component: bakery-database
+  annotations:
+    {{- include "poundcake.preInstallSecretAnnotations" . | nindent 4 }}
 type: Opaque
+{{- $bakeryRootSecretName := include "poundcake.bakeryMariadbRootSecretName" . }}
+{{- $existingBakeryRootSecret := lookup "v1" "Secret" (.Values.mariadbOperator.namespace | default .Release.Namespace) $bakeryRootSecretName }}
 data:
-  password: {{ .Values.mariadbOperator.server.rootPassword | default (randAlphaNum 32) | b64enc | quote }}
+  {{- if .Values.mariadbOperator.server.rootPassword }}
+  password: {{ .Values.mariadbOperator.server.rootPassword | b64enc | quote }}
+  {{- else if $existingBakeryRootSecret }}
+  password: {{ index $existingBakeryRootSecret.data "password" }}
+  {{- else }}
+  password: {{ randAlphaNum 32 | b64enc | quote }}
+  {{- end }}
 
 ---
 apiVersion: k8s.mariadb.com/v1alpha1
@@ -82,7 +92,7 @@ spec:
     name: {{ include "poundcake.fullname" . }}-bakery-mariadb
   name: {{ .Values.bakery.database.user.name }}
   passwordSecretKeyRef:
-    name: {{ .Values.bakery.database.user.passwordSecret | default (printf "%s-bakery-db" (include "poundcake.fullname" .)) }}
+    name: {{ include "poundcake.bakeryDbSecretName" . }}
     key: {{ .Values.bakery.database.user.passwordSecretKey | default "password" }}
   maxUserConnections: {{ .Values.bakery.database.user.maxUserConnections }}
   host: "%"
@@ -91,14 +101,24 @@ spec:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: {{ .Values.bakery.database.user.passwordSecret | default (printf "%s-bakery-db" (include "poundcake.fullname" .)) }}
+  name: {{ include "poundcake.bakeryDbSecretName" . }}
   namespace: {{ .Values.mariadbOperator.namespace | default .Release.Namespace }}
   labels:
     {{- include "poundcake.labels" . | nindent 4 }}
     app.kubernetes.io/component: bakery-database
+  annotations:
+    {{- include "poundcake.preInstallSecretAnnotations" . | nindent 4 }}
 type: Opaque
+{{- $bakeryUserSecretName := include "poundcake.bakeryDbSecretName" . }}
+{{- $existingBakeryUserSecret := lookup "v1" "Secret" (.Values.mariadbOperator.namespace | default .Release.Namespace) $bakeryUserSecretName }}
 data:
-  password: {{ .Values.bakery.database.user.password | default (randAlphaNum 32) | b64enc | quote }}
+  {{- if .Values.bakery.database.user.password }}
+  password: {{ .Values.bakery.database.user.password | b64enc | quote }}
+  {{- else if $existingBakeryUserSecret }}
+  password: {{ index $existingBakeryUserSecret.data "password" }}
+  {{- else }}
+  password: {{ randAlphaNum 32 | b64enc | quote }}
+  {{- end }}
 
 ---
 apiVersion: k8s.mariadb.com/v1alpha1

@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/component: bakery-db-init
   annotations:
     "helm.sh/hook": post-install,post-upgrade
-    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-weight": "25"
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   ttlSecondsAfterFinished: 300
@@ -50,7 +50,7 @@ spec:
             - name: DATABASE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "poundcake.fullname" . }}-bakery-db
+                  name: {{ include "poundcake.bakeryDbSecretName" . }}
                   key: password
           resources:
             limits:

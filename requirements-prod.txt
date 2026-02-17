@@ -1,0 +1,48 @@
+#  ___                        _  ____      _
+# |  _ \ ___  _   _ _ __   __| |/ ___|__ _| | _____
+# | |_) / _ \| | | | '_ \ / _` | |   / _` | |/ / _ \
+# |  __/ (_) | |_| | | | | (_| | |__| (_| |   <  __/
+# |_|   \___/ \__,_|_| |_|\__,_|\____\__,_|_|\_\___|
+# PoundCake API Requirements
+
+# Web Framework
+fastapi==0.128.7
+uvicorn[standard]==0.40.0
+python-multipart==0.0.22
+
+# Database
+sqlalchemy==2.0.46
+alembic==1.18.3
+pymysql==1.1.2
+cryptography==46.0.4
+
+# Data Validation
+pydantic==2.12.5
+pydantic-settings==2.12.0
+
+# HTTP Client
+requests==2.32.5
+httpx==0.28.1
+aiomysql==0.3.2
+
+# Authentication & Security
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
+itsdangerous==2.2.0
+
+# Monitoring & Metrics
+prometheus-client==0.24.1
+starlette-prometheus==0.10.0
+
+# Git Integration
+gitpython==3.1.46
+
+# Kubernetes Client (for CRD management)
+kubernetes==35.0.0
+
+# Utilities
+python-dateutil==2.9.0.post0
+pytz==2025.2
+
+# JSON Logging
+python-json-logger==4.0.0

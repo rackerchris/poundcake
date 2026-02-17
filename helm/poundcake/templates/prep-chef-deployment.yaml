@@ -32,6 +32,7 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
+        {{- include "poundcake.waitForStackstormBootstrapInitContainer" . | nindent 8 }}
         - name: wait-for-api
           image: curlimages/curl:latest
           command:
