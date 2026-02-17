@@ -15,6 +15,7 @@ APP_IMAGE_REPO="${POUNDCAKE_IMAGE_REPO:-ghcr.io/${GHCR_OWNER}/poundcake}"
 UI_IMAGE_REPO="${POUNDCAKE_UI_IMAGE_REPO:-ghcr.io/${GHCR_OWNER}/poundcake-ui}"
 BAKERY_IMAGE_REPO="${POUNDCAKE_BAKERY_IMAGE_REPO:-ghcr.io/${GHCR_OWNER}/poundcake-bakery}"
 STACKSTORM_VERSION="${POUNDCAKE_STACKSTORM_VERSION:-3.9.0}"
+STACKSTORM_FULLNAME_OVERRIDE="${POUNDCAKE_STACKSTORM_FULLNAME_OVERRIDE:-st2}"
 VERSION_FILE="/etc/genestack/helm-chart-versions.yaml"
 GLOBAL_OVERRIDES_DIR="/etc/genestack/helm-configs/global_overrides"
 SERVICE_CONFIG_DIR="/etc/genestack/helm-configs/poundcake"
@@ -27,6 +28,9 @@ KUSTOMIZE_OVERLAY_ARG="poundcake/overlay"
 ROTATE_SECRETS=false
 VALIDATE="${POUNDCAKE_HELM_VALIDATE:-false}"
 SKIP_PREFLIGHT=false
+HELM_WAIT="${POUNDCAKE_HELM_WAIT:-false}"
+HELM_ATOMIC="${POUNDCAKE_HELM_ATOMIC:-false}"
+HELM_CLEANUP_ON_FAIL="${POUNDCAKE_HELM_CLEANUP_ON_FAIL:-false}"
 PASSTHROUGH_ARGS=()
 POST_RENDER_ARGS=()
 
@@ -85,6 +89,15 @@ if [[ -d "$SERVICE_CONFIG_DIR" ]] && compgen -G "${SERVICE_CONFIG_DIR}/*.yaml" >
   done
 fi
 
+echo "Using override files (in order):"
+if [[ ${#OVERRIDE_ARGS[@]} -eq 0 ]]; then
+  echo "  (none)"
+else
+  for ((i=0; i<${#OVERRIDE_ARGS[@]}; i+=2)); do
+    echo "  ${OVERRIDE_ARGS[i+1]}"
+  done
+fi
+
 # Add post-renderer if available AND overlay exists.
 if [[ -f "$KUSTOMIZE_RENDERER" && -d "$KUSTOMIZE_OVERLAY_DIR" ]]; then
   POST_RENDER_ARGS+=("--post-renderer" "$KUSTOMIZE_RENDERER")
@@ -107,9 +120,6 @@ HELM_CMD=(
   --version "$POUNDCAKE_VERSION"
   --namespace "$NAMESPACE"
   --create-namespace
-  --wait
-  --atomic
-  --cleanup-on-fail
   --timeout "${HELM_TIMEOUT:-$HELM_TIMEOUT_DEFAULT}"
   --set "image.repository=${APP_IMAGE_REPO}"
   --set "ui.image.repository=${UI_IMAGE_REPO}"
@@ -117,9 +127,23 @@ HELM_CMD=(
   --set "stackstorm-chart.imageTag=${STACKSTORM_VERSION}"
   --set "stackstorm-chart.st2.image.tag=${STACKSTORM_VERSION}"
   --set "stackstorm-chart.st2client.image.tag=${STACKSTORM_VERSION}"
+  --set "stackstorm-chart.fullnameOverride=${STACKSTORM_FULLNAME_OVERRIDE}"
+  --set "stackstorm.subchart.fullnameOverride=${STACKSTORM_FULLNAME_OVERRIDE}"
   "${OVERRIDE_ARGS[@]}"
   "${POST_RENDER_ARGS[@]}"
 )
+
+if [[ "$HELM_WAIT" == "true" ]]; then
+  HELM_CMD+=(--wait)
+fi
+
+if [[ "$HELM_ATOMIC" == "true" ]]; then
+  HELM_CMD+=(--atomic)
+fi
+
+if [[ "$HELM_CLEANUP_ON_FAIL" == "true" ]]; then
+  HELM_CMD+=(--cleanup-on-fail)
+fi
 
 echo "Executing Helm command:"
 printf '%q ' "${HELM_CMD[@]}" "${PASSTHROUGH_ARGS[@]}"

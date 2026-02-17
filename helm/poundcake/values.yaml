@@ -243,18 +243,18 @@ stackstorm:
       st2auth: 1
       st2api: 1
     workerReplicas:
-      st2actionrunner: 5
-      st2rulesengine: 2
-      st2workflowengine: 2
-      st2scheduler: 2
-      st2notifier: 2
+      st2actionrunner: 1
+      st2rulesengine: 1
+      st2workflowengine: 1
+      st2scheduler: 1
+      st2notifier: 1
       st2garbagecollector: 1
       st2timersengine: 1
-      st2chatops: 0
+      st2chatops: 1
     edgeReplicas:
-      st2stream: 2
+      st2stream: 1
       st2sensorcontainer: 1
-      st2web: 2
+      st2web: 1
 
 # StackStorm subchart configuration
 # These values are passed to the stackstorm-ha subchart when stackstorm.chart.enabled = true
@@ -321,14 +321,14 @@ stackstorm-chart:
   # start auth/api first; keep other StackStorm services at 0 until bootstrap scales them.
   # If your stackstorm-ha chart ignores some keys, bootstrap still scales deployments by name.
   st2api:
-    replicaCount: 1
-    replicas: 1
+    replicaCount: 0
+    replicas: 0
   st2auth:
-    replicaCount: 1
-    replicas: 1
+    replicaCount: 0
+    replicas: 0
   st2register:
-    replicaCount: 1
-    replicas: 1
+    replicaCount: 0
+    replicas: 0
   st2stream:
     replicaCount: 0
     replicas: 0
