@@ -29,37 +29,54 @@ spec:
         - /bin/bash
         - -c
         - |
-          set -e
+          set -euo pipefail
 
           echo "=========================================="
           echo "Gateway Listener Configuration"
           echo "=========================================="
           echo "Gateway: {{ .Values.gateway.gatewayName }}"
-          echo "Namespace: {{ .Values.gateway.gatewayNamespace }}"
+          echo "Namespace (configured): {{ .Values.gateway.gatewayNamespace }}"
           echo "Listener: {{ .Values.gateway.listener.name }}"
           echo "Hostname: {{ .Values.gateway.listener.hostname }}"
           echo "=========================================="
 
-          # Check if Gateway exists
-          if ! kubectl get gateway {{ .Values.gateway.gatewayName }} -n {{ .Values.gateway.gatewayNamespace }} &>/dev/null; then
-            echo "✗ ERROR: Gateway '{{ .Values.gateway.gatewayName }}' not found in namespace '{{ .Values.gateway.gatewayNamespace }}'"
-            echo "Please create the Gateway first or disable gateway.enabled in values.yaml"
-            exit 1
+          GATEWAY_NAME="{{ .Values.gateway.gatewayName }}"
+          GATEWAY_NS="{{ .Values.gateway.gatewayNamespace }}"
+
+          # Try configured namespace first, then known common namespaces.
+          if ! kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NS}" >/dev/null 2>&1; then
+            for candidate_ns in envoy-gateway-system envoyproxy-gateway-system envoy-gateway; do
+              if kubectl get gateway "${GATEWAY_NAME}" -n "${candidate_ns}" >/dev/null 2>&1; then
+                GATEWAY_NS="${candidate_ns}"
+                break
+              fi
+            done
           fi
 
-          echo "✓ Gateway exists"
+          if ! kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NS}" >/dev/null 2>&1; then
+            echo "WARN: Gateway '${GATEWAY_NAME}' was not found in configured or known namespaces."
+            echo "Skipping gateway listener configuration."
+            exit 0
+          fi
+
+          echo "✓ Gateway exists in namespace: ${GATEWAY_NS}"
+
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "WARN: jq is not available in gateway-listener image; skipping listener mutation."
+            exit 0
+          fi
 
           # Check if listener already exists
-          LISTENER_EXISTS=$(kubectl get gateway {{ .Values.gateway.gatewayName }} -n {{ .Values.gateway.gatewayNamespace }} -o jsonpath='{.spec.listeners[?(@.name=="{{ .Values.gateway.listener.name }}")].name}')
+          LISTENER_EXISTS=$(kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NS}" -o jsonpath='{.spec.listeners[?(@.name=="{{ .Values.gateway.listener.name }}")].name}')
 
           if [ -n "$LISTENER_EXISTS" ]; then
             echo "✓ Listener '{{ .Values.gateway.listener.name }}' already exists"
             echo "Verifying listener configuration..."
 
             # Get current listener config
-            CURRENT_HOSTNAME=$(kubectl get gateway {{ .Values.gateway.gatewayName }} -n {{ .Values.gateway.gatewayNamespace }} -o jsonpath='{.spec.listeners[?(@.name=="{{ .Values.gateway.listener.name }}")].hostname}')
-            CURRENT_PORT=$(kubectl get gateway {{ .Values.gateway.gatewayName }} -n {{ .Values.gateway.gatewayNamespace }} -o jsonpath='{.spec.listeners[?(@.name=="{{ .Values.gateway.listener.name }}")].port}')
-            CURRENT_PROTOCOL=$(kubectl get gateway {{ .Values.gateway.gatewayName }} -n {{ .Values.gateway.gatewayNamespace }} -o jsonpath='{.spec.listeners[?(@.name=="{{ .Values.gateway.listener.name }}")].protocol}')
+            CURRENT_HOSTNAME=$(kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NS}" -o jsonpath='{.spec.listeners[?(@.name=="{{ .Values.gateway.listener.name }}")].hostname}')
+            CURRENT_PORT=$(kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NS}" -o jsonpath='{.spec.listeners[?(@.name=="{{ .Values.gateway.listener.name }}")].port}')
+            CURRENT_PROTOCOL=$(kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NS}" -o jsonpath='{.spec.listeners[?(@.name=="{{ .Values.gateway.listener.name }}")].protocol}')
 
             echo "  Current hostname: $CURRENT_HOSTNAME"
             echo "  Current port: $CURRENT_PORT"
@@ -124,7 +141,7 @@ spec:
             cat /tmp/listener-patch.json
 
             # Get current listeners
-            kubectl get gateway {{ .Values.gateway.gatewayName }} -n {{ .Values.gateway.gatewayNamespace }} -o json > /tmp/gateway.json
+            kubectl get gateway "${GATEWAY_NAME}" -n "${GATEWAY_NS}" -o json > /tmp/gateway.json
 
             # Check if listener already exists in the array
             LISTENER_INDEX=$(jq '.spec.listeners | map(.name) | index("{{ .Values.gateway.listener.name }}")' /tmp/gateway.json)
@@ -184,13 +201,12 @@ spec:
             fi
 
             # Apply the updated Gateway
-            kubectl apply -f /tmp/gateway-updated.json
-
-            if [ $? -eq 0 ]; then
+            if kubectl apply -f /tmp/gateway-updated.json; then
               echo "✓ Gateway listener configured successfully"
             else
               echo "✗ Failed to configure Gateway listener"
-              exit 1
+              echo "Skipping without failing install."
+              exit 0
             fi
           fi
 

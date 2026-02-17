@@ -2,11 +2,17 @@
 # Copy to:
 #   /etc/genestack/helm-configs/poundcake/poundcake-helm-overrides.yaml
 #
+# IMPORTANT:
+# - Keep staged installs with:
+#     POUNDCAKE_HELM_WAIT=false
+#     POUNDCAKE_HELM_ATOMIC=false
+# - Those are install-script environment variables, not chart values.
+#
 # Startup order (managed by hook weights and marker secrets):
 #
-#   Phase 0 — pre-install hooks (weight -20):
-#     - Generate secrets: MariaDB root/user, StackStorm admin password,
-#       StackStorm API key placeholder, PoundCake admin auth secret.
+#   Phase 0 — base resources:
+#     - Chart-managed secrets render as normal resources (no pre-install hooks).
+#     - MariaDB/Mongo/Rabbit resources are rendered before staged jobs run.
 #
 #   Phase 1 — StackStorm core init (post-install, weight 10):
 #     Job: <release>-stackstorm-core-init
@@ -114,6 +120,19 @@ stackstorm:
     edgeReplicas:
       st2stream: 1
       st2sensorcontainer: 1
+      st2web: 1
+    # Legacy compatibility keys used by some chart revisions.
+    replicas:
+      st2stream: 1
+      st2sensorcontainer: 1
+      st2rulesengine: 1
+      st2workflowengine: 1
+      st2actionrunner: 1
+      st2scheduler: 1
+      st2notifier: 1
+      st2garbagecollector: 1
+      st2timersengine: 1
+      st2chatops: 1
       st2web: 1
 
 stackstorm-chart:
