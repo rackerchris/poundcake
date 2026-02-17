@@ -1,0 +1,247 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poundcake-mariadb
+  labels:
+    app.kubernetes.io/component: mariadb
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: mariadb
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: mariadb
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: mariadb
+          image: {{ .Values.images.mariadb }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_ROOT_PASSWORD
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_NAME
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_USER
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PASSWORD
+            - name: POUNDCAKE_LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
+          ports:
+            - containerPort: 3306
+              name: mysql
+          volumeMounts:
+            - name: mariadb-data
+              mountPath: /var/lib/mysql
+            - name: scripts
+              mountPath: /docker-entrypoint-initdb.d/01-create-databases.sh
+              subPath: mariadb-init.sh
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "healthcheck.sh --connect --innodb_initialized"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 3306
+            initialDelaySeconds: 20
+            periodSeconds: 20
+      volumes:
+        - name: mariadb-data
+          persistentVolumeClaim:
+            claimName: poundcake-mariadb
+        - name: scripts
+          configMap:
+            name: poundcake-scripts
+            defaultMode: 0755
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-mongodb
+  labels:
+    app.kubernetes.io/component: stackstorm-mongodb
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-mongodb
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-mongodb
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: mongodb
+          image: {{ .Values.images.mongodb }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: admin
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: stackstorm-secrets
+                  key: MONGO_ROOT_PASSWORD
+            - name: ST2_DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: stackstorm-secrets
+                  key: MONGO_USERNAME
+            - name: ST2_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: stackstorm-secrets
+                  key: MONGO_PASSWORD
+            - name: POUNDCAKE_LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
+          ports:
+            - containerPort: 27017
+              name: mongo
+          volumeMounts:
+            - name: mongo-data
+              mountPath: /data/db
+            - name: scripts
+              mountPath: /docker-entrypoint-initdb.d/01-create-st2-user.sh
+              subPath: mongodb-init.sh
+          readinessProbe:
+            exec:
+              command: ["mongosh", "--eval", "db.adminCommand('ping')"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 27017
+            initialDelaySeconds: 20
+            periodSeconds: 20
+      volumes:
+        - name: mongo-data
+          persistentVolumeClaim:
+            claimName: stackstorm-mongo
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-rabbitmq
+  labels:
+    app.kubernetes.io/component: stackstorm-rabbitmq
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-rabbitmq
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-rabbitmq
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: rabbitmq
+          image: {{ .Values.images.rabbitmq }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: stackstorm-secrets
+                  key: RABBITMQ_USER
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: stackstorm-secrets
+                  key: RABBITMQ_PASSWORD
+            - name: POUNDCAKE_LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
+          ports:
+            - containerPort: 5672
+              name: amqp
+            - containerPort: 15672
+              name: mgmt
+          volumeMounts:
+            - name: rabbitmq-data
+              mountPath: /var/lib/rabbitmq
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 5672
+            initialDelaySeconds: 20
+            periodSeconds: 20
+      volumes:
+        - name: rabbitmq-data
+          persistentVolumeClaim:
+            claimName: stackstorm-rabbitmq
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-redis
+  labels:
+    app.kubernetes.io/component: stackstorm-redis
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-redis
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-redis
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: redis
+          image: {{ .Values.images.redis }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 6379
+              name: redis
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 20
+            periodSeconds: 20
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: stackstorm-redis

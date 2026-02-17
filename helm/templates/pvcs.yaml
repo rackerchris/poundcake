@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: poundcake-mariadb
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.mariadb.size }}
+  {{- include "poundcake-standalone.storageClass" . | nindent 2 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: stackstorm-mongo
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.mongo.size }}
+  {{- include "poundcake-standalone.storageClass" . | nindent 2 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: stackstorm-rabbitmq
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.rabbitmq.size }}
+  {{- include "poundcake-standalone.storageClass" . | nindent 2 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: stackstorm-redis
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.redis.size }}
+  {{- include "poundcake-standalone.storageClass" . | nindent 2 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: stackstorm-packs
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.stackstormPacks.size }}
+  {{- include "poundcake-standalone.storageClass" . | nindent 2 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: poundcake-config
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.persistence.config.size }}
+  {{- include "poundcake-standalone.storageClass" . | nindent 2 }}

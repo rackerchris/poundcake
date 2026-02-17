@@ -1,0 +1,146 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: poundcake-mariadb
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: mariadb
+    {{- include "poundcake-standalone.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stackstorm-mongodb
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: stackstorm-mongodb
+    {{- include "poundcake-standalone.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: 27017
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stackstorm-rabbitmq
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: stackstorm-rabbitmq
+    {{- include "poundcake-standalone.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: mgmt
+      port: 15672
+      targetPort: 15672
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stackstorm-redis
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: stackstorm-redis
+    {{- include "poundcake-standalone.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: poundcake-api
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.services.api.type }}
+  selector:
+    app.kubernetes.io/component: api
+    {{- include "poundcake-standalone.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.services.api.port }}
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stackstorm-api
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.services.stackstormApi.type }}
+  selector:
+    app.kubernetes.io/component: stackstorm-api
+    {{- include "poundcake-standalone.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.services.stackstormApi.port }}
+      targetPort: 9101
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stackstorm-auth
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.services.stackstormAuth.type }}
+  selector:
+    app.kubernetes.io/component: stackstorm-auth
+    {{- include "poundcake-standalone.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.services.stackstormAuth.port }}
+      targetPort: 9100
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stackstorm-stream
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.services.stackstormStream.type }}
+  selector:
+    app.kubernetes.io/component: stackstorm-stream
+    {{- include "poundcake-standalone.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.services.stackstormStream.port }}
+      targetPort: 9102
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stackstorm-web
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.services.stackstormWeb.type }}
+  selector:
+    app.kubernetes.io/component: stackstorm-web
+    {{- include "poundcake-standalone.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.services.stackstormWeb.port }}
+      targetPort: 8080

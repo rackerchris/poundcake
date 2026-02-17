@@ -1,0 +1,388 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stackstorm-infra-ready
+  labels:
+    app.kubernetes.io/component: stackstorm-infra-ready
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "2"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-infra-ready
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: wait-infra
+          image: {{ .Values.images.busybox }}
+          command:
+            - sh
+            - -ec
+            - |
+              until nc -z stackstorm-mongodb 27017; do sleep 2; done
+              until nc -z stackstorm-rabbitmq 5672; do sleep 2; done
+              until nc -z stackstorm-redis 6379; do sleep 2; done
+              echo ready > /app/config/stackstorm_infra_ready
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stackstorm-apikey-init
+  labels:
+    app.kubernetes.io/component: stackstorm-apikey-init
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "4"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-apikey-init
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: stackstorm-startup
+      initContainers:
+        - name: generate-apikey
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          env:
+            - name: ST2_AUTH_URL
+              value: http://stackstorm-auth:9100
+            - name: ST2_API_URL
+              value: http://stackstorm-api:9101
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              until (echo > /dev/tcp/stackstorm-api/9101) >/dev/null 2>&1; do sleep 3; done
+              until (echo > /dev/tcp/stackstorm-auth/9100) >/dev/null 2>&1; do sleep 3; done
+
+              token=""
+              for i in $(seq 1 30); do
+                token="$(st2 auth "${ST2_AUTH_USER}" -p "${ST2_AUTH_PASSWORD}" -t 2>/dev/null || true)"
+                [ -n "${token}" ] && break
+                sleep 2
+              done
+              [ -n "${token}" ]
+              export ST2_AUTH_TOKEN="${token}"
+
+              key=""
+              for i in $(seq 1 30); do
+                key="$(st2 apikey create -k -m '{"description":"PoundCake-Internal"}' 2>/dev/null || true)"
+                [ -n "${key}" ] && break
+                sleep 2
+              done
+              [ -n "${key}" ]
+              printf "%s" "${key}" > /work/st2_api_key
+          volumeMounts:
+            - name: key-work
+              mountPath: /work
+      containers:
+        - name: publish-apikey
+          image: {{ .Values.images.kubectl }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              NS="${POD_NAMESPACE}"
+              key="$(cat /work/st2_api_key)"
+              kubectl -n "${NS}" create secret generic stackstorm-apikeys \
+                --from-literal=st2_api_key="${key}" \
+                --dry-run=client -o yaml | kubectl apply -f -
+              printf "%s" "${key}" > /app/config/st2_api_key
+              echo ready > /app/config/stackstorm_apikey_ready
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: key-work
+              mountPath: /work
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: key-work
+          emptyDir: {}
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stackstorm-workers-ready
+  labels:
+    app.kubernetes.io/component: stackstorm-workers-ready
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-workers-ready
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: stackstorm-startup
+      containers:
+        - name: wait-workers
+          image: {{ .Values.images.kubectl }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              kubectl wait --for=condition=Available deployment/stackstorm-actionrunner --timeout=15m
+              kubectl wait --for=condition=Available deployment/stackstorm-rulesengine --timeout=15m
+              kubectl wait --for=condition=Available deployment/stackstorm-workflowengine --timeout=15m
+              kubectl wait --for=condition=Available deployment/stackstorm-scheduler --timeout=15m
+              kubectl wait --for=condition=Available deployment/stackstorm-notifier --timeout=15m
+              kubectl wait --for=condition=Available deployment/stackstorm-garbagecollector --timeout=15m
+              kubectl wait --for=condition=Available deployment/stackstorm-timersengine --timeout=15m
+              echo ready > /app/config/stackstorm_workers_ready
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stackstorm-edge-ready
+  labels:
+    app.kubernetes.io/component: stackstorm-edge-ready
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "6"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-edge-ready
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: stackstorm-startup
+      containers:
+        - name: wait-edge
+          image: {{ .Values.images.kubectl }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              kubectl wait --for=condition=Available deployment/stackstorm-sensorcontainer --timeout=15m
+              kubectl wait --for=condition=Available deployment/stackstorm-stream --timeout=15m
+              kubectl wait --for=condition=Available deployment/stackstorm-web --timeout=15m
+              echo ready > /app/config/stackstorm_edge_ready
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stackstorm-bootstrap
+  labels:
+    app.kubernetes.io/component: stackstorm-bootstrap
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "7"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-bootstrap
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-stage6
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_edge_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-bootstrap
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          env:
+            - name: ST2_AUTH_URL
+              value: http://stackstorm-auth:9100
+            - name: ST2_API_URL
+              value: http://stackstorm-api:9101
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args:
+            - /bin/bash
+            - -ec
+            - |
+              /automated-setup.sh
+              echo ready > /app/config/stackstorm_bootstrap_ready
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: scripts
+              mountPath: /automated-setup.sh
+              subPath: automated-setup.sh
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: poundcake-mariadb-ready
+  labels:
+    app.kubernetes.io/component: poundcake-mariadb-ready
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "20"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: poundcake-mariadb-ready
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: wait-mariadb
+          image: {{ .Values.images.busybox }}
+          command:
+            - sh
+            - -ec
+            - |
+              until nc -z mariadb 3306; do sleep 2; done
+              echo ready > /app/config/poundcake_mariadb_ready
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: poundcake-bootstrap
+  labels:
+    app.kubernetes.io/component: poundcake-bootstrap
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "30"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: poundcake-bootstrap
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-stackstorm-bootstrap
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_bootstrap_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+        - name: wait-api
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until nc -z poundcake-api 8000; do sleep 2; done"]
+      containers:
+        - name: poundcake-bootstrap
+          image: {{ .Values.poundcakeImage.repository }}:{{ .Values.poundcakeImage.tag }}
+          imagePullPolicy: {{ .Values.poundcakeImage.pullPolicy }}
+          workingDir: /app
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              python3 kitchen/dishwasher.py
+              echo ready > /app/config/poundcake_bootstrap_ready
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: POUNDCAKE_API_URL
+              value: http://poundcake-api:8000
+            - name: LOG_LEVEL
+              value: INFO
+            - name: POUNDCAKE_LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
+            - name: DISHWASHER_DEFAULT_DURATION
+              value: "60"
+            - name: DISHWASHER_DEFAULT_TIMEOUT
+              value: "300"
+            - name: DISHWASHER_PRUNE_MISSING
+              value: "false"
+            - name: DISHWASHER_INTERVAL
+              value: "0"
+            - name: POUNDCAKE_BOOTSTRAP_MARK
+              value: "true"
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
