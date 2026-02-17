@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stackstorm-startup
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stackstorm-startup
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stackstorm-startup
+  labels:
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: stackstorm-startup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: stackstorm-startup

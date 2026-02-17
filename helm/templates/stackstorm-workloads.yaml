@@ -1,0 +1,830 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-register
+  labels:
+    app.kubernetes.io/component: stackstorm-register
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-register
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-register
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage2
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_infra_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-register
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args:
+            - /bin/bash
+            - -ec
+            - |
+              while true; do
+                st2-register-content --register-all --register-fail-on-failure --config-file /etc/st2/st2.conf || true
+                sleep 300
+              done
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: packs
+              mountPath: /opt/stackstorm/packs/poundcake
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: packs
+          persistentVolumeClaim:
+            claimName: stackstorm-packs
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-auth
+  labels:
+    app.kubernetes.io/component: stackstorm-auth
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-auth
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-auth
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage2
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_infra_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-auth
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          ports:
+            - containerPort: 9100
+              name: http
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["/opt/stackstorm/st2/bin/st2auth", "--config-file", "/etc/st2/st2.conf"]
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: stackstorm-config
+              mountPath: /etc/st2/htpasswd
+              subPath: htpasswd
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-api
+  labels:
+    app.kubernetes.io/component: stackstorm-api
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-api
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-api
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage2
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_infra_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-api
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          ports:
+            - containerPort: 9101
+              name: http
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["/opt/stackstorm/st2/bin/st2api", "--config-file", "/etc/st2/st2.conf"]
+          readinessProbe:
+            tcpSocket:
+              port: 9101
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: packs
+              mountPath: /opt/stackstorm/packs/poundcake
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: packs
+          persistentVolumeClaim:
+            claimName: stackstorm-packs
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-actionrunner
+  labels:
+    app.kubernetes.io/component: stackstorm-actionrunner
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-actionrunner
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-actionrunner
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage4
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_apikey_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-actionrunner
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["/opt/stackstorm/st2/bin/st2actionrunner", "--config-file", "/etc/st2/st2.conf"]
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: packs
+              mountPath: /opt/stackstorm/packs/poundcake
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: packs
+          persistentVolumeClaim:
+            claimName: stackstorm-packs
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-rulesengine
+  labels:
+    app.kubernetes.io/component: stackstorm-rulesengine
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-rulesengine
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-rulesengine
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage4
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_apikey_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-rulesengine
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["/opt/stackstorm/st2/bin/st2rulesengine", "--config-file", "/etc/st2/st2.conf"]
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-workflowengine
+  labels:
+    app.kubernetes.io/component: stackstorm-workflowengine
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-workflowengine
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-workflowengine
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage4
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_apikey_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-workflowengine
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["/opt/stackstorm/st2/bin/st2workflowengine", "--config-file", "/etc/st2/st2.conf"]
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: packs
+              mountPath: /opt/stackstorm/packs/poundcake
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: packs
+          persistentVolumeClaim:
+            claimName: stackstorm-packs
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-scheduler
+  labels:
+    app.kubernetes.io/component: stackstorm-scheduler
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-scheduler
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-scheduler
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage4
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_apikey_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-scheduler
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["/opt/stackstorm/st2/bin/st2scheduler", "--config-file", "/etc/st2/st2.conf"]
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-notifier
+  labels:
+    app.kubernetes.io/component: stackstorm-notifier
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-notifier
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-notifier
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage4
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_apikey_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-notifier
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["/opt/stackstorm/st2/bin/st2notifier", "--config-file", "/etc/st2/st2.conf"]
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-garbagecollector
+  labels:
+    app.kubernetes.io/component: stackstorm-garbagecollector
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-garbagecollector
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-garbagecollector
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage4
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_apikey_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-garbagecollector
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["/opt/stackstorm/st2/bin/st2garbagecollector", "--config-file", "/etc/st2/st2.conf"]
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-timersengine
+  labels:
+    app.kubernetes.io/component: stackstorm-timersengine
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-timersengine
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-timersengine
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage4
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_apikey_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-timersengine
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["/opt/stackstorm/st2/bin/st2timersengine", "--config-file", "/etc/st2/st2.conf"]
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-sensorcontainer
+  labels:
+    app.kubernetes.io/component: stackstorm-sensorcontainer
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-sensorcontainer
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-sensorcontainer
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage5
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_workers_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-sensorcontainer
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["/opt/stackstorm/st2/bin/st2sensorcontainer", "--config-file", "/etc/st2/st2.conf"]
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-stream
+  labels:
+    app.kubernetes.io/component: stackstorm-stream
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-stream
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-stream
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage5
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_workers_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-stream
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          ports:
+            - containerPort: 9102
+              name: http
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["/opt/stackstorm/st2/bin/st2stream", "--config-file", "/etc/st2/st2.conf"]
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-web
+  labels:
+    app.kubernetes.io/component: stackstorm-web
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-web
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-web
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage5
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_workers_ready ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-web
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          ports:
+            - containerPort: 8080
+              name: http
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["/opt/stackstorm/st2/bin/st2web", "--config-file", "/etc/st2/st2.conf"]
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stackstorm-client
+  labels:
+    app.kubernetes.io/component: stackstorm-client
+    {{- include "poundcake-standalone.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: stackstorm-client
+      {{- include "poundcake-standalone.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: stackstorm-client
+        {{- include "poundcake-standalone.selectorLabels" . | nindent 8 }}
+    spec:
+      initContainers:
+        - name: wait-stage7
+          image: {{ .Values.images.busybox }}
+          command: ["sh", "-c", "until [ -s /app/config/stackstorm_bootstrap_ready ]; do sleep 2; done; until [ -s /app/config/st2_api_key ]; do sleep 2; done"]
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: stackstorm-client
+          image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
+          imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: stackstorm-secrets
+          command: ["/bin/bash", "/st2-entrypoint.sh"]
+          args: ["sh", "-c", "echo 'stackstorm-client ready' && tail -f /dev/null"]
+          volumeMounts:
+            - name: stackstorm-config
+              mountPath: /etc/st2/st2.conf.template
+              subPath: st2.conf.template
+            - name: scripts
+              mountPath: /st2-entrypoint.sh
+              subPath: st2-entrypoint.sh
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: stackstorm-config
+          configMap:
+            name: stackstorm-config
+        - name: scripts
+          configMap:
+            name: stackstorm-scripts
+            defaultMode: 0755
+        - name: app-config
+          persistentVolumeClaim:
+            claimName: poundcake-config
