@@ -119,7 +119,6 @@ rotate_chart_secrets() {
     "st2-rabbitmq"
     "${release_name}-poundcake-mariadb-root"
     "${release_name}-poundcake-mariadb-user"
-    "poundcake-st2-auth"
   )
 
   echo "Rotating selected chart-managed secrets (if present)..."
