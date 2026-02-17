@@ -28,6 +28,8 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        {{- include "poundcake.waitForStackstormBootstrapInitContainer" . | nindent 8 }}
       containers:
       - name: db-init
         securityContext:

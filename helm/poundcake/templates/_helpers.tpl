@@ -314,6 +314,46 @@ Marker secret written by stackstorm-bootstrap when StackStorm initialization is 
 {{- end }}
 
 {{/*
+Marker secret written by poundcake-bootstrap when PoundCake initialization is complete.
+*/}}
+{{- define "poundcake.poundcakeBootstrapReadySecret" -}}
+{{- printf "%s-poundcake-bootstrap-ready" (include "poundcake.fullname" .) }}
+{{- end }}
+
+{{/*
+Init container that blocks worker services until PoundCake bootstrap is complete.
+*/}}
+{{- define "poundcake.waitForPoundcakeBootstrapInitContainer" -}}
+- name: wait-for-poundcake-bootstrap
+  image: bitnami/kubectl:1.30
+  imagePullPolicy: IfNotPresent
+  command:
+    - /bin/sh
+    - -c
+    - |
+      set -e
+      NS="{{ .Release.Namespace }}"
+      READY_SECRET="{{ include "poundcake.poundcakeBootstrapReadySecret" . }}"
+      MAX_WAIT=900
+      ELAPSED=0
+      INTERVAL=5
+
+      echo "Waiting for PoundCake bootstrap marker secret: ${READY_SECRET}"
+
+      while [ "${ELAPSED}" -lt "${MAX_WAIT}" ]; do
+        if kubectl -n "${NS}" get secret "${READY_SECRET}" >/dev/null 2>&1; then
+          echo "PoundCake bootstrap complete."
+          exit 0
+        fi
+        sleep "${INTERVAL}"
+        ELAPSED=$((ELAPSED + INTERVAL))
+      done
+
+      echo "Timed out waiting for PoundCake bootstrap completion."
+      exit 1
+{{- end }}
+
+{{/*
 Init container that blocks PoundCake components until StackStorm bootstrap is complete.
 */}}
 {{- define "poundcake.waitForStackstormBootstrapInitContainer" -}}

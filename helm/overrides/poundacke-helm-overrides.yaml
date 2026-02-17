@@ -2,11 +2,54 @@
 # Copy to:
 #   /etc/genestack/helm-configs/poundcake/poundcake-helm-overrides.yaml
 #
+# Startup order (managed by hook weights and marker secrets):
+#
+#   Phase 0 — pre-install hooks (weight -20):
+#     - Generate secrets: MariaDB root/user, StackStorm admin password,
+#       StackStorm API key placeholder, PoundCake admin auth secret.
+#
+#   Phase 1 — StackStorm bootstrap (post-install, weight 10):
+#     Job: <release>-stackstorm-bootstrap
+#     - Scales non-api/auth ST2 deployments to 0 (if startupOrder.enabled).
+#     - Waits for st2auth + st2api rollout + API readiness.
+#     - Authenticates to ST2 and generates/validates the real API key.
+#     - Writes the real API key into the <prefix>-st2-apikeys secret.
+#     - Scales remaining ST2 services back up to desired replicas.
+#     - Writes marker secret: <release>-stackstorm-bootstrap-ready.
+#
+#   Phase 2 — PoundCake DB migration (post-install, weight 20):
+#     Job: <release>-db-init
+#     - Waits for StackStorm bootstrap marker (init container).
+#     - Waits for MariaDB to accept connections.
+#     - Runs Alembic migrations and seeds default data.
+#
+#   Phase 3 — Pack init (post-install, weight 30):
+#     Job: <release>-pack-init
+#     - Creates stackstorm-packs directory tree.
+#
+#   Phase 4 — PoundCake bootstrap (post-install, weight 40):
+#     Job: <release>-bootstrap
+#     - Waits for StackStorm bootstrap marker (init container).
+#     - Waits for PoundCake API health green (init container).
+#     - Runs dishwasher.py in bootstrap mode (reconciles ST2 content/state).
+#     - Writes marker secret: <release>-poundcake-bootstrap-ready.
+#
+#   Phase 5 — Worker services start (Deployments):
+#     chef, prep-chef, timer, dishwasher
+#     - Each has a wait-for-poundcake-bootstrap init container that polls
+#       the poundcake-bootstrap-ready marker secret before starting.
+#
+# ---
+
 # Main API deployment (service load balances across pods)
 replicaCount: 1
 
 # Worker services
 chef:
+  enabled: true
+  replicaCount: 1
+
+prepChef:
   enabled: true
   replicaCount: 1
 
@@ -17,6 +60,13 @@ timer:
 dishwasher:
   enabled: true
   replicaCount: 1
+
+# Bootstrap jobs
+bootstrap:
+  packInit:
+    enabled: true
+  poundcakeBootstrap:
+    enabled: true
 
 # Expose API with a cloud LB
 service:
@@ -35,6 +85,21 @@ podDisruptionBudget:
 stackstorm:
   subchart:
     fullnameOverride: "st2"
+  # Enable staged StackStorm startup: auth+api first, rest after bootstrap.
+  startupOrder:
+    enabled: true
+    replicas:
+      st2stream: 2
+      st2sensorcontainer: 1
+      st2rulesengine: 2
+      st2workflowengine: 2
+      st2actionrunner: 5
+      st2scheduler: 2
+      st2notifier: 2
+      st2garbagecollector: 1
+      st2timersengine: 1
+      st2chatops: 0
+      st2web: 0
 
 stackstorm-chart:
   fullnameOverride: "st2"

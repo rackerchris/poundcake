@@ -32,60 +32,7 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
-        {{- include "poundcake.waitForStackstormBootstrapInitContainer" . | nindent 8 }}
-        - name: wait-for-api
-          image: curlimages/curl:latest
-          command:
-          - /bin/sh
-          - -c
-          - |
-            set -e
-            echo "Waiting for PoundCake API to be ready..."
-
-            MAX_WAIT=300  # 5 minutes
-            ELAPSED=0
-            INTERVAL=5
-
-            while [ $ELAPSED -lt $MAX_WAIT ]; do
-              if curl -sf http://{{ include "poundcake.fullname" . }}:{{ .Values.service.port }}/api/v1/health > /dev/null 2>&1; then
-                echo "✓ PoundCake API is ready"
-                exit 0
-              fi
-
-              echo "Waiting for API... (${ELAPSED}s / ${MAX_WAIT}s)"
-              sleep $INTERVAL
-              ELAPSED=$((ELAPSED + INTERVAL))
-            done
-
-            echo "✗ Timeout waiting for PoundCake API"
-            exit 1
-        - name: wait-for-stackstorm
-          image: curlimages/curl:latest
-          command:
-          - /bin/sh
-          - -c
-          - |
-            set -e
-            echo "Waiting for StackStorm API to be ready..."
-
-            MAX_WAIT=300
-            ELAPSED=0
-            INTERVAL=5
-
-            while [ $ELAPSED -lt $MAX_WAIT ]; do
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" {{ include "poundcake.stackstormApiUrl" . }}/v1/actions || true)
-              if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "401" ]; then
-                echo "✓ StackStorm API is ready (HTTP ${HTTP_CODE})"
-                exit 0
-              fi
-
-              echo "Waiting for StackStorm... (${ELAPSED}s / ${MAX_WAIT}s)"
-              sleep $INTERVAL
-              ELAPSED=$((ELAPSED + INTERVAL))
-            done
-
-            echo "✗ Timeout waiting for StackStorm API"
-            exit 1
+        {{- include "poundcake.waitForPoundcakeBootstrapInitContainer" . | nindent 8 }}
       containers:
         - name: timer
           securityContext:
