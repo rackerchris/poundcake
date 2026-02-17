@@ -2,6 +2,11 @@
 
 This directory stores example override files for Helm installs.
 
+Available examples:
+- `ha-overrides.yaml`: HA-only settings.
+- `gateway-kronos-overrides.yaml`: Gateway-only settings.
+- `poundacke-helm-overrides.yaml`: combined sample (HA + StackStorm naming + Gateway).
+
 ## Enable HA
 
 1. Copy the HA example to the Genestack PoundCake overrides path:
@@ -14,6 +19,14 @@ sudo cp helm/overrides/ha-overrides.yaml /etc/genestack/helm-configs/poundcake/p
 2. Run the Helm installer:
 
 ```bash
+./install/install-helm.sh
+```
+
+## Use Combined Sample
+
+```bash
+sudo mkdir -p /etc/genestack/helm-configs/poundcake
+sudo cp helm/overrides/poundacke-helm-overrides.yaml /etc/genestack/helm-configs/poundcake/poundcake-helm-overrides.yaml
 ./install/install-helm.sh
 ```
 

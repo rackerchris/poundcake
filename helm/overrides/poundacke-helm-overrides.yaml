@@ -1,0 +1,57 @@
+# Combined sample overrides for PoundCake Helm installs.
+# Copy to:
+#   /etc/genestack/helm-configs/poundcake/poundcake-helm-overrides.yaml
+#
+# Main API deployment (service load balances across pods)
+replicaCount: 1
+
+# Worker services
+chef:
+  enabled: true
+  replicaCount: 1
+
+timer:
+  enabled: true
+  replicaCount: 1
+
+dishwasher:
+  enabled: true
+  replicaCount: 1
+
+# Expose API with a cloud LB
+service:
+  type: LoadBalancer
+  port: 8080
+
+# Required for multi-replica state coordination
+redis:
+  enabled: true
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Keep StackStorm resources on st2-* naming.
+stackstorm:
+  subchart:
+    fullnameOverride: "st2"
+
+stackstorm-chart:
+  fullnameOverride: "st2"
+
+# Envoy Gateway route/listener configuration
+gateway:
+  enabled: true
+  gatewayName: "envoy-gateway"
+  gatewayNamespace: "envoy-gateway-system"
+  listener:
+    name: "poundcake-https"
+    hostname: "poundcake.api.kronos.cloudmunchers.net"
+    port: 443
+    protocol: "HTTPS"
+    tlsSecretName: "poundcake-gw-tls-secret"
+    allowedNamespaces: "All"
+    updateIfExists: true
+  hostnames:
+    - "poundcake.api.kronos.cloudmunchers.net"
+  annotations: {}
