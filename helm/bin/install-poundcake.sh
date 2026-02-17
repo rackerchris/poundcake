@@ -14,10 +14,12 @@ CHART_REPO="${POUNDCAKE_CHART_REPO:-oci://ghcr.io/${GHCR_OWNER}/charts/poundcake
 APP_IMAGE_REPO="${POUNDCAKE_IMAGE_REPO:-ghcr.io/${GHCR_OWNER}/poundcake}"
 UI_IMAGE_REPO="${POUNDCAKE_UI_IMAGE_REPO:-ghcr.io/${GHCR_OWNER}/poundcake-ui}"
 BAKERY_IMAGE_REPO="${POUNDCAKE_BAKERY_IMAGE_REPO:-ghcr.io/${GHCR_OWNER}/poundcake-bakery}"
+STACKSTORM_VERSION="${POUNDCAKE_STACKSTORM_VERSION:-3.9.0}"
 VERSION_FILE="/etc/genestack/helm-chart-versions.yaml"
 GLOBAL_OVERRIDES_DIR="/etc/genestack/helm-configs/global_overrides"
 SERVICE_CONFIG_DIR="/etc/genestack/helm-configs/poundcake"
-BASE_OVERRIDES="/opt/genestack/base-helm-configs/poundcake/poundcake-helm-overrides.yaml"
+BASE_OVERRIDES_DIR="/opt/genestack/base-helm-configs/poundcake"
+BASE_OVERRIDES_FILE="poundcake-helm-overrides.yaml"
 KUSTOMIZE_RENDERER="/etc/genestack/kustomize/kustomize.sh"
 KUSTOMIZE_OVERLAY_DIR="/etc/genestack/kustomize/poundcake/overlay"
 KUSTOMIZE_OVERLAY_ARG="poundcake/overlay"
@@ -64,8 +66,11 @@ echo "Installing PoundCake chart version: ${POUNDCAKE_VERSION}"
 ensure_oci_registry_auth "$CHART_REPO"
 
 OVERRIDE_ARGS=()
-if [[ -f "$BASE_OVERRIDES" ]]; then
-  OVERRIDE_ARGS+=("-f" "$BASE_OVERRIDES")
+if [[ -d "$BASE_OVERRIDES_DIR" ]]; then
+  base_path="${BASE_OVERRIDES_DIR}/${BASE_OVERRIDES_FILE}"
+  if [[ -f "$base_path" ]]; then
+    OVERRIDE_ARGS+=("-f" "$base_path")
+  fi
 fi
 
 if [[ -d "$GLOBAL_OVERRIDES_DIR" ]] && compgen -G "${GLOBAL_OVERRIDES_DIR}/*.yaml" >/dev/null; then
@@ -109,6 +114,9 @@ HELM_CMD=(
   --set "image.repository=${APP_IMAGE_REPO}"
   --set "ui.image.repository=${UI_IMAGE_REPO}"
   --set "bakery.image.repository=${BAKERY_IMAGE_REPO}"
+  --set "stackstorm-chart.imageTag=${STACKSTORM_VERSION}"
+  --set "stackstorm-chart.st2.image.tag=${STACKSTORM_VERSION}"
+  --set "stackstorm-chart.st2client.image.tag=${STACKSTORM_VERSION}"
   "${OVERRIDE_ARGS[@]}"
   "${POST_RENDER_ARGS[@]}"
 )
