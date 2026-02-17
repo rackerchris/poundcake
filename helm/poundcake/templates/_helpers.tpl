@@ -409,9 +409,7 @@ Get bakery DB user password secret name
 Standard annotations for chart-managed secrets that must exist before workloads start.
 */}}
 {{- define "poundcake.preInstallSecretAnnotations" -}}
-"helm.sh/hook": pre-install,pre-upgrade
-"helm.sh/hook-weight": "-20"
-"helm.sh/hook-delete-policy": before-hook-creation
+"poundcake.io/managed-secret": "true"
 {{- end }}
 
 {{/*

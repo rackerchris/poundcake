@@ -31,6 +31,7 @@ SKIP_PREFLIGHT=false
 HELM_WAIT="${POUNDCAKE_HELM_WAIT:-false}"
 HELM_ATOMIC="${POUNDCAKE_HELM_ATOMIC:-false}"
 HELM_CLEANUP_ON_FAIL="${POUNDCAKE_HELM_CLEANUP_ON_FAIL:-false}"
+ALLOW_WAIT_WITH_STAGED_STARTUP="${POUNDCAKE_ALLOW_WAIT_WITH_STAGED_STARTUP:-false}"
 PASSTHROUGH_ARGS=()
 POST_RENDER_ARGS=()
 
@@ -68,6 +69,48 @@ fi
 
 echo "Installing PoundCake chart version: ${POUNDCAKE_VERSION}"
 ensure_oci_registry_auth "$CHART_REPO"
+
+echo "Override file accessibility check:"
+base_path="${BASE_OVERRIDES_DIR}/${BASE_OVERRIDES_FILE}"
+if [[ -r "$base_path" ]]; then
+  echo "  [readable] ${base_path}"
+elif [[ -e "$base_path" ]]; then
+  echo "  [not-readable] ${base_path}"
+else
+  echo "  [missing] ${base_path}"
+fi
+
+if [[ -d "$GLOBAL_OVERRIDES_DIR" ]]; then
+  if compgen -G "${GLOBAL_OVERRIDES_DIR}/*.yaml" >/dev/null; then
+    for yaml_file in "${GLOBAL_OVERRIDES_DIR}"/*.yaml; do
+      if [[ -r "$yaml_file" ]]; then
+        echo "  [readable] ${yaml_file}"
+      elif [[ -e "$yaml_file" ]]; then
+        echo "  [not-readable] ${yaml_file}"
+      fi
+    fi
+  else
+    echo "  [none] ${GLOBAL_OVERRIDES_DIR}/*.yaml"
+  fi
+else
+  echo "  [missing-dir] ${GLOBAL_OVERRIDES_DIR}"
+fi
+
+if [[ -d "$SERVICE_CONFIG_DIR" ]]; then
+  if compgen -G "${SERVICE_CONFIG_DIR}/*.yaml" >/dev/null; then
+    for yaml_file in "${SERVICE_CONFIG_DIR}"/*.yaml; do
+      if [[ -r "$yaml_file" ]]; then
+        echo "  [readable] ${yaml_file}"
+      elif [[ -e "$yaml_file" ]]; then
+        echo "  [not-readable] ${yaml_file}"
+      fi
+    fi
+  else
+    echo "  [none] ${SERVICE_CONFIG_DIR}/*.yaml"
+  fi
+else
+  echo "  [missing-dir] ${SERVICE_CONFIG_DIR}"
+fi
 
 OVERRIDE_ARGS=()
 if [[ -d "$BASE_OVERRIDES_DIR" ]]; then
@@ -115,6 +158,12 @@ if [[ "$VALIDATE" == "true" ]]; then
     "${PASSTHROUGH_ARGS[@]}"
 fi
 
+if [[ "$HELM_WAIT" == "true" && "$ALLOW_WAIT_WITH_STAGED_STARTUP" != "true" ]]; then
+  echo "Error: POUNDCAKE_HELM_WAIT=true can deadlock staged StackStorm bootstrap (post-install hooks)." >&2
+  echo "Set POUNDCAKE_HELM_WAIT=false (recommended) or set POUNDCAKE_ALLOW_WAIT_WITH_STAGED_STARTUP=true to override." >&2
+  exit 1
+fi
+
 HELM_CMD=(
   helm upgrade --install "$RELEASE_NAME" "$CHART_REPO"
   --version "$POUNDCAKE_VERSION"
@@ -129,6 +178,60 @@ HELM_CMD=(
   --set "stackstorm-chart.st2client.image.tag=${STACKSTORM_VERSION}"
   --set "stackstorm-chart.fullnameOverride=${STACKSTORM_FULLNAME_OVERRIDE}"
   --set "stackstorm.subchart.fullnameOverride=${STACKSTORM_FULLNAME_OVERRIDE}"
+  --set "stackstorm.startupOrder.enabled=true"
+  --set "stackstorm.startupOrder.coreReplicas.st2register=1"
+  --set "stackstorm.startupOrder.coreReplicas.st2auth=1"
+  --set "stackstorm.startupOrder.coreReplicas.st2api=1"
+  --set "stackstorm.startupOrder.workerReplicas.st2actionrunner=1"
+  --set "stackstorm.startupOrder.workerReplicas.st2rulesengine=1"
+  --set "stackstorm.startupOrder.workerReplicas.st2workflowengine=1"
+  --set "stackstorm.startupOrder.workerReplicas.st2scheduler=1"
+  --set "stackstorm.startupOrder.workerReplicas.st2notifier=1"
+  --set "stackstorm.startupOrder.workerReplicas.st2garbagecollector=1"
+  --set "stackstorm.startupOrder.workerReplicas.st2timersengine=1"
+  --set "stackstorm.startupOrder.workerReplicas.st2chatops=1"
+  --set "stackstorm.startupOrder.edgeReplicas.st2sensorcontainer=1"
+  --set "stackstorm.startupOrder.edgeReplicas.st2stream=1"
+  --set "stackstorm.startupOrder.edgeReplicas.st2web=1"
+  --set "stackstorm.startupOrder.replicas.st2actionrunner=1"
+  --set "stackstorm.startupOrder.replicas.st2rulesengine=1"
+  --set "stackstorm.startupOrder.replicas.st2workflowengine=1"
+  --set "stackstorm.startupOrder.replicas.st2scheduler=1"
+  --set "stackstorm.startupOrder.replicas.st2notifier=1"
+  --set "stackstorm.startupOrder.replicas.st2garbagecollector=1"
+  --set "stackstorm.startupOrder.replicas.st2timersengine=1"
+  --set "stackstorm.startupOrder.replicas.st2chatops=1"
+  --set "stackstorm.startupOrder.replicas.st2sensorcontainer=1"
+  --set "stackstorm.startupOrder.replicas.st2stream=1"
+  --set "stackstorm.startupOrder.replicas.st2web=1"
+  --set "stackstorm-chart.st2api.replicaCount=0"
+  --set "stackstorm-chart.st2api.replicas=0"
+  --set "stackstorm-chart.st2auth.replicaCount=0"
+  --set "stackstorm-chart.st2auth.replicas=0"
+  --set "stackstorm-chart.st2register.replicaCount=0"
+  --set "stackstorm-chart.st2register.replicas=0"
+  --set "stackstorm-chart.st2actionrunner.replicaCount=0"
+  --set "stackstorm-chart.st2actionrunner.replicas=0"
+  --set "stackstorm-chart.st2rulesengine.replicaCount=0"
+  --set "stackstorm-chart.st2rulesengine.replicas=0"
+  --set "stackstorm-chart.st2workflowengine.replicaCount=0"
+  --set "stackstorm-chart.st2workflowengine.replicas=0"
+  --set "stackstorm-chart.st2scheduler.replicaCount=0"
+  --set "stackstorm-chart.st2scheduler.replicas=0"
+  --set "stackstorm-chart.st2notifier.replicaCount=0"
+  --set "stackstorm-chart.st2notifier.replicas=0"
+  --set "stackstorm-chart.st2garbagecollector.replicaCount=0"
+  --set "stackstorm-chart.st2garbagecollector.replicas=0"
+  --set "stackstorm-chart.st2timersengine.replicaCount=0"
+  --set "stackstorm-chart.st2timersengine.replicas=0"
+  --set "stackstorm-chart.st2chatops.replicaCount=0"
+  --set "stackstorm-chart.st2chatops.replicas=0"
+  --set "stackstorm-chart.st2sensorcontainer.replicaCount=0"
+  --set "stackstorm-chart.st2sensorcontainer.replicas=0"
+  --set "stackstorm-chart.st2stream.replicaCount=0"
+  --set "stackstorm-chart.st2stream.replicas=0"
+  --set "stackstorm-chart.st2web.replicaCount=0"
+  --set "stackstorm-chart.st2web.replicas=0"
   "${OVERRIDE_ARGS[@]}"
   "${POST_RENDER_ARGS[@]}"
 )
