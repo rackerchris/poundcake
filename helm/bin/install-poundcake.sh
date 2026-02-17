@@ -72,8 +72,28 @@ else
   CHART_SOURCE="${CHART_REPO}"
 fi
 
+get_chart_version_from_file() {
+  local version_file="$1"
+  local chart_name="$2"
+  awk -v chart="${chart_name}" '
+    BEGIN { in_charts = 0 }
+    /^[[:space:]]*charts:[[:space:]]*$/ { in_charts = 1; next }
+    in_charts == 1 {
+      if ($0 ~ /^[^[:space:]]/) { in_charts = 0; next }
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      if (line ~ ("^" chart ":[[:space:]]*")) {
+        sub("^" chart ":[[:space:]]*", "", line)
+        gsub(/[[:space:]]*$/, "", line)
+        print line
+        exit
+      }
+    }
+  ' "${version_file}"
+}
+
 if [[ -z "${CHART_VERSION}" && -f "${VERSION_FILE}" ]]; then
-  detected_version="$(awk -F: '/^[[:space:]]*poundcake[[:space:]]*:/ {gsub(/[[:space:]]*/, "", $2); print $2; exit}' "${VERSION_FILE}")"
+  detected_version="$(get_chart_version_from_file "${VERSION_FILE}" "poundcake")"
   if [[ -n "${detected_version}" ]]; then
     CHART_VERSION="${detected_version}"
   fi
