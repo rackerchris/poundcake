@@ -229,23 +229,31 @@ stackstorm:
     redis: "st2-redis"
 
   # Startup ordering for StackStorm subchart components.
-  # When enabled, PoundCake bootstrap will:
-  # 1) scale non-api/non-auth st2 deployments to 0
-  # 2) wait for st2auth + st2api + st2 API key secret
-  # 3) scale remaining st2 deployments back up
+  # When enabled, hook jobs will execute explicit StackStorm stages:
+  # 1) infra readiness checks (mongodb/redis/rabbitmq services)
+  # 2) core services (st2register, st2auth, st2api)
+  # 3) API key generation
+  # 4) worker/execution engines
+  # 5) edge services
+  # 6) stackstorm bootstrap content registration
   startupOrder:
     enabled: true
-    replicas:
-      st2stream: 2
-      st2sensorcontainer: 1
+    coreReplicas:
+      st2register: 1
+      st2auth: 1
+      st2api: 1
+    workerReplicas:
+      st2actionrunner: 5
       st2rulesengine: 2
       st2workflowengine: 2
-      st2actionrunner: 5
       st2scheduler: 2
       st2notifier: 2
       st2garbagecollector: 1
       st2timersengine: 1
       st2chatops: 0
+    edgeReplicas:
+      st2stream: 2
+      st2sensorcontainer: 1
       st2web: 2
 
 # StackStorm subchart configuration
@@ -316,6 +324,9 @@ stackstorm-chart:
     replicaCount: 1
     replicas: 1
   st2auth:
+    replicaCount: 1
+    replicas: 1
+  st2register:
     replicaCount: 1
     replicas: 1
   st2stream:

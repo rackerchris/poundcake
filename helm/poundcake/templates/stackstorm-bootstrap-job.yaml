@@ -1,4 +1,3 @@
-
 {{- if .Values.stackstorm.chart.enabled }}
 apiVersion: batch/v1
 kind: Job
@@ -9,12 +8,12 @@ metadata:
     app.kubernetes.io/component: stackstorm-bootstrap
   annotations:
     "helm.sh/hook": post-install,post-upgrade
-    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-weight": "13"
     "helm.sh/hook-delete-policy": before-hook-creation
 spec:
+  backoffLimit: 3
   template:
     metadata:
-      name: {{ include "poundcake.fullname" . }}-stackstorm-bootstrap
       labels:
         {{- include "poundcake.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: stackstorm-bootstrap
@@ -31,75 +30,25 @@ spec:
         - /bin/sh
         - -c
         - |
-          set -e
+          set -euo pipefail
 
           NS="{{ .Release.Namespace }}"
-          RELEASE_NAME="{{ .Release.Name }}"
-          ST2_PREFIX="{{ include "poundcake.stackstormSubchartPrefix" . }}"
-          API_KEY_SECRET="{{ include "poundcake.stackstormApiKeySecret" . }}"
-          API_KEY_FIELD="{{ include "poundcake.stackstormApiKeySecretKey" . }}"
+          ST2_API_URL="{{ include "poundcake.stackstormApiUrl" . }}"
+          ST2_AUTH_URL="{{ include "poundcake.stackstormAuthUrl" . }}"
           ST2_AUTH_SECRET="{{ include "poundcake.stackstormAuthSecretName" . }}"
           ST2_AUTH_USER_DEFAULT="{{ .Values.stackstorm.adminUser }}"
           ST2_ADMIN_PASSWORD_SECRET="{{ .Values.stackstorm.adminPasswordSecret }}"
           ST2_ADMIN_PASSWORD_KEY="{{ .Values.stackstorm.adminPasswordSecretKey }}"
-          ST2_AUTH_URL="{{ include "poundcake.stackstormAuthUrl" . }}"
-          ST2_API_URL="{{ include "poundcake.stackstormApiUrl" . }}"
+          API_KEY_SECRET="{{ include "poundcake.stackstormApiKeySecret" . }}"
+          API_KEY_FIELD="{{ include "poundcake.stackstormApiKeySecretKey" . }}"
           READY_SECRET="{{ include "poundcake.stackstormBootstrapReadySecret" . }}"
-          TIMEOUT="600s"
 
           for cmd in kubectl curl sed base64; do
             if ! command -v "${cmd}" >/dev/null 2>&1; then
-              echo "ERROR: required command '${cmd}' not found in bootstrap image"
+              echo "ERROR: required command '${cmd}' not found"
               exit 1
             fi
           done
-
-          resolve_deployment_name() {
-            component="$1"
-            for candidate in "${ST2_PREFIX}-${component}" "${RELEASE_NAME}-${component}" "${component}"; do
-              if kubectl -n "${NS}" get deployment "${candidate}" >/dev/null 2>&1; then
-                echo "${candidate}"
-                return 0
-              fi
-            done
-
-            kubectl -n "${NS}" get deployment -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
-              | grep -E "(-|^)${component}$" | head -n1 || true
-          }
-
-          resolve_service_name() {
-            component="$1"
-            for candidate in "${ST2_PREFIX}-${component}" "${RELEASE_NAME}-${component}" "${component}"; do
-              if kubectl -n "${NS}" get svc "${candidate}" >/dev/null 2>&1; then
-                echo "${candidate}"
-                return 0
-              fi
-            done
-
-            kubectl -n "${NS}" get svc -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
-              | grep -E "(-|^)${component}$" | head -n1 || true
-          }
-
-          scale_component_if_exists() {
-            component="$1"
-            replicas="$2"
-            name="$(resolve_deployment_name "${component}")"
-            if [ -n "${name}" ]; then
-              echo "Scaling ${name} -> ${replicas}"
-              kubectl -n "${NS}" scale deployment "${name}" --replicas="${replicas}"
-            else
-              echo "Skipping component ${component} (deployment not found)"
-            fi
-          }
-
-          wait_component_rollout_if_exists() {
-            component="$1"
-            name="$(resolve_deployment_name "${component}")"
-            if [ -n "${name}" ]; then
-              echo "Waiting for rollout: ${name}"
-              kubectl -n "${NS}" rollout status "deployment/${name}" --timeout="${TIMEOUT}"
-            fi
-          }
 
           get_secret_value() {
             secret_name="$1"
@@ -107,20 +56,17 @@ spec:
             kubectl -n "${NS}" get secret "${secret_name}" -o "jsonpath={.data['${secret_key}']}" 2>/dev/null | base64 -d 2>/dev/null || true
           }
 
-          wait_for_api_ready() {
+          wait_for_api() {
             max_retries=120
             retry=0
-            echo "Waiting for StackStorm API readiness at ${ST2_API_URL}..."
             while [ "${retry}" -lt "${max_retries}" ]; do
-              http_code="$(curl -s -o /dev/null -w "%{http_code}" "${ST2_API_URL}/v1/actions" || true)"
-              if [ "${http_code}" = "200" ] || [ "${http_code}" = "401" ]; then
-                echo "✓ StackStorm API ready (HTTP ${http_code})"
+              code="$(curl -s -o /dev/null -w "%{http_code}" "${ST2_API_URL}/v1/actions" || true)"
+              if [ "${code}" = "200" ] || [ "${code}" = "401" ]; then
                 return 0
               fi
               retry=$((retry + 1))
               sleep 5
             done
-            echo "ERROR: StackStorm API not ready in time"
             return 1
           }
 
@@ -133,153 +79,68 @@ spec:
             echo "${response}" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
           }
 
-          create_api_key() {
-            token="$1"
-            response="$(curl -s -X POST "${ST2_API_URL}/v1/apikeys" \
-              -H "X-Auth-Token: ${token}" \
-              -H "Content-Type: application/json" \
-              -d '{"description":"PoundCake-Internal"}' || true)"
-            echo "${response}" | sed -n 's/.*"key"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
-          }
-
-          validate_api_key() {
-            key="$1"
-            http_code="$(curl -s -o /dev/null -w "%{http_code}" -H "St2-Api-Key: ${key}" "${ST2_API_URL}/v1/actions" || true)"
-            [ "${http_code}" = "200" ]
-          }
-
-          upsert_api_key_secret() {
-            api_key="$1"
-            encoded="$(printf "%s" "${api_key}" | base64 | tr -d '\n')"
-            if kubectl -n "${NS}" get secret "${API_KEY_SECRET}" >/dev/null 2>&1; then
-              kubectl -n "${NS}" patch secret "${API_KEY_SECRET}" --type merge \
-                -p "{\"data\":{\"${API_KEY_FIELD}\":\"${encoded}\"}}" >/dev/null
-            else
-              kubectl -n "${NS}" create secret generic "${API_KEY_SECRET}" \
-                --from-literal="${API_KEY_FIELD}=${api_key}" >/dev/null
-            fi
-          }
-
-          upsert_ready_secret() {
-            ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            if kubectl -n "${NS}" get secret "${READY_SECRET}" >/dev/null 2>&1; then
-              kubectl -n "${NS}" patch secret "${READY_SECRET}" --type merge \
-                -p "{\"stringData\":{\"ready\":\"true\",\"updatedAt\":\"${ts}\"}}" >/dev/null
-            else
-              kubectl -n "${NS}" create secret generic "${READY_SECRET}" \
-                --from-literal=ready=true \
-                --from-literal=updatedAt="${ts}" >/dev/null
-            fi
-          }
-
-          ensure_api_key_secret() {
-            st2_auth_user="${ST2_AUTH_USER_DEFAULT}"
-            st2_auth_password=""
-
-            # Prefer StackStorm auth secret (used by subchart), then fallback to PoundCake admin secret.
-            discovered_user="$(get_secret_value "${ST2_AUTH_SECRET}" "username")"
-            if [ -n "${discovered_user}" ]; then
-              st2_auth_user="${discovered_user}"
-            fi
-
-            st2_auth_password="$(get_secret_value "${ST2_AUTH_SECRET}" "password")"
-            if [ -z "${st2_auth_password}" ] && [ -n "${ST2_ADMIN_PASSWORD_SECRET}" ] && [ -n "${ST2_ADMIN_PASSWORD_KEY}" ]; then
-              st2_auth_password="$(get_secret_value "${ST2_ADMIN_PASSWORD_SECRET}" "${ST2_ADMIN_PASSWORD_KEY}")"
-            fi
-
-            if [ -z "${st2_auth_password}" ]; then
-              echo "ERROR: unable to resolve StackStorm admin password from secrets."
-              return 1
-            fi
-
-            existing_key="$(get_secret_value "${API_KEY_SECRET}" "${API_KEY_FIELD}")"
-            if [ -n "${existing_key}" ] && validate_api_key "${existing_key}"; then
-              echo "✓ Existing StackStorm API key is valid."
-              return 0
-            fi
-
-            echo "Generating StackStorm API key..."
-            attempt=0
-            while [ "${attempt}" -lt 20 ]; do
-              attempt=$((attempt + 1))
-              token="$(get_auth_token "${st2_auth_user}" "${st2_auth_password}")"
-              if [ -n "${token}" ]; then
-                new_key="$(create_api_key "${token}")"
-                if [ -n "${new_key}" ] && validate_api_key "${new_key}"; then
-                  upsert_api_key_secret "${new_key}"
-                  echo "✓ StackStorm API key secret updated: ${API_KEY_SECRET}/${API_KEY_FIELD}"
-                  return 0
-                fi
+          wait_for_api_key_secret() {
+            max_retries=120
+            retry=0
+            while [ "${retry}" -lt "${max_retries}" ]; do
+              api_key_value="$(kubectl -n "${NS}" get secret "${API_KEY_SECRET}" -o "jsonpath={.data['${API_KEY_FIELD}']}" 2>/dev/null || true)"
+              if [ -n "${api_key_value}" ]; then
+                return 0
               fi
-              echo "Attempt ${attempt}/20: failed to generate valid API key, retrying..."
-              sleep 4
+              retry=$((retry + 1))
+              sleep 5
             done
-
-            echo "ERROR: failed to generate and store StackStorm API key."
             return 1
           }
 
-          echo "========================================"
-          echo "StackStorm Bootstrap Job"
-          echo "========================================"
-
-          # Resolve API/Auth service endpoints from live cluster naming.
-          st2_api_svc="$(resolve_service_name "st2api")"
-          st2_auth_svc="$(resolve_service_name "st2auth")"
-          if [ -n "${st2_api_svc}" ]; then
-            ST2_API_URL="http://${st2_api_svc}.${NS}.svc.cluster.local:9101"
+          st2_auth_user="${ST2_AUTH_USER_DEFAULT}"
+          st2_auth_password=""
+          discovered_user="$(get_secret_value "${ST2_AUTH_SECRET}" "username")"
+          if [ -n "${discovered_user}" ]; then
+            st2_auth_user="${discovered_user}"
           fi
-          if [ -n "${st2_auth_svc}" ]; then
-            ST2_AUTH_URL="http://${st2_auth_svc}.${NS}.svc.cluster.local:9100"
+          st2_auth_password="$(get_secret_value "${ST2_AUTH_SECRET}" "password")"
+          if [ -z "${st2_auth_password}" ] && [ -n "${ST2_ADMIN_PASSWORD_SECRET}" ] && [ -n "${ST2_ADMIN_PASSWORD_KEY}" ]; then
+            st2_auth_password="$(get_secret_value "${ST2_ADMIN_PASSWORD_SECRET}" "${ST2_ADMIN_PASSWORD_KEY}")"
           fi
-          echo "Using StackStorm API URL: ${ST2_API_URL}"
-          echo "Using StackStorm Auth URL: ${ST2_AUTH_URL}"
 
-          # Clear stale readiness marker for this run.
-          kubectl -n "${NS}" delete secret "${READY_SECRET}" --ignore-not-found >/dev/null
+          if [ -z "${st2_auth_password}" ]; then
+            echo "ERROR: StackStorm admin password could not be resolved."
+            exit 1
+          fi
 
-          {{- if .Values.stackstorm.startupOrder.enabled }}
-          # Stage 1: keep only auth+api up while bootstrap prerequisites complete.
-          scale_component_if_exists "st2stream" 0
-          scale_component_if_exists "st2sensorcontainer" 0
-          scale_component_if_exists "st2rulesengine" 0
-          scale_component_if_exists "st2workflowengine" 0
-          scale_component_if_exists "st2actionrunner" 0
-          scale_component_if_exists "st2scheduler" 0
-          scale_component_if_exists "st2notifier" 0
-          scale_component_if_exists "st2garbagecollector" 0
-          scale_component_if_exists "st2timersengine" 0
-          scale_component_if_exists "st2chatops" 0
-          scale_component_if_exists "st2web" 0
-          {{- end }}
+          echo "Stage 7: stackstorm bootstrap and pack registration."
+          wait_for_api || { echo "ERROR: StackStorm API did not become ready."; exit 1; }
+          wait_for_api_key_secret || { echo "ERROR: missing StackStorm API key secret."; exit 1; }
 
-          # Wait for auth and api to be available.
-          wait_component_rollout_if_exists "st2auth"
-          wait_component_rollout_if_exists "st2api"
-          wait_for_api_ready
+          token="$(get_auth_token "${st2_auth_user}" "${st2_auth_password}")"
+          if [ -z "${token}" ]; then
+            echo "ERROR: failed to acquire auth token for stackstorm bootstrap."
+            exit 1
+          fi
 
-          # Bootstrap / validate st2_api_key and write it into a Kubernetes Secret.
-          ensure_api_key_secret
+          # Register StackStorm packs/content via API.
+          curl -sS -X POST "${ST2_API_URL}/v1/packs/register" \
+            -H "X-Auth-Token: ${token}" \
+            -H "Content-Type: application/json" \
+            -d '{}' >/dev/null
 
-          {{- if .Values.stackstorm.startupOrder.enabled }}
-          # Stage 2: scale remaining StackStorm services to desired replicas.
-          scale_component_if_exists "st2stream" {{ .Values.stackstorm.startupOrder.replicas.st2stream | int }}
-          scale_component_if_exists "st2sensorcontainer" {{ .Values.stackstorm.startupOrder.replicas.st2sensorcontainer | int }}
-          scale_component_if_exists "st2rulesengine" {{ .Values.stackstorm.startupOrder.replicas.st2rulesengine | int }}
-          scale_component_if_exists "st2workflowengine" {{ .Values.stackstorm.startupOrder.replicas.st2workflowengine | int }}
-          scale_component_if_exists "st2actionrunner" {{ .Values.stackstorm.startupOrder.replicas.st2actionrunner | int }}
-          scale_component_if_exists "st2scheduler" {{ .Values.stackstorm.startupOrder.replicas.st2scheduler | int }}
-          scale_component_if_exists "st2notifier" {{ .Values.stackstorm.startupOrder.replicas.st2notifier | int }}
-          scale_component_if_exists "st2garbagecollector" {{ .Values.stackstorm.startupOrder.replicas.st2garbagecollector | int }}
-          scale_component_if_exists "st2timersengine" {{ .Values.stackstorm.startupOrder.replicas.st2timersengine | int }}
-          scale_component_if_exists "st2chatops" {{ .Values.stackstorm.startupOrder.replicas.st2chatops | int }}
-          scale_component_if_exists "st2web" {{ .Values.stackstorm.startupOrder.replicas.st2web | int }}
-          {{- end }}
+          # Validate core actions are queryable after registration.
+          code="$(curl -s -o /dev/null -w "%{http_code}" -H "X-Auth-Token: ${token}" "${ST2_API_URL}/v1/actions?pack=core" || true)"
+          if [ "${code}" != "200" ]; then
+            echo "ERROR: core actions validation failed after bootstrap."
+            exit 1
+          fi
 
-          # Mark bootstrap as complete only after all stages have succeeded.
-          upsert_ready_secret
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          if kubectl -n "${NS}" get secret "${READY_SECRET}" >/dev/null 2>&1; then
+            kubectl -n "${NS}" patch secret "${READY_SECRET}" --type merge \
+              -p "{\"stringData\":{\"ready\":\"true\",\"updatedAt\":\"${ts}\"}}" >/dev/null
+          else
+            kubectl -n "${NS}" create secret generic "${READY_SECRET}" \
+              --from-literal=ready=true \
+              --from-literal=updatedAt="${ts}" >/dev/null
+          fi
 
-          echo "========================================"
-          echo "Bootstrap Complete"
-          echo "========================================"
+          echo "StackStorm bootstrap complete."
 {{- end }}

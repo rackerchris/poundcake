@@ -413,3 +413,36 @@ Standard annotations for chart-managed secrets that must exist before workloads 
 "helm.sh/hook-weight": "-20"
 "helm.sh/hook-delete-policy": before-hook-creation
 {{- end }}
+
+{{/*
+Init container that blocks PoundCake API until MariaDB service endpoints exist.
+*/}}
+{{- define "poundcake.waitForMariadbInitContainer" -}}
+- name: wait-for-mariadb
+  image: bitnami/kubectl:1.30
+  imagePullPolicy: IfNotPresent
+  command:
+    - /bin/sh
+    - -c
+    - |
+      set -e
+      NS="{{ include "poundcake.mariadbNamespace" . }}"
+      DB_SVC="{{ include "poundcake.mariadbName" . }}"
+      MAX_WAIT=900
+      ELAPSED=0
+      INTERVAL=5
+
+      echo "Waiting for MariaDB service endpoints: ${DB_SVC}.${NS}"
+      while [ "${ELAPSED}" -lt "${MAX_WAIT}" ]; do
+        endpoint="$(kubectl -n "${NS}" get endpoints "${DB_SVC}" -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)"
+        if [ -n "${endpoint}" ]; then
+          echo "MariaDB endpoint ready: ${endpoint}"
+          exit 0
+        fi
+        sleep "${INTERVAL}"
+        ELAPSED=$((ELAPSED + INTERVAL))
+      done
+
+      echo "Timed out waiting for MariaDB endpoints."
+      exit 1
+{{- end }}

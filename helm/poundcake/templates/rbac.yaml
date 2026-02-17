@@ -9,7 +9,7 @@ metadata:
 rules:
   # Allow reading services to discover StackStorm
   - apiGroups: [""]
-    resources: ["services"]
+    resources: ["services", "endpoints"]
     verbs: ["get", "list"]
   # Allow managing secrets for StackStorm API key persistence and credentials
   - apiGroups: [""]

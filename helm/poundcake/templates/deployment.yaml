@@ -32,6 +32,9 @@ spec:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
         {{- include "poundcake.waitForStackstormBootstrapInitContainer" . | nindent 8 }}
+        {{- if .Values.mariadbOperator.enabled }}
+        {{- include "poundcake.waitForMariadbInitContainer" . | nindent 8 }}
+        {{- end }}
       containers:
         - name: api
           securityContext:
