@@ -34,6 +34,7 @@ spec:
           set -e
 
           NS="{{ .Release.Namespace }}"
+          RELEASE_NAME="{{ .Release.Name }}"
           ST2_PREFIX="{{ include "poundcake.stackstormSubchartPrefix" . }}"
           API_KEY_SECRET="{{ include "poundcake.stackstormApiKeySecret" . }}"
           API_KEY_FIELD="{{ include "poundcake.stackstormApiKeySecretKey" . }}"
@@ -53,20 +54,48 @@ spec:
             fi
           done
 
-          scale_if_exists() {
-            name="$1"
+          resolve_deployment_name() {
+            component="$1"
+            for candidate in "${ST2_PREFIX}-${component}" "${RELEASE_NAME}-${component}" "${component}"; do
+              if kubectl -n "${NS}" get deployment "${candidate}" >/dev/null 2>&1; then
+                echo "${candidate}"
+                return 0
+              fi
+            done
+
+            kubectl -n "${NS}" get deployment -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+              | grep -E "(-|^)${component}$" | head -n1 || true
+          }
+
+          resolve_service_name() {
+            component="$1"
+            for candidate in "${ST2_PREFIX}-${component}" "${RELEASE_NAME}-${component}" "${component}"; do
+              if kubectl -n "${NS}" get svc "${candidate}" >/dev/null 2>&1; then
+                echo "${candidate}"
+                return 0
+              fi
+            done
+
+            kubectl -n "${NS}" get svc -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+              | grep -E "(-|^)${component}$" | head -n1 || true
+          }
+
+          scale_component_if_exists() {
+            component="$1"
             replicas="$2"
-            if kubectl -n "${NS}" get deployment "${name}" >/dev/null 2>&1; then
+            name="$(resolve_deployment_name "${component}")"
+            if [ -n "${name}" ]; then
               echo "Scaling ${name} -> ${replicas}"
               kubectl -n "${NS}" scale deployment "${name}" --replicas="${replicas}"
             else
-              echo "Skipping ${name} (not found)"
+              echo "Skipping component ${component} (deployment not found)"
             fi
           }
 
-          wait_rollout_if_exists() {
-            name="$1"
-            if kubectl -n "${NS}" get deployment "${name}" >/dev/null 2>&1; then
+          wait_component_rollout_if_exists() {
+            component="$1"
+            name="$(resolve_deployment_name "${component}")"
+            if [ -n "${name}" ]; then
               echo "Waiting for rollout: ${name}"
               kubectl -n "${NS}" rollout status "deployment/${name}" --timeout="${TIMEOUT}"
             fi
@@ -194,27 +223,39 @@ spec:
           echo "StackStorm Bootstrap Job"
           echo "========================================"
 
+          # Resolve API/Auth service endpoints from live cluster naming.
+          st2_api_svc="$(resolve_service_name "st2api")"
+          st2_auth_svc="$(resolve_service_name "st2auth")"
+          if [ -n "${st2_api_svc}" ]; then
+            ST2_API_URL="http://${st2_api_svc}.${NS}.svc.cluster.local:9101"
+          fi
+          if [ -n "${st2_auth_svc}" ]; then
+            ST2_AUTH_URL="http://${st2_auth_svc}.${NS}.svc.cluster.local:9100"
+          fi
+          echo "Using StackStorm API URL: ${ST2_API_URL}"
+          echo "Using StackStorm Auth URL: ${ST2_AUTH_URL}"
+
           # Clear stale readiness marker for this run.
           kubectl -n "${NS}" delete secret "${READY_SECRET}" --ignore-not-found >/dev/null
 
           {{- if .Values.stackstorm.startupOrder.enabled }}
           # Stage 1: keep only auth+api up while bootstrap prerequisites complete.
-          scale_if_exists "${ST2_PREFIX}-st2stream" 0
-          scale_if_exists "${ST2_PREFIX}-st2sensorcontainer" 0
-          scale_if_exists "${ST2_PREFIX}-st2rulesengine" 0
-          scale_if_exists "${ST2_PREFIX}-st2workflowengine" 0
-          scale_if_exists "${ST2_PREFIX}-st2actionrunner" 0
-          scale_if_exists "${ST2_PREFIX}-st2scheduler" 0
-          scale_if_exists "${ST2_PREFIX}-st2notifier" 0
-          scale_if_exists "${ST2_PREFIX}-st2garbagecollector" 0
-          scale_if_exists "${ST2_PREFIX}-st2timersengine" 0
-          scale_if_exists "${ST2_PREFIX}-st2chatops" 0
-          scale_if_exists "${ST2_PREFIX}-st2web" 0
+          scale_component_if_exists "st2stream" 0
+          scale_component_if_exists "st2sensorcontainer" 0
+          scale_component_if_exists "st2rulesengine" 0
+          scale_component_if_exists "st2workflowengine" 0
+          scale_component_if_exists "st2actionrunner" 0
+          scale_component_if_exists "st2scheduler" 0
+          scale_component_if_exists "st2notifier" 0
+          scale_component_if_exists "st2garbagecollector" 0
+          scale_component_if_exists "st2timersengine" 0
+          scale_component_if_exists "st2chatops" 0
+          scale_component_if_exists "st2web" 0
           {{- end }}
 
           # Wait for auth and api to be available.
-          wait_rollout_if_exists "${ST2_PREFIX}-st2auth"
-          wait_rollout_if_exists "${ST2_PREFIX}-st2api"
+          wait_component_rollout_if_exists "st2auth"
+          wait_component_rollout_if_exists "st2api"
           wait_for_api_ready
 
           # Bootstrap / validate st2_api_key and write it into a Kubernetes Secret.
@@ -222,17 +263,17 @@ spec:
 
           {{- if .Values.stackstorm.startupOrder.enabled }}
           # Stage 2: scale remaining StackStorm services to desired replicas.
-          scale_if_exists "${ST2_PREFIX}-st2stream" {{ .Values.stackstorm.startupOrder.replicas.st2stream | int }}
-          scale_if_exists "${ST2_PREFIX}-st2sensorcontainer" {{ .Values.stackstorm.startupOrder.replicas.st2sensorcontainer | int }}
-          scale_if_exists "${ST2_PREFIX}-st2rulesengine" {{ .Values.stackstorm.startupOrder.replicas.st2rulesengine | int }}
-          scale_if_exists "${ST2_PREFIX}-st2workflowengine" {{ .Values.stackstorm.startupOrder.replicas.st2workflowengine | int }}
-          scale_if_exists "${ST2_PREFIX}-st2actionrunner" {{ .Values.stackstorm.startupOrder.replicas.st2actionrunner | int }}
-          scale_if_exists "${ST2_PREFIX}-st2scheduler" {{ .Values.stackstorm.startupOrder.replicas.st2scheduler | int }}
-          scale_if_exists "${ST2_PREFIX}-st2notifier" {{ .Values.stackstorm.startupOrder.replicas.st2notifier | int }}
-          scale_if_exists "${ST2_PREFIX}-st2garbagecollector" {{ .Values.stackstorm.startupOrder.replicas.st2garbagecollector | int }}
-          scale_if_exists "${ST2_PREFIX}-st2timersengine" {{ .Values.stackstorm.startupOrder.replicas.st2timersengine | int }}
-          scale_if_exists "${ST2_PREFIX}-st2chatops" {{ .Values.stackstorm.startupOrder.replicas.st2chatops | int }}
-          scale_if_exists "${ST2_PREFIX}-st2web" {{ .Values.stackstorm.startupOrder.replicas.st2web | int }}
+          scale_component_if_exists "st2stream" {{ .Values.stackstorm.startupOrder.replicas.st2stream | int }}
+          scale_component_if_exists "st2sensorcontainer" {{ .Values.stackstorm.startupOrder.replicas.st2sensorcontainer | int }}
+          scale_component_if_exists "st2rulesengine" {{ .Values.stackstorm.startupOrder.replicas.st2rulesengine | int }}
+          scale_component_if_exists "st2workflowengine" {{ .Values.stackstorm.startupOrder.replicas.st2workflowengine | int }}
+          scale_component_if_exists "st2actionrunner" {{ .Values.stackstorm.startupOrder.replicas.st2actionrunner | int }}
+          scale_component_if_exists "st2scheduler" {{ .Values.stackstorm.startupOrder.replicas.st2scheduler | int }}
+          scale_component_if_exists "st2notifier" {{ .Values.stackstorm.startupOrder.replicas.st2notifier | int }}
+          scale_component_if_exists "st2garbagecollector" {{ .Values.stackstorm.startupOrder.replicas.st2garbagecollector | int }}
+          scale_component_if_exists "st2timersengine" {{ .Values.stackstorm.startupOrder.replicas.st2timersengine | int }}
+          scale_component_if_exists "st2chatops" {{ .Values.stackstorm.startupOrder.replicas.st2chatops | int }}
+          scale_component_if_exists "st2web" {{ .Values.stackstorm.startupOrder.replicas.st2web | int }}
           {{- end }}
 
           # Mark bootstrap as complete only after all stages have succeeded.

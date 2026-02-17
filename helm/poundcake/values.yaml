@@ -206,8 +206,9 @@ stackstorm:
   # Adjust these if your stackstorm-ha chart version uses different secret naming/keys.
   subchart:
     # Set the stackstorm-ha full resource prefix.
-    # Example "st2" yields resources like st2-st2api, st2-st2auth, st2-st2client.
-    fullnameOverride: "st2"
+    # Leave empty to use release-name resources (for example: poundcake-st2api).
+    # If you set this, also set stackstorm-chart.fullnameOverride to the same value.
+    fullnameOverride: ""
     apiKeySecretName: ""
     apiKeySecretKey: "st2_api_key"
   # Auto-discovery settings
@@ -250,8 +251,9 @@ stackstorm:
 # StackStorm subchart configuration
 # These values are passed to the stackstorm-ha subchart when stackstorm.chart.enabled = true
 stackstorm-chart:
-  # Keep StackStorm resources free of the poundcake release prefix.
-  fullnameOverride: "st2"
+  # Keep empty by default so StackStorm resource naming follows Helm release name.
+  # If set, keep this aligned with stackstorm.subchart.fullnameOverride.
+  fullnameOverride: ""
 
   # Pin StackStorm image version to avoid drift.
   # Keep this aligned with your target StackStorm release.
@@ -306,6 +308,49 @@ stackstorm-chart:
       repository: stackstorm/st2actionrunner
       tag: "3.9.0"
       pullPolicy: IfNotPresent
+
+  # Boot-order defaults:
+  # start auth/api first; keep other StackStorm services at 0 until bootstrap scales them.
+  # If your stackstorm-ha chart ignores some keys, bootstrap still scales deployments by name.
+  st2api:
+    replicaCount: 1
+    replicas: 1
+  st2auth:
+    replicaCount: 1
+    replicas: 1
+  st2stream:
+    replicaCount: 0
+    replicas: 0
+  st2sensorcontainer:
+    replicaCount: 0
+    replicas: 0
+  st2rulesengine:
+    replicaCount: 0
+    replicas: 0
+  st2workflowengine:
+    replicaCount: 0
+    replicas: 0
+  st2actionrunner:
+    replicaCount: 0
+    replicas: 0
+  st2scheduler:
+    replicaCount: 0
+    replicas: 0
+  st2notifier:
+    replicaCount: 0
+    replicas: 0
+  st2garbagecollector:
+    replicaCount: 0
+    replicas: 0
+  st2timersengine:
+    replicaCount: 0
+    replicas: 0
+  st2chatops:
+    replicaCount: 0
+    replicas: 0
+  st2web:
+    replicaCount: 0
+    replicas: 0
 
 # Redis configuration (used by StackStorm for coordination and optionally by PoundCake for caching)
 # Uses Redis Operator (OpsTree Labs) to deploy Redis
