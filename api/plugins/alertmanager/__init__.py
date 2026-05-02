@@ -1,0 +1,1 @@
+"""Alertmanager service plugin."""

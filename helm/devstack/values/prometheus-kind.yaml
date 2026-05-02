@@ -1,0 +1,319 @@
+# Devstack Prometheus backend for PoundCake plugin validation.
+#
+# This intentionally uses kube-prometheus-stack instead of the plain
+# prometheus chart so Genestack Monitoring rules flow through PrometheusRule
+# CRDs:
+#
+#   Genestack Monitoring sync -> PrometheusRule CRD -> Prometheus Operator -> Prometheus rule groups
+
+fullnameOverride: kube-prometheus-stack
+
+# Prometheus Operator CRDs are installed by helm/devstack/install-prometheus.sh
+# through prometheus-operator-crds so upgrades remain explicit.
+crds:
+  enabled: false
+
+defaultRules:
+  create: false
+
+# Do not install rule content from kube-prometheus-stack. Devstack alert rules
+# are owned by PoundCake plugins as PrometheusRule CRDs and must be selected by
+# label after they are explicitly synced, never auto-loaded from the chart.
+additionalPrometheusRulesMap: {}
+
+grafana:
+  enabled: false
+
+poundcakeWebhook:
+  namespace: poundcake
+  service: poundcake-api
+  port: 8000
+  path: /api/v1/webhook
+  secretName: poundcake-alertmanager-webhook
+  tokenKey: webhook-bearer-token
+
+alertmanager:
+  enabled: true
+  tplConfig: true
+  stringConfig: |-
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: poundcake-webhook
+      group_by:
+        - alertname
+        - service
+      group_wait: 5s
+      group_interval: 30s
+      repeat_interval: 12h
+    receivers:
+      - name: poundcake-webhook
+        webhook_configs:
+          - url: http://{{ .Values.poundcakeWebhook.service }}.{{ .Values.poundcakeWebhook.namespace }}.svc.cluster.local:{{ .Values.poundcakeWebhook.port }}{{ .Values.poundcakeWebhook.path }}
+            send_resolved: true
+            max_alerts: 0
+            http_config:
+              authorization:
+                type: Bearer
+                credentials_file: /etc/alertmanager/secrets/{{ .Values.poundcakeWebhook.secretName }}/{{ .Values.poundcakeWebhook.tokenKey }}
+    inhibit_rules:
+      # When a host is down, suppress all other node alerts for that host.
+      - source_matchers:
+          - group_name = "node-host-down"
+        target_matchers:
+          - group_name =~ "^(node-bonding-degraded|node-clock-not-synchronising|node-clock-skew-detected|node-cpu-high-usage|node-disk-io-saturation|node-file-descriptor-limit|node-filesystem-almost-out-of-files|node-filesystem-almost-out-of-space|node-filesystem-files-filling-up|node-filesystem-space-filling-up|node-high-number-conntrack-entries-used|node-memory-high-utilization|node-memory-major-pages-faults|node-network-interface-flapping|node-network-receive-errs|node-network-transmit-errs|node-raid-degraded|node-raid-disk-failure|node-system-saturation|node-systemd-service-crash-looping|node-systemd-service-failed|node-textfile-collector-scrape-error)$"
+        equal:
+          - instance
+          - node_hostname
+
+      # When a Kubernetes node is NotReady, suppress node-level and pod-level alerts from that node.
+      - source_matchers:
+          - group_name = "kube-node-not-ready"
+        target_matchers:
+          - group_name =~ "^(kubelet-down|kubelet-too-many-pods|kubelet-pleg-duration-high|kubelet-pod-startup-latency-high|kubelet-client-certificate-expiration|kubelet-client-certificate-renewal-errors|kubelet-server-certificate-expiration|kubelet-server-certificate-renewal-errors|kube-proxy-down|cpu-throttling-high|kube-node-pressure|kube-node-unreachable|kube-node-readiness-flapping|kube-node-eviction|kube-pod-not-ready|kube-pod-crash-looping|kube-container-waiting|kube-pod-container-restarts)$"
+        equal:
+          - node
+          - instance
+
+      # When the critical pod restart alert fires, suppress the warning for the same pod container.
+      - source_matchers:
+          - group_name = "kube-pod-container-restarts"
+          - severity = "critical"
+        target_matchers:
+          - group_name = "kube-pod-container-restarts"
+          - severity = "warning"
+        equal:
+          - cluster
+          - namespace
+          - pod
+          - container
+
+      # When an etcd critical alert fires, suppress the warning for the same etcd target.
+      - source_matchers:
+          - severity = "critical"
+          - group_name =~ "^etcd-.+$"
+        target_matchers:
+          - severity = "warning"
+          - group_name =~ "^etcd-.+$"
+        equal:
+          - cluster
+          - job
+          - instance
+
+      # When a blackbox critical alert fires, suppress the warning for the same target.
+      - source_matchers:
+          - severity = "critical"
+          - group_name =~ "^blackbox-.+$"
+        target_matchers:
+          - severity = "warning"
+          - group_name =~ "^blackbox-.+$"
+        equal:
+          - cluster
+          - job
+          - instance
+          - target
+
+      # When a MariaDB critical alert fires, suppress the warning for the same target.
+      - source_matchers:
+          - severity = "critical"
+          - group_name =~ "^mariadb-.+$"
+        target_matchers:
+          - severity = "warning"
+          - group_name =~ "^mariadb-.+$"
+        equal:
+          - cluster
+          - job
+          - instance
+
+      # When a Kubernetes critical alert fires, suppress the warning for the same target.
+      - source_matchers:
+          - severity = "critical"
+          - group_name =~ "^(kube-.+|kubelet-.+|cpu-throttling-high)$"
+        target_matchers:
+          - severity = "warning"
+          - group_name =~ "^(kube-.+|kubelet-.+|cpu-throttling-high)$"
+        equal:
+          - cluster
+          - job
+          - instance
+          - namespace
+          - node
+          - pod
+          - container
+          - persistentvolumeclaim
+          - daemonset
+          - deployment
+          - statefulset
+          - horizontalpodautoscaler
+          - replicaset
+          - endpoint
+          - service
+          - quota
+          - resourcequota
+
+      # When a node critical alert fires, suppress the warning for the same host.
+      - source_matchers:
+          - severity = "critical"
+          - group_name =~ "^node-.+$"
+        target_matchers:
+          - severity = "warning"
+          - group_name =~ "^node-.+$"
+        equal:
+          - cluster
+          - job
+          - instance
+          - node_hostname
+          - device
+          - mountpoint
+          - interface
+          - name
+
+      # When a promoted node critical alert fires, suppress the warning for the same host.
+      - source_matchers:
+          - severity = "critical"
+          - group_name =~ "^node-(md|dm|nvme).+$"
+        target_matchers:
+          - severity = "warning"
+          - group_name =~ "^node-(md|dm|nvme).+$"
+        equal:
+          - instance
+          - node_hostname
+
+      # When an OpenStack critical alert fires, suppress the warning for the same target.
+      - source_matchers:
+          - severity = "critical"
+          - group_name =~ "^openstack-.+$"
+        target_matchers:
+          - severity = "warning"
+          - group_name =~ "^openstack-.+$"
+        equal:
+          - cluster
+          - job
+          - instance
+          - namespace
+          - service
+          - vhost
+          - id
+          - name
+
+      # When an OVN critical alert fires, suppress the warning for the same backup target.
+      - source_matchers:
+          - severity = "critical"
+          - group_name =~ "^ovn-.+$"
+        target_matchers:
+          - severity = "warning"
+          - group_name =~ "^ovn-.+$"
+        equal:
+          - cluster
+          - job
+          - instance
+
+      # When a Prometheus-stack critical alert fires, suppress the warning for the same target.
+      - source_matchers:
+          - severity = "critical"
+          - group_name =~ "^(alertmanager|config-reloaders|prometheus|prometheus-operator).+$|^target-down$"
+        target_matchers:
+          - severity = "warning"
+          - group_name =~ "^(alertmanager|config-reloaders|prometheus|prometheus-operator).+$|^target-down$"
+        equal:
+          - cluster
+          - job
+          - instance
+          - namespace
+          - service
+          - controller
+          - integration
+          - alertmanager
+          - url
+
+      # When a RabbitMQ critical alert fires, suppress the warning for the same target.
+      - source_matchers:
+          - severity = "critical"
+          - group_name =~ "^rabbitmq-.+$"
+        target_matchers:
+          - severity = "warning"
+          - group_name =~ "^rabbitmq-.+$"
+        equal:
+          - cluster
+          - namespace
+          - rabbitmq_cluster
+          - rabbitmq_node
+          - pod
+          - queue
+          - vhost
+          - statefulset
+          - persistentvolumeclaim
+          - container
+  alertmanagerSpec:
+    replicas: 1
+    retention: 6h
+    storage: {}
+    secrets:
+      - poundcake-alertmanager-webhook
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 150m
+        memory: 256Mi
+
+kubeStateMetrics:
+  enabled: false
+
+kube-state-metrics:
+  enabled: false
+
+nodeExporter:
+  enabled: false
+
+prometheus-node-exporter:
+  enabled: false
+
+prometheusOperator:
+  enabled: true
+  resources:
+    requests:
+      cpu: 25m
+      memory: 96Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+prometheus:
+  enabled: true
+  service:
+    port: 9090
+  prometheusSpec:
+    replicas: 1
+    scrapeInterval: 15s
+    scrapeTimeout: 10s
+    evaluationInterval: 15s
+    retention: 6h
+    storageSpec: {}
+    ruleSelectorNilUsesHelmValues: false
+    ruleSelector:
+      matchLabels:
+        managed-by: poundcake
+    ruleNamespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: monitoring
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelector: {}
+    scrapeConfigSelectorNilUsesHelmValues: false
+    scrapeConfigSelector: {}
+    additionalScrapeConfigs:
+      - job_name: poundcake-api
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - poundcake-api.poundcake.svc.cluster.local:8000
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 512Mi

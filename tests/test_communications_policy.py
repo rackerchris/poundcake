@@ -1,0 +1,264 @@
+"""Tests for provider-neutral PoundCake communications policy."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from api.plugins.contract import ServicePluginContractError, validate_service_payload
+from api.plugins.dummy.templates import DUMMY_INGREDIENT_TEMPLATES
+from api.schemas.schemas import CommunicationPolicyUpdate
+from api.services.communications_policy import (
+    _apply_step_spec,
+    _group_routes_from_steps,
+    _managed_step_key_from_recipe_ingredient,
+    _step_matches_spec,
+    build_recipe_local_policy_step_specs,
+    replace_recipe_communication_steps,
+)
+from kitchen.execution_segments import next_pending_execution_segment
+
+
+def _dummy_template(service_exec: str) -> dict[object, object]:
+    for template in DUMMY_INGREDIENT_TEMPLATES:
+        if template["service_exec"] == service_exec and template["ingredient_purpose"] == "comms":
+            return template
+    raise AssertionError(f"missing dummy comms template: {service_exec}")
+
+
+def test_comms_policy_accepts_service_plugin_route() -> None:
+    payload = CommunicationPolicyUpdate.model_validate(
+        {
+            "routes": [
+                {
+                    "label": "Dummy comms",
+                    "service_type": "dummy",
+                    "destination_target": "dummy",
+                    "provider_config": {},
+                    "enabled": True,
+                    "position": 1,
+                }
+            ]
+        }
+    )
+
+    routes, specs = build_recipe_local_policy_step_specs(
+        recipe_id=1,
+        routes=[item.model_dump() for item in payload.routes],
+    )
+
+    assert [route.service_type for route in routes] == ["dummy"]
+    assert {spec["service_type"] for spec in specs} == {"dummy"}
+    assert {"open", "notify", "close"} <= {spec["service_exec"] for spec in specs}
+
+
+def test_managed_comms_steps_are_late_isolated_execution_buckets() -> None:
+    _routes, specs = build_recipe_local_policy_step_specs(
+        recipe_id=1,
+        routes=[
+            {
+                "label": "Dummy comms",
+                "service_type": "dummy",
+                "destination_target": "dummy",
+                "provider_config": {},
+                "enabled": True,
+                "position": 0,
+            }
+        ],
+    )
+
+    assert all(int(spec["step_order"]) >= 1000 for spec in specs)
+    assert all(spec["depth"] == spec["step_order"] for spec in specs)
+    assert all(spec["parallel_group"] == 0 for spec in specs)
+
+
+def test_group_routes_reads_managed_metadata_from_recipe_step_payload() -> None:
+    _routes, specs = build_recipe_local_policy_step_specs(
+        recipe_id=1,
+        routes=[
+            {
+                "id": "dummy-default",
+                "label": "Dummy comms",
+                "service_type": "dummy",
+                "destination_target": "dummy",
+                "provider_config": {},
+                "enabled": True,
+                "position": 1,
+            }
+        ],
+    )
+    step = SimpleNamespace(
+        service_payload=specs[0]["service_payload"],
+        ingredient=SimpleNamespace(
+            ingredient_purpose="comms",
+            service_payload_template={},
+        ),
+    )
+
+    grouped = _group_routes_from_steps([step])
+
+    assert [route.id for route in grouped] == ["dummy-default"]
+
+
+def test_managed_comms_step_identity_is_stable_for_in_place_reconcile() -> None:
+    _routes, specs = build_recipe_local_policy_step_specs(
+        recipe_id=1,
+        routes=[
+            {
+                "id": "dummy-default",
+                "label": "Dummy comms",
+                "service_type": "dummy",
+                "destination_target": "dummy",
+                "provider_config": {},
+                "enabled": True,
+                "position": 1,
+            }
+        ],
+    )
+    spec = dict(specs[0])
+    spec.update(
+        {
+            "ingredient_id": 10,
+            "service_exec_expected_secs": 5,
+            "service_exec_timeout": 30,
+        }
+    )
+    step = SimpleNamespace(
+        ingredient_id=10,
+        step_order=1,
+        on_success="stop",
+        parallel_group=9,
+        depth=9,
+        service_payload=spec["service_payload"],
+        service_exec_parameters_override={},
+        service_exec_expected_secs=1,
+        service_exec_timeout=2,
+        service_exec_expected_outcome={},
+        run_phase="both",
+        run_condition="always",
+        ingredient=SimpleNamespace(
+            ingredient_purpose="comms",
+            service_payload_template={},
+        ),
+    )
+
+    assert _managed_step_key_from_recipe_ingredient(step) == spec["task_key_template"]
+    assert not _step_matches_spec(step, spec)
+
+    _apply_step_spec(step, spec)
+
+    assert _step_matches_spec(step, spec)
+
+
+@pytest.mark.asyncio
+async def test_replace_recipe_communication_steps_reuses_existing_managed_step() -> None:
+    _routes, specs = build_recipe_local_policy_step_specs(
+        recipe_id=1,
+        routes=[
+            {
+                "id": "dummy-default",
+                "label": "Dummy comms",
+                "service_type": "dummy",
+                "destination_target": "dummy",
+                "provider_config": {},
+                "enabled": True,
+                "position": 1,
+            }
+        ],
+    )
+    ingredient = SimpleNamespace(
+        id=10,
+        service_type="dummy",
+        service_exec="communication",
+        ingredient_purpose="comms",
+        is_active=True,
+        deleted=False,
+        payload_schema=_dummy_template("communication")["payload_schema"],
+        service_exec_parameters={
+            "operation": "open",
+            "allowed_operations": ["open", "notify", "update", "close"],
+        },
+        default_expected_secs=5,
+        default_timeout=30,
+    )
+    existing_step = SimpleNamespace(
+        id=99,
+        ingredient_id=10,
+        step_order=1,
+        on_success="stop",
+        parallel_group=9,
+        depth=9,
+        service_payload=specs[0]["service_payload"],
+        service_exec_parameters_override={},
+        service_exec_expected_secs=1,
+        service_exec_timeout=2,
+        service_exec_expected_outcome={},
+        run_phase="both",
+        run_condition="always",
+        ingredient=ingredient,
+    )
+    recipe = SimpleNamespace(id=1, recipe_ingredients=[existing_step])
+
+    class _ScalarResult:
+        def all(self) -> list[SimpleNamespace]:
+            return [ingredient]
+
+    class _ExecuteResult:
+        def scalars(self) -> _ScalarResult:
+            return _ScalarResult()
+
+    class _Session:
+        def __init__(self) -> None:
+            self.added: list[object] = []
+
+        async def execute(self, _statement: object) -> _ExecuteResult:
+            return _ExecuteResult()
+
+        def add(self, item: object) -> None:
+            self.added.append(item)
+
+    session = _Session()
+
+    await replace_recipe_communication_steps(session, recipe=recipe, step_specs=specs)
+
+    assert len(session.added) == len(specs) - 1
+    assert existing_step.id == 99
+    assert existing_step.step_order == specs[0]["step_order"]
+    assert existing_step.on_success == specs[0]["on_success"]
+
+
+def test_comms_depth_keeps_policy_step_after_remediation_bucket() -> None:
+    rows = [
+        {
+            "id": 1,
+            "service_type": "dummy",
+            "service_exec": "positive_result",
+            "service_exec_status": "pending",
+            "step_order": 1,
+            "depth": 0,
+            "parallel_group": 0,
+        },
+        {
+            "id": 2,
+            "service_type": "dummy",
+            "service_exec": "communication",
+            "service_exec_status": "pending",
+            "step_order": 1000,
+            "depth": 1000,
+            "parallel_group": 0,
+        },
+    ]
+
+    segment = next_pending_execution_segment({"id": 99, "recipe": {}}, rows)
+
+    assert segment is not None
+    assert [row["id"] for row in segment.rows] == [1]
+
+
+def test_dummy_comms_template_rejects_invalid_filled_payload() -> None:
+    template = _dummy_template("communication")
+    with pytest.raises(ServicePluginContractError):
+        validate_service_payload(
+            {"message": "missing title and description"}, template["payload_schema"]
+        )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from api.types import JSONObject
+
 import json
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -53,7 +55,7 @@ class AlertRuleRepoEntry:
 
     alert_name: str
     group_name: str
-    rule_data: dict[str, Any]
+    rule_data: JSONObject
     source: AlertRuleSource
 
 
@@ -94,7 +96,7 @@ def looks_like_repo_relative_rule_path(value: str) -> bool:
     return raw.endswith((".json", ".yaml", ".yml"))
 
 
-def iter_rule_groups(document: Any) -> list[tuple[dict[str, Any], str, str | None]]:
+def iter_rule_groups(document: Any) -> list[tuple[JSONObject, str, str | None]]:
     """Extract rule-group payloads from supported alert-rule document shapes."""
     if not document:
         return []
@@ -107,7 +109,7 @@ def iter_rule_groups(document: Any) -> list[tuple[dict[str, Any], str, str | Non
     if not isinstance(document, dict):
         raise ValueError("alert rule document must be an object or list")
 
-    groups: list[tuple[dict[str, Any], str, str | None]] = []
+    groups: list[tuple[JSONObject, str, str | None]] = []
 
     direct_groups = document.get("groups")
     if isinstance(direct_groups, list):
@@ -241,7 +243,7 @@ def load_alert_rule_sources_from_annotations(annotations: Any) -> dict[str, Aler
 def dump_alert_rule_sources_to_annotations(
     existing_annotations: Any,
     sources: dict[str, AlertRuleSource],
-) -> dict[str, Any]:
+) -> JSONObject:
     """Encode per-alert source metadata onto a CRD annotation map."""
     annotations = dict(existing_annotations or {})
     if not sources:
@@ -268,7 +270,7 @@ def document_has_rules(document: Any) -> bool:
     return False
 
 
-def _ensure_group_entry(groups: list[dict[str, Any]], group_name: str) -> dict[str, Any]:
+def _ensure_group_entry(groups: list[JSONObject], group_name: str) -> JSONObject:
     for group in groups:
         if group.get("name") == group_name:
             if not isinstance(group.get("rules"), list):
@@ -285,7 +287,7 @@ def upsert_rule_in_document(
     source: AlertRuleSource,
     group_name: str,
     rule_name: str,
-    rule_data: dict[str, Any],
+    rule_data: JSONObject,
 ) -> Any:
     """Insert or update a rule in a parsed alert-rule document."""
     payload = dict(rule_data)
@@ -477,7 +479,7 @@ def delete_rule_from_document(
 
 
 def render_alert_rule_document(
-    records: list[tuple[str, dict[str, Any], AlertRuleSource]],
+    records: list[tuple[str, JSONObject, AlertRuleSource]],
     *,
     relative_path: str,
 ) -> Any:
@@ -491,7 +493,7 @@ def render_alert_rule_document(
     source_format = next(iter(source_formats))
 
     if source_format == ALERT_RULE_SOURCE_FORMAT_GROUP_LIST:
-        groups: dict[str, dict[str, Any]] = {}
+        groups: dict[str, JSONObject] = {}
         for group_name, rule_data, _source in records:
             group = groups.setdefault(group_name, {"name": group_name, "rules": []})
             group["rules"].append(dict(rule_data))
@@ -510,14 +512,14 @@ def render_alert_rule_document(
         }
 
     if source_format == ALERT_RULE_SOURCE_FORMAT_SPEC_GROUPS:
-        spec_groups: dict[str, dict[str, Any]] = {}
+        spec_groups: dict[str, JSONObject] = {}
         for group_name, rule_data, _source in records:
             group = spec_groups.setdefault(group_name, {"name": group_name, "rules": []})
             group["rules"].append(dict(rule_data))
         return {"spec": {"groups": list(spec_groups.values())}}
 
     if source_format == ALERT_RULE_SOURCE_FORMAT_ADDITIONAL_MAP:
-        wrapper_groups: dict[str, dict[str, dict[str, Any]]] = {}
+        wrapper_groups: dict[str, dict[str, JSONObject]] = {}
         for group_name, rule_data, source in records:
             wrapper_key = source.wrapper_key or default_wrapper_key_for_path(relative_path)
             groups = wrapper_groups.setdefault(wrapper_key, {})

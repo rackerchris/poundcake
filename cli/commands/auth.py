@@ -166,7 +166,8 @@ def login_cmd(
                 "is_superuser": result.is_superuser,
                 "permissions": result.permissions or [],
                 "expires_at": result.expires_at,
-                "token_type": result.token_type,
+                "credential_type": "session_token",
+                "session_token": result.session_id,
             },
             output_format,
         )

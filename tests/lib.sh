@@ -1,39 +1,22 @@
 #!/usr/bin/env bash
-# Shared helpers for shell-based e2e tests.
+# Shared helpers for PoundCake E2E tests — all API calls via cakectl CLI.
 
-: "${TEST_TARGET:=compose}"
-: "${POUNDCAKE_NAMESPACE:=poundcake}"
-: "${POUNDCAKE_API_SERVICE:=poundcake-api}"
-: "${POUNDCAKE_LOCAL_PORT:=8000}"
-: "${POUNDCAKE_REMOTE_PORT:=8000}"
-: "${POUNDCAKE_AUTH_SERVICE_TOKEN:=}"
-: "${POUNDCAKE_SESSION_TOKEN:=}"
-: "${ENABLE_PORT_FORWARD:=0}"
-: "${TEST_TIMEOUT_SEC:=30}"
-: "${POLL_INTERVAL_SEC:=2}"
+set -euo pipefail
+
+: "${API_URL:=http://localhost:8000/api/v1}"
+: "${API_ROOT_URL:=}"
+: "${AUTH_USERNAME:=admin}"
+: "${AUTH_PASSWORD:=poundcake-dev}"
+: "${AUTH_PROVIDER:=local}"
+: "${WEBHOOK_BEARER_TOKEN:=}"
+: "${TEST_TIMEOUT_SEC:=60}"
+: "${POLL_INTERVAL_SEC:=1}"
 : "${DEBUG:=0}"
-: "${TEST_TARGET_STARTED:=0}"
-: "${TEST_AUTH_PREFLIGHT_DONE:=0}"
-
-if [ -z "${API_URL:-}" ]; then
-  if [ "${TEST_TARGET}" = "k8s" ]; then
-    API_URL="http://${POUNDCAKE_API_SERVICE}.${POUNDCAKE_NAMESPACE}.svc.cluster.local:${POUNDCAKE_REMOTE_PORT}/api/v1"
-  else
-    API_URL="http://localhost:8000/api/v1"
-  fi
-  if [ "${DEBUG}" = "1" ]; then
-    echo "[DEBUG] API_URL defaulted by lib.sh to ${API_URL}" >&2
-  fi
-elif [ "${DEBUG}" = "1" ]; then
-  echo "[DEBUG] API_URL inherited by lib.sh as ${API_URL}" >&2
-fi
+: "${CAKECTL:=cakectl}"
+: "${CAKECTL_URL:=}"
 
 log_info() {
   echo "[INFO] $*"
-}
-
-log_warn() {
-  echo "[WARN] $*" >&2
 }
 
 log_error() {
@@ -46,43 +29,6 @@ debug_log() {
   fi
 }
 
-generate_test_suffix() {
-  local suffix
-  suffix="$(date +%s%N 2>/dev/null || true)"
-  case "${suffix}" in
-    ""|*N*)
-      suffix="$(date +%s)-$$-${RANDOM}"
-      ;;
-  esac
-  echo "${suffix}"
-}
-
-request_uses_service_auth() {
-  local method="$1"
-  local url="$2"
-  local path="${url#*//*/}"
-
-  case "${method}:${path}" in
-    POST:api/v1/webhook)
-      return 0
-      ;;
-    *:api/v1/suppressions/run-lifecycle)
-      return 0
-      ;;
-    POST:api/v1/orders|POST:api/v1/orders/*|PUT:api/v1/orders/*|PATCH:api/v1/orders/*|DELETE:api/v1/orders/*)
-      return 0
-      ;;
-    POST:api/v1/dishes/*|PUT:api/v1/dishes/*|PATCH:api/v1/dishes/*|DELETE:api/v1/dishes/*)
-      return 0
-      ;;
-    POST:api/v1/cook/*|PUT:api/v1/cook/*|PATCH:api/v1/cook/*|DELETE:api/v1/cook/*)
-      return 0
-      ;;
-  esac
-
-  return 1
-}
-
 require_cmd() {
   local cmd="$1"
   if ! command -v "${cmd}" >/dev/null 2>&1; then
@@ -91,246 +37,318 @@ require_cmd() {
   fi
 }
 
-json_get() {
-  local expr="$1"
-  if ! jq -er "${expr}"; then
-    log_error "jq query failed: ${expr}"
-    exit 1
-  fi
+generate_test_suffix() {
+  local suffix
+  suffix="$(date +%s%N 2>/dev/null || true)"
+  case "${suffix}" in
+    ""|*N*) suffix="$(date +%s)-$$-${RANDOM}" ;;
+  esac
+  echo "${suffix}"
 }
 
 api_request_json() {
   local method="$1"
-  local url="$2"
+  local path="$2"
   local data="${3:-}"
-  local resp body code
-  local curl_args=("-sS" "-X" "${method}" "${url}")
+  local url="${API_URL}${path}"
 
-  if request_uses_service_auth "${method}" "${url}"; then
-    if [ -n "${POUNDCAKE_AUTH_SERVICE_TOKEN}" ]; then
-      curl_args+=("-H" "X-Auth-Token: ${POUNDCAKE_AUTH_SERVICE_TOKEN}")
-    elif [ -n "${POUNDCAKE_SESSION_TOKEN}" ]; then
-      curl_args+=("--cookie" "session_token=${POUNDCAKE_SESSION_TOKEN}")
-    fi
-  else
-    if [ -n "${POUNDCAKE_SESSION_TOKEN}" ]; then
-      curl_args+=("--cookie" "session_token=${POUNDCAKE_SESSION_TOKEN}")
-    elif [ -n "${POUNDCAKE_AUTH_SERVICE_TOKEN}" ]; then
-      curl_args+=("-H" "X-Auth-Token: ${POUNDCAKE_AUTH_SERVICE_TOKEN}")
-    fi
-  fi
-
+  local extra=()
   if [ -n "${REQUEST_ID:-}" ]; then
-    curl_args+=("-H" "X-Request-ID: ${REQUEST_ID}")
+    extra+=("--header" "X-Request-ID: ${REQUEST_ID}")
   fi
 
+  # Webhook endpoint: no-session + Bearer token
+  if [ "${path}" = "/webhook" ] && [ -n "${WEBHOOK_BEARER_TOKEN}" ]; then
+    extra=("--no-session" "--header" "Authorization: Bearer ${WEBHOOK_BEARER_TOKEN}")
+    method="POST"
+  fi
+
+  local body_file=""
   if [ -n "${data}" ]; then
-    curl_args+=("-H" "Content-Type: application/json" "-d" "${data}")
-  else
-    :
+    body_file="$(mktemp)"
+    printf '%s' "${data}" > "${body_file}"
   fi
 
-  resp=$(curl "${curl_args[@]}" -w $'\n%{http_code}')
-  code="${resp##*$'\n'}"
-  body="${resp%$'\n'*}"
-  debug_log "${method} ${url} -> HTTP ${code}"
-
-  if [ "${code}" -lt 200 ] || [ "${code}" -ge 300 ]; then
-    log_error "API request failed: ${method} ${url} (HTTP ${code})"
-    echo "${body}" >&2
+  local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
+  local resp
+  resp="$(${CAKECTL} ${cf:-} --format json api request \
+    GET "${path#}" \
+    "${extra[@]}" \
+    ${body_file:+--body-file "${body_file}"})" 2>/dev/null || {
+    log_error "API request failed: ${method} ${url}"
+    echo "Command was: ${CAKECTL} ${cf:-} --format json api request GET ${path#} ${body_file:+--body-file ${body_file}}" >&2
+    rm -f "${body_file}"
     exit 1
-  fi
-
-  if ! echo "${body}" | jq -e . >/dev/null 2>&1; then
-    log_error "API response is not valid JSON: ${method} ${url}"
-    echo "${body}" >&2
-    exit 1
-  fi
-
-  echo "${body}"
-}
-
-run_step() {
-  local label="$1"
-  shift
-  log_info "START ${label}"
-  if "$@"; then
-    log_info "OK ${label}"
-  else
-    local rc=$?
-    log_error "FAIL ${label} (exit ${rc})"
-    return "${rc}"
-  fi
-}
-
-append_no_proxy_localhost() {
-  local current="${1:-}"
-  local needed=("localhost" "127.0.0.1" "::1")
-  local out="${current}"
-  local item
-  for item in "${needed[@]}"; do
-    if [[ ",${out}," != *",${item},"* ]]; then
-      if [ -n "${out}" ]; then
-        out="${out},${item}"
-      else
-        out="${item}"
-      fi
-    fi
-  done
-  echo "${out}"
+  }
+  rm -f "${body_file}"
+  printf '%s' "${resp}"
 }
 
 wait_for_api_ready() {
-  local timeout="${1:-20}"
   local start now
+  local api_root="${API_ROOT_URL:-${API_URL%/api/v1}}"
+  local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
+  local cake_flags="${cf:--u ${api_root}}"
   start=$(date +%s)
   while true; do
-    if curl -sS -o /dev/null -m 2 "${API_URL}/health"; then
-      return 0
+    local status
+    if status=$(${CAKECTL} ${cake_flags} ready --format json 2>/dev/null); then
+      local ready_status
+      ready_status="$(echo "${status}" | jq -r '.status // ""' 2>/dev/null || true)"
+      if [ "${ready_status}" = "healthy" ]; then
+        return 0
+      fi
     fi
     now=$(date +%s)
-    if [ $((now - start)) -ge "${timeout}" ]; then
-      return 1
+    if [ $((now - start)) -ge "${TEST_TIMEOUT_SEC}" ]; then
+      log_error "Timed out waiting for ready health check"
+      echo "${status}" >&2
+      exit 1
     fi
-    sleep 1
+    sleep "${POLL_INTERVAL_SEC}"
   done
 }
 
-check_e2e_auth_preflight() {
-  if [ "${TEST_AUTH_PREFLIGHT_DONE}" = "1" ]; then
-    debug_log "Auth preflight already completed; skipping"
+authenticate_api_if_required() {
+  local api_root="${API_URL%/api/v1}"
+  local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
+  local cake_flags="${cf:--u ${api_root}}"
+
+  local providers
+  providers="$(${CAKECTL} ${cake_flags} auth providers --format json 2>/dev/null)" || return 0
+  if ! echo "${providers}" | jq -e \
+    --arg provider "${AUTH_PROVIDER}" \
+    '.[] | select(.name == $provider and .password_login == true)' >/dev/null 2>&1; then
     return 0
   fi
-
-  local settings_url="${API_URL}/settings"
-  local curl_args=("-sS" "${settings_url}")
-  local resp body code auth_enabled
-
-  if [ -n "${POUNDCAKE_AUTH_SERVICE_TOKEN}" ]; then
-    curl_args+=("-H" "X-Auth-Token: ${POUNDCAKE_AUTH_SERVICE_TOKEN}")
-  elif [ -n "${POUNDCAKE_SESSION_TOKEN}" ]; then
-    curl_args+=("--cookie" "session_token=${POUNDCAKE_SESSION_TOKEN}")
-  fi
-
-  resp=$(curl "${curl_args[@]}" -w $'\n%{http_code}')
-  code="${resp##*$'\n'}"
-  body="${resp%$'\n'*}"
-  debug_log "Auth preflight GET ${settings_url} -> HTTP ${code}"
-
-  case "${code}" in
-    200)
-      auth_enabled="$(echo "${body}" | jq -r '.auth_enabled')"
-      if [ "${auth_enabled}" != "true" ] && [ "${auth_enabled}" != "false" ]; then
-        log_error "Auth preflight received an unexpected /settings payload from ${settings_url}"
-        echo "${body}" >&2
-        exit 1
-      fi
-      if [ "${auth_enabled}" = "true" ]; then
-        if [ -n "${POUNDCAKE_AUTH_SERVICE_TOKEN}" ]; then
-          log_info "Auth preflight passed using service-token auth"
-        elif [ -n "${POUNDCAKE_SESSION_TOKEN}" ]; then
-          log_info "Auth preflight passed using session-cookie auth"
-        else
-          log_warn "Auth is enabled but settings were reachable without explicit e2e credentials"
-        fi
-      else
-        debug_log "Auth is disabled for ${API_URL}"
-      fi
-      ;;
-    401|403)
-      if [ -n "${POUNDCAKE_AUTH_SERVICE_TOKEN}" ] || [ -n "${POUNDCAKE_SESSION_TOKEN}" ]; then
-        log_error "Auth preflight failed for ${settings_url} (HTTP ${code})"
-        echo "${body}" >&2
-        exit 1
-      fi
-      log_error "Auth appears to be enabled for ${API_URL}, but no e2e credentials were provided"
-      log_error "Set POUNDCAKE_AUTH_SERVICE_TOKEN for internal-service auth or POUNDCAKE_SESSION_TOKEN for a session override"
-      echo "${body}" >&2
-      exit 1
-      ;;
-    *)
-      log_error "Auth preflight could not determine API auth state from ${settings_url} (HTTP ${code})"
-      echo "${body}" >&2
-      exit 1
-      ;;
-  esac
-
-  TEST_AUTH_PREFLIGHT_DONE=1
-  export TEST_AUTH_PREFLIGHT_DONE
+  ${CAKECTL} ${cake_flags} auth login \
+    --provider "${AUTH_PROVIDER}" \
+    --username "${AUTH_USERNAME}" \
+    --password "${AUTH_PASSWORD}" \
+    --format json >/dev/null 2>&1
 }
 
-start_k8s_port_forward() {
-  require_cmd kubectl
+wait_for_plugin_health() {
+  local service_type="$1"
+  local expected="${2:-healthy}"
+  local start now
+  local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
+  local cake_flags="${cf:--u ${API_URL%/api/v1}}"
+  start=$(date +%s)
+  while true; do
+    local health status
+    health="$(${CAKECTL} ${cake_flags} plugin health "${service_type}" --format json 2>/dev/null)" || true
+    status="$(echo "${health}" | jq -r '.health_status' 2>/dev/null)" || status="unknown"
+    if [ "${status}" = "${expected}" ]; then
+      printf '%s' "${health}"
+      return 0
+    fi
+    now=$(date +%s)
+    if [ $((now - start)) -ge "${TEST_TIMEOUT_SEC}" ]; then
+      log_error "Timed out waiting for ${service_type} plugin health=${expected}; actual=${status}"
+      echo "${health:-no output}" | jq . >&2 || true
+      exit 1
+    fi
+    sleep "${POLL_INTERVAL_SEC}"
+  done
+}
 
-  if lsof -iTCP:"${POUNDCAKE_LOCAL_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
-    log_error "Local port ${POUNDCAKE_LOCAL_PORT} is already in use"
-    log_error "Set POUNDCAKE_LOCAL_PORT to an unused port and retry"
+assert_json() {
+  local json="$1"
+  local filter="$2"
+  local message="$3"
+  if ! echo "${json}" | jq -e "${filter}" >/dev/null 2>&1; then
+    log_error "${message}"
+    echo "${json}" | jq . >&2
     exit 1
   fi
+}
 
-  export NO_PROXY
-  export no_proxy
-  NO_PROXY="$(append_no_proxy_localhost "${NO_PROXY:-}")"
-  no_proxy="$(append_no_proxy_localhost "${no_proxy:-}")"
-  debug_log "NO_PROXY=${NO_PROXY}"
-  debug_log "no_proxy=${no_proxy}"
+alertmanager_payload() {
+  local recipe="$1"
+  local status="$2"
+  local fingerprint="$3"
+  local instance="${4:-localhost:9090}"
+  local severity="${5:-critical}"
+  local now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  jq -n \
+    --arg recipe "${recipe}" \
+    --arg status "${status}" \
+    --arg fingerprint "${fingerprint}" \
+    --arg instance "${instance}" \
+    --arg severity "${severity}" \
+    --arg now "${now}" \
+    '{
+      receiver: "poundcake",
+      status: $status,
+      alerts: [
+        {
+          status: $status,
+          fingerprint: $fingerprint,
+          labels: {
+            alertname: "DummyContractE2E",
+            group_name: $recipe,
+            severity: $severity,
+            instance: $instance
+          },
+          annotations: {
+            summary: "Dummy service plugin contract e2e",
+            description: "Generated by tests/run_e2e.sh"
+          },
+          startsAt: $now,
+          endsAt: (if $status == "resolved" then $now else null end),
+          generatorURL: "http://prometheus:9090/graph"
+        }
+      ],
+      groupLabels: {alertname: "DummyContractE2E"},
+      commonLabels: {
+        alertname: "DummyContractE2E",
+        group_name: $recipe
+      },
+      commonAnnotations: {},
+      externalURL: "http://alertmanager:9093",
+      version: "4",
+      groupKey: "{}:{alertname=\"DummyContractE2E\"}"
+    }'
+}
 
-  log_info "Starting kubectl port-forward ${POUNDCAKE_NAMESPACE}/svc/${POUNDCAKE_API_SERVICE} ${POUNDCAKE_LOCAL_PORT}:${POUNDCAKE_REMOTE_PORT}"
-  kubectl -n "${POUNDCAKE_NAMESPACE}" port-forward "svc/${POUNDCAKE_API_SERVICE}" "${POUNDCAKE_LOCAL_PORT}:${POUNDCAKE_REMOTE_PORT}" >/tmp/poundcake-test-portforward.log 2>&1 &
-  TEST_PORT_FORWARD_PID=$!
-  export TEST_PORT_FORWARD_PID
+post_alert() {
+  local recipe="$1"
+  local status="$2"
+  local req_id="$3"
+  local fingerprint="$4"
+  local instance="${5:-localhost:9090}"
+  local severity="${6:-critical}"
+  local payload order_id
 
-  if ! wait_for_api_ready 25; then
-    log_error "Timed out waiting for API readiness via port-forward at ${API_URL}"
-    log_error "kubectl port-forward output:"
-    tail -n 50 /tmp/poundcake-test-portforward.log >&2 || true
-    stop_test_target
+  payload="$(alertmanager_payload "${recipe}" "${status}" "${fingerprint}" "${instance}" "${severity}")"
+
+  local tmpfile
+  tmpfile="$(mktemp)"
+  printf '%s' "${payload}" > "${tmpfile}"
+
+  local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
+  local cake_flags="${cf:--u ${API_URL%/api/v1}}"
+
+  order_id="$(${CAKECTL} ${cake_flags} \
+    --webhook-token "${WEBHOOK_BEARER_TOKEN}" \
+    webhook post -f "${tmpfile}" --order-id-only 2>/dev/null)" || true
+  rm -f "${tmpfile}"
+
+  if [ -z "${order_id}" ] || [ "${order_id}" = "null" ]; then
+    log_error "Webhook response did not include an order id"
+    echo "${payload}" >&2
     exit 1
   fi
-  log_info "Port-forward established and API reachable at ${API_URL}"
+  echo "${order_id}"
 }
 
-start_test_target() {
-  if [ "${TEST_TARGET_STARTED}" = "1" ]; then
-    debug_log "Test target already started; skipping start"
-    return 0
-  fi
-
-  case "${TEST_TARGET}" in
-    compose)
-      log_info "Using compose target with API_URL=${API_URL}"
-      ;;
-    k8s)
-      if [ "${ENABLE_PORT_FORWARD}" = "1" ]; then
-        start_k8s_port_forward
-      else
-        log_info "Using k8s target without port-forward with API_URL=${API_URL}"
-      fi
-      ;;
-    *)
-      log_error "Invalid TEST_TARGET='${TEST_TARGET}' (expected compose or k8s)"
+wait_for_order_status() {
+  local order_id="$1"
+  local expected="$2"
+  local start now
+  local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
+  local cake_flags="${cf:--u ${API_URL%/api/v1}}"
+  start=$(date +%s)
+  while true; do
+    local order_json status
+    order_json="$(${CAKECTL} ${cake_flags} orders show "${order_id}" --format json 2>/dev/null)"
+    status="$(echo "${order_json}" | jq -r '.processing_status')"
+    if [ "${status}" = "${expected}" ]; then
+      printf '%s' "${order_json}"
+      return 0
+    fi
+    now=$(date +%s)
+    if [ $((now - start)) -ge "${TEST_TIMEOUT_SEC}" ]; then
+      log_error "Timed out waiting for order ${order_id} status=${expected}; actual=${status}"
+      echo "${order_json}" | jq . >&2 || true
       exit 1
-      ;;
-  esac
-
-  TEST_TARGET_STARTED=1
-  export TEST_TARGET_STARTED
-  check_e2e_auth_preflight
+    fi
+    sleep "${POLL_INTERVAL_SEC}"
+  done
 }
 
-stop_test_target() {
-  if [ -n "${TEST_PORT_FORWARD_PID:-}" ] && kill -0 "${TEST_PORT_FORWARD_PID}" >/dev/null 2>&1; then
-    log_info "Stopping kubectl port-forward (pid=${TEST_PORT_FORWARD_PID})"
-    kill "${TEST_PORT_FORWARD_PID}" >/dev/null 2>&1 || true
-    wait "${TEST_PORT_FORWARD_PID}" >/dev/null 2>&1 || true
-  fi
+wait_for_order_terminal() {
+  local order_id="$1"
+  local start now status order_json
+  local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
+  local cake_flags="${cf:--u ${API_URL%/api/v1}}"
+  start=$(date +%s)
+  while true; do
+    order_json="$(${CAKECTL} ${cake_flags} orders show "${order_id}" --format json 2>/dev/null)"
+    status="$(echo "${order_json}" | jq -r '.processing_status')"
+    case "${status}" in
+      complete|failed|canceled)
+        printf '%s' "${order_json}"
+        return 0
+        ;;
+    esac
+    now=$(date +%s)
+    if [ $((now - start)) -ge "${TEST_TIMEOUT_SEC}" ]; then
+      log_error "Timed out waiting for order ${order_id} to become terminal; actual=${status}"
+      echo "${order_json}" | jq . >&2 || true
+      exit 1
+    fi
+    sleep "${POLL_INTERVAL_SEC}"
+  done
 }
 
-register_cleanup_trap() {
-  if [ "${TEST_CLEANUP_TRAP_SET:-0}" = "1" ]; then
+collect_order_dishes() {
+  local order_id="$1"
+  local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
+  local cake_flags="${cf:--u ${API_URL%/api/v1}}"
+  ${CAKECTL} ${cake_flags} dishes list --format json \
+    --order-id "${order_id}" 2>/dev/null
+}
+
+collect_order_ingredients() {
+  local order_id="$1"
+  local dishes dish_id all_ingredients
+  dishes="$(collect_order_dishes "${order_id}")"
+  if [ "$(echo "${dishes}" | jq -r 'length')" = "0" ]; then
+    echo "[]"
     return 0
   fi
-  trap 'stop_test_target' EXIT INT TERM
-  TEST_CLEANUP_TRAP_SET=1
-  export TEST_CLEANUP_TRAP_SET
+  all_ingredients="[]"
+  while IFS= read -r dish_id; do
+    [ -z "${dish_id}" ] && continue
+    [ "${dish_id}" = "null" ] && continue
+    local ingredients
+    ingredients="$(${CAKECTL} -u "${API_URL%/api/v1}" dishes show "${dish_id}" --format json 2>/dev/null)"
+    all_ingredients="$(printf '%s%s' "${all_ingredients}" "${ingredients}" | jq -s '[.[0][] + .[1][]]')"
+  done <<< "$(echo "${dishes}" | jq -r '.[].id')"
+  echo "${all_ingredients}"
+}
+
+wait_for_runtime_match() {
+  local order_id="$1"
+  local filter="$2"
+  local start now ingredients count
+  start=$(date +%s)
+  while true; do
+    ingredients="$(collect_order_ingredients "${order_id}")"
+    count="$(echo "${ingredients}" | jq -r "[.[] | select(${filter})] | length")"
+    if [ "${count}" -gt 0 ]; then
+      printf '%s' "${ingredients}"
+      return 0
+    fi
+    now=$(date +%s)
+    if [ $((now - start)) -ge "${TEST_TIMEOUT_SEC}" ]; then
+      log_error "Timed out waiting for runtime match on order ${order_id}: ${filter}"
+      echo "${ingredients}" | jq . >&2 || true
+      exit 1
+    fi
+    sleep "${POLL_INTERVAL_SEC}"
+  done
+}
+
+configure_webhook_token() {
+  local payload
+  payload="$(jq -n \
+    --arg token "${WEBHOOK_BEARER_TOKEN}" \
+    '{config: {webhook_bearer_token: $token}}')"
+
+  ${CAKECTL} -u "${API_URL%/api/v1}" plugin configuration alertmanager \
+    --config-json "${payload}" --format json >/dev/null 2>&1
 }

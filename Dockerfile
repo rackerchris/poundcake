@@ -43,7 +43,12 @@ RUN useradd -m -u 1000 appuser
 
 ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    POUNDCAKE_ENABLED_PLUGINS=dummy \
+    POUNDCAKE_AUTH_ENABLED=false \
+    POUNDCAKE_APP_VERSION=1.0.0 \
+    DISHWASHER_INTERVAL=30 \
+    EXECUTION_RUNNER_INTERVAL=2
 
 # ============================================================================
 # Stage 3A: API runtime image
@@ -57,14 +62,8 @@ COPY --chown=appuser:appuser api/ /app/api/
 COPY --chown=appuser:appuser shared/ /app/shared/
 COPY --chown=appuser:appuser kitchen/ /app/kitchen/
 COPY --chown=appuser:appuser config/ /app/config/
-COPY --chown=appuser:appuser config/bootstrap/ingredients/ /app/bootstrap/ingredients/
-COPY --chown=appuser:appuser docker/scripts/ /app/scripts/
 COPY --chown=appuser:appuser alembic/ /app/alembic/
 COPY --chown=appuser:appuser alembic.ini /app/alembic.ini
-
-RUN chmod +x /app/api/scripts/entrypoint-auto-migrate.sh \
-    && chmod +x /app/scripts/automated-setup.sh \
-    && mkdir -p /app/bootstrap/recipes
 
 USER appuser
 

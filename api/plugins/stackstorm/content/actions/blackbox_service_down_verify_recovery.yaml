@@ -1,0 +1,54 @@
+name: blackbox_service_down_verify_recovery
+runner_type: orquesta
+entry_point: workflows/blackbox_service_down_verify_recovery.yaml
+enabled: true
+description: Verify endpoint recovery after blackbox service-down remediation.
+parameters:
+  alert_name:
+    type: string
+    required: true
+    description: Alertmanager alert name.
+  alert_group_name:
+    type: string
+    required: false
+    description: PoundCake alert group name.
+  severity:
+    type: string
+    required: false
+    description: Alert severity label.
+  instance:
+    type: string
+    required: true
+    description: Blackbox probe target URL from the alert instance label.
+  labels:
+    type: object
+    required: true
+    description: Alert labels from Alertmanager.
+  annotations:
+    type: object
+    required: false
+    default: {}
+    description: Alert annotations from Alertmanager.
+  order_id:
+    type: integer
+    required: false
+    description: PoundCake order id.
+  req_id:
+    type: string
+    required: false
+    description: PoundCake request id.
+  method:
+    type: string
+    required: false
+    default: GET
+    description: Preferred HTTP method for the recovery probe.
+  timeout:
+    type: integer
+    required: false
+    default: 15
+    description: Probe timeout in seconds.
+  evidence:
+    type: object
+    required: false
+    default: {}
+    description: Evidence gathered by PoundCake before recovery verification.

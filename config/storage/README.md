@@ -4,14 +4,11 @@ This directory contains optional cluster-scoped storage manifests and examples u
 
 ## Longhorn RWX
 
-Longhorn supports `ReadWriteMany` volumes through share-manager pods backed by NFSv4. For
-StackStorm pack storage, use an RWX-capable StorageClass and make sure worker nodes have an NFSv4
-client installed.
+Longhorn supports `ReadWriteMany` volumes through share-manager pods backed by NFSv4.
 
 Included manifest:
 
-- `longhorn-rwx-storageclass.yaml`: example StorageClass for shared StackStorm pack and virtualenv
-  PVCs
+- `longhorn-rwx-storageclass.yaml`: example StorageClass for shared `ReadWriteMany` PVCs.
 
 You can apply it directly:
 

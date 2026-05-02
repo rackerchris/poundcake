@@ -16,8 +16,12 @@ tests:
         documentIndex: 5
       - equal:
           path: metadata.name
+          value: poundcake-expediter-runner
+        documentIndex: 4
+      - equal:
+          path: metadata.name
           value: poundcake-ui
-        documentIndex: 2
+        documentIndex: 1
 
   - it: applies log-streaming labels to poundcake pod templates
     asserts:
@@ -47,6 +51,33 @@ tests:
       - equal:
           path: spec.template.spec.nodeSelector["node-role.kubernetes.io/worker"]
           value: worker
+        documentIndex: 4
+
+  - it: disables Kubernetes service environment variable injection
+    asserts:
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+        documentIndex: 0
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+        documentIndex: 1
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+        documentIndex: 2
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+        documentIndex: 3
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+        documentIndex: 4
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
         documentIndex: 5
 
   - it: applies image and interval values to key containers
@@ -59,7 +90,7 @@ tests:
       uiImage.tag: "2.0.0"
       uiImage.pullPolicy: Always
       uiImage.containerPort: 18080
-      intervals.prepInterval: "42"
+      intervals.timer: "42"
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
@@ -74,7 +105,7 @@ tests:
         documentIndex: 0
       - equal:
           path: spec.template.spec.containers[0].readinessProbe.httpGet.path
-          value: /api/v1/ready
+          value: /readyz
         documentIndex: 0
       - equal:
           path: spec.template.spec.containers[0].readinessProbe.timeoutSeconds
@@ -86,7 +117,7 @@ tests:
         documentIndex: 0
       - equal:
           path: spec.template.spec.containers[0].livenessProbe.httpGet.path
-          value: /api/v1/live
+          value: /livez
         documentIndex: 0
       - equal:
           path: spec.template.spec.containers[0].livenessProbe.timeoutSeconds
@@ -102,34 +133,151 @@ tests:
             name: POUNDCAKE_LOG_LEVEL
             value: "WARNING"
         documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].env[7].value
-          value: "42"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TIMER_INTERVAL
+            value: "42"
+        documentIndex: 3
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_LOG_LEVEL
+            value: "WARNING"
+        documentIndex: 2
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_LOG_LEVEL
+            value: "WARNING"
+        documentIndex: 3
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_LOG_LEVEL
+            value: "WARNING"
         documentIndex: 4
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_LOG_LEVEL
+            value: "WARNING"
+        documentIndex: 5
       - equal:
           path: spec.template.spec.containers[0].imagePullPolicy
           value: Always
-        documentIndex: 4
+        documentIndex: 3
       - equal:
           path: spec.template.spec.containers[0].image
           value: custom/poundcake-ui:2.0.0
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].imagePullPolicy
           value: Always
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].ports[0].containerPort
           value: 18080
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].readinessProbe.httpGet.port
           value: 18080
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].livenessProbe.httpGet.port
           value: 18080
+        documentIndex: 1
+
+  - it: sets explicit non-wildcard cors origins on the api deployment by default
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_ALLOWED_ORIGINS
+            value: "[\"http://poundcake.local\",\"http://ui.poundcake.local\",\"https://poundcake.local\",\"https://ui.poundcake.local\"]"
+        documentIndex: 0
+
+  - it: omits legacy worker environment variables
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
         documentIndex: 2
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+        documentIndex: 3
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+        documentIndex: 4
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: LOG_LEVEL
+        documentIndex: 5
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PREP_INTERVAL
+        documentIndex: 3
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SLA_BUFFER_PERCENT
+        documentIndex: 3
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_INCIDENT_RECONCILE_INTERVAL_SECONDS
+        documentIndex: 3
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_INCIDENT_RECONCILE_LIMIT
+        documentIndex: 3
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DISHWASHER_DEFAULT_DURATION
+        documentIndex: 5
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DISHWASHER_DEFAULT_TIMEOUT
+        documentIndex: 5
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DISHWASHER_PRUNE_MISSING
+        documentIndex: 5
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DISHWASHER_INTERVAL
+        documentIndex: 5
+
+  - it: applies worker replica counts for horizontally scaled internal plugins
+    set:
+      prepChef.replicaCount: 3
+      expediterRunner.replicaCount: 2
+      timer.replicaCount: 4
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 3
+        documentIndex: 2
+      - equal:
+          path: spec.replicas
+          value: 4
+        documentIndex: 3
+      - equal:
+          path: spec.replicas
+          value: 2
+        documentIndex: 4
 
   - it: applies configured poundcake API readiness initial delay
     set:
@@ -179,255 +327,49 @@ tests:
           value: 13
         documentIndex: 0
 
-  - it: binds workloads to the poundcake service account and wires Prometheus CRD env
+  - it: injects monitoring backend urls when enabled
     set:
-      serviceAccount.create: true
-      serviceAccount.name: ""
-      prometheus.url: http://prometheus.example:9090
-      prometheus.verifySsl: false
-      prometheus.useCrds: true
-      prometheus.crdNamespace: monitoring
-      prometheus.crdLabels:
-        release: kube-prometheus-stack
-    asserts:
-      - equal:
-          path: spec.template.spec.serviceAccountName
-          value: RELEASE-NAME-poundcake
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.serviceAccountName
-          value: RELEASE-NAME-poundcake
-        documentIndex: 2
-      - equal:
-          path: spec.template.spec.serviceAccountName
-          value: RELEASE-NAME-poundcake
-        documentIndex: 5
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_PROMETHEUS_URL
-            value: "http://prometheus.example:9090"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_PROMETHEUS_CRD_NAMESPACE
-            value: "monitoring"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_PROMETHEUS_USE_CRDS
-            value: "true"
-        documentIndex: 0
-
-  - it: defaults Prometheus CRD namespace to the release namespace when unset
-    set:
-      serviceAccount.create: true
-      serviceAccount.name: ""
-      prometheus.useCrds: true
-      prometheus.crdNamespace: ""
-    release:
-      namespace: poundcake
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_PROMETHEUS_CRD_NAMESPACE
-            value: "poundcake"
-        documentIndex: 0
-
-  - it: defaults the Prometheus API URL to the monitoring namespace service
+      monitoring.enabled: true
+      monitoring.prometheus.url: http://prometheus.example.test:9090
+      monitoring.prometheus.crdNamespace: monitoring
+      monitoring.alertmanager.url: http://alertmanager.example.test:9093
     asserts:
       - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: POUNDCAKE_PROMETHEUS_URL
-            value: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
+            value: http://prometheus.example.test:9090
+        documentIndex: 0
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_ALERTMANAGER_URL
+            value: http://alertmanager.example.test:9093
+        documentIndex: 4
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_PROMETHEUS_CRD_NAMESPACE
+            value: monitoring
         documentIndex: 0
 
-  - it: wires git repo sync env and mounts credentials when configured
+  - it: binds workloads to the poundcake service account
     set:
-      git.enabled: true
-      git.repoUrl: https://github.com/example/config.git
-      git.branch: config-main
-      git.rulesPath: prometheus/rules
-      git.workflowsPath: poundcake/workflows
-      git.actionsPath: poundcake/actions
-      git.filePerAlert: true
-      git.filePattern: "{alert_name}.yaml"
-      git.userName: Repo Bot
-      git.userEmail: repo-bot@example.com
-      git.provider: github
-      git.existingSecret: poundcake-git
+      serviceAccount.create: true
+      serviceAccount.name: ""
     asserts:
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_GIT_ENABLED
-            value: "true"
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: RELEASE-NAME-poundcake
         documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_GIT_REPO_URL
-            value: "https://github.com/example/config.git"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_GIT_WORKFLOWS_PATH
-            value: "poundcake/workflows"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_GIT_ACTIONS_PATH
-            value: "poundcake/actions"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_GIT_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: poundcake-git
-                key: git-token
-                optional: true
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].volumeMounts
-          content:
-            name: poundcake-git
-            mountPath: /run/secrets/poundcake-git
-            readOnly: true
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.volumes
-          content:
-            name: poundcake-git
-            secret:
-              secretName: poundcake-git
-              optional: true
-        documentIndex: 0
-
-  - it: wires bootstrap remote sync env for periodic dishwasher from helm values
-    set:
-      bootstrap.ingredientsDir: /custom/bootstrap/ingredients
-      bootstrap.recipesDir: /custom/bootstrap/recipes
-      bootstrap.remoteSyncEnabled: true
-      bootstrap.rulesRepoUrl: https://github.com/example/monitoring-rules.git
-      bootstrap.rulesBranch: release-1
-      bootstrap.rulesPath: alerts/team-a
-      git.enabled: true
-      git.repoUrl: https://github.com/example/config.git
-      git.branch: main
-      git.provider: github
-      git.existingSecret: poundcake-git
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_INGREDIENTS_DIR
-            value: "/custom/bootstrap/ingredients"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_RECIPES_DIR
-            value: "/custom/bootstrap/recipes"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_REMOTE_SYNC_ENABLED
-            value: "true"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_RULES_REPO_URL
-            value: "https://github.com/example/monitoring-rules.git"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_RULES_BRANCH
-            value: "release-1"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_RULES_PATH
-            value: "alerts/team-a"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_INGREDIENTS_DIR
-            value: "/custom/bootstrap/ingredients"
-        documentIndex: 5
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_RECIPES_DIR
-            value: "/custom/bootstrap/recipes"
-        documentIndex: 5
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_REMOTE_SYNC_ENABLED
-            value: "true"
-        documentIndex: 5
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_RULES_REPO_URL
-            value: "https://github.com/example/monitoring-rules.git"
-        documentIndex: 5
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_RULES_BRANCH
-            value: "release-1"
-        documentIndex: 5
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_RULES_PATH
-            value: "alerts/team-a"
-        documentIndex: 5
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_GIT_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: poundcake-git
-                key: git-token
-                optional: true
-        documentIndex: 5
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_GIT_SSH_KEY_PATH
-            value: "/run/secrets/poundcake-git/git-ssh-key"
-        documentIndex: 5
-      - contains:
-          path: spec.template.spec.containers[0].volumeMounts
-          content:
-            name: poundcake-git
-            mountPath: /run/secrets/poundcake-git
-            readOnly: true
-        documentIndex: 5
-      - contains:
-          path: spec.template.spec.volumes
-          content:
-            name: poundcake-git
-            secret:
-              secretName: poundcake-git
-              optional: true
-        documentIndex: 5
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: RELEASE-NAME-poundcake
+        documentIndex: 4
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: RELEASE-NAME-poundcake
+        documentIndex: 1
 
   - it: defaults PoundCake workload image tag to chart appVersion when unset
     set:
@@ -440,7 +382,7 @@ tests:
       - matchRegex:
           path: spec.template.spec.containers[0].image
           pattern: '^ghcr\.io/rackerlabs/poundcake:[0-9]+\.[0-9]+\.[0-9]+$'
-        documentIndex: 1
+        documentIndex: 2
       - matchRegex:
           path: spec.template.spec.containers[0].image
           pattern: '^ghcr\.io/rackerlabs/poundcake:[0-9]+\.[0-9]+\.[0-9]+$'
@@ -449,10 +391,6 @@ tests:
           path: spec.template.spec.containers[0].image
           pattern: '^ghcr\.io/rackerlabs/poundcake:[0-9]+\.[0-9]+\.[0-9]+$'
         documentIndex: 4
-      - matchRegex:
-          path: spec.template.spec.containers[0].image
-          pattern: '^ghcr\.io/rackerlabs/poundcake:[0-9]+\.[0-9]+\.[0-9]+$'
-        documentIndex: 5
 
   - it: defaults UI workload image tag to chart appVersion when unset
     set:
@@ -461,7 +399,7 @@ tests:
       - matchRegex:
           path: spec.template.spec.containers[0].image
           pattern: '^ghcr\.io/rackerlabs/poundcake-ui:[0-9]+\.[0-9]+\.[0-9]+$'
-        documentIndex: 2
+        documentIndex: 1
 
   - it: reports API version from the deployed PoundCake image tag
     set:
@@ -490,63 +428,63 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].ports[0].containerPort
           value: 8080
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].readinessProbe.httpGet.port
           value: 8080
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].livenessProbe.httpGet.port
           value: 8080
-        documentIndex: 2
+        documentIndex: 1
 
   - it: mounts writable nginx runtime paths on UI by default
     asserts:
       - equal:
           path: spec.template.spec.containers[0].volumeMounts[0].name
           value: ui-nginx-confd
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].volumeMounts[0].mountPath
           value: /etc/nginx/conf.d
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].volumeMounts[1].name
           value: ui-nginx-cache
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].volumeMounts[1].mountPath
           value: /var/cache/nginx
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].volumeMounts[2].name
           value: ui-nginx-run
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].volumeMounts[2].mountPath
           value: /var/run
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.volumes[1].name
           value: ui-nginx-confd
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.volumes[2].name
           value: ui-nginx-cache
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.volumes[3].name
           value: ui-nginx-run
-        documentIndex: 2
+        documentIndex: 1
       - isNotNull:
           path: spec.template.spec.volumes[1].emptyDir
-        documentIndex: 2
+        documentIndex: 1
       - isNotNull:
           path: spec.template.spec.volumes[2].emptyDir
-        documentIndex: 2
+        documentIndex: 1
       - isNotNull:
           path: spec.template.spec.volumes[3].emptyDir
-        documentIndex: 2
+        documentIndex: 1
 
   - it: allows disabling writable nginx runtime path mounts for UI
     set:
@@ -554,10 +492,10 @@ tests:
     asserts:
       - isNull:
           path: spec.template.spec.containers[0].volumeMounts
-        documentIndex: 2
+        documentIndex: 1
       - isNull:
           path: spec.template.spec.volumes[1]
-        documentIndex: 2
+        documentIndex: 1
 
   - it: applies pod, app, and utility security contexts with writable defaults
     asserts:
@@ -576,26 +514,26 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
           value: false
-        documentIndex: 5
+        documentIndex: 1
 
   - it: gates UI startup on API reachability and bootstrap marker
     asserts:
       - equal:
           path: spec.template.spec.initContainers[0].name
           value: wait-stage10
-        documentIndex: 2
+        documentIndex: 1
       - matchRegex:
           path: spec.template.spec.initContainers[0].command[2]
           pattern: "gate_wait_for_tcp \\\"poundcake-api\\\" \\\"8000\\\""
-        documentIndex: 2
+        documentIndex: 1
       - matchRegex:
           path: spec.template.spec.initContainers[0].command[2]
-          pattern: "gate_wait_for_http_status \\\"http://poundcake-api:8000/api/v1/ready\\\""
-        documentIndex: 2
+          pattern: "gate_wait_for_http_status \\\"http://poundcake-api.NAMESPACE.svc.cluster.local:8000/readyz\\\""
+        documentIndex: 1
       - matchRegex:
           path: spec.template.spec.initContainers[0].command[2]
           pattern: "GATE_LOG_ENABLED=\\\"true\\\""
-        documentIndex: 2
+        documentIndex: 1
 
   - it: uses services.api.port for PoundCake service URLs
     set:
@@ -603,16 +541,16 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].env[0].value
-          value: http://poundcake-api:9000
-        documentIndex: 2
+          value: http://poundcake-api.NAMESPACE.svc.cluster.local:9000
+        documentIndex: 1
       - matchRegex:
           path: spec.template.spec.initContainers[0].command[2]
           pattern: "gate_wait_for_tcp \\\"poundcake-api\\\" \\\"9000\\\""
-        documentIndex: 2
+        documentIndex: 1
       - matchRegex:
           path: spec.template.spec.initContainers[0].command[2]
-          pattern: "gate_wait_for_http_status \\\"http://poundcake-api:9000/api/v1/ready\\\""
-        documentIndex: 2
+          pattern: "gate_wait_for_http_status \\\"http://poundcake-api.NAMESPACE.svc.cluster.local:9000/readyz\\\""
+        documentIndex: 1
 
   - it: supports gate logging overrides on poundcake init gates
     set:
@@ -641,11 +579,11 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
           value: true
-        documentIndex: 1
+        documentIndex: 2
       - equal:
           path: spec.template.spec.initContainers[0].securityContext.readOnlyRootFilesystem
           value: true
-        documentIndex: 1
+        documentIndex: 2
 
   - it: does not render image pull secrets by default
     asserts:
@@ -657,10 +595,10 @@ tests:
         documentIndex: 2
       - isNull:
           path: spec.template.spec.imagePullSecrets
-        documentIndex: 4
+        documentIndex: 3
       - isNull:
           path: spec.template.spec.imagePullSecrets
-        documentIndex: 5
+        documentIndex: 4
 
   - it: renders poundcakeImage pull secrets on PoundCake workloads
     set:
@@ -677,136 +615,52 @@ tests:
       - equal:
           path: spec.template.spec.imagePullSecrets[0].name
           value: registry-creds
-        documentIndex: 4
+        documentIndex: 3
       - equal:
           path: spec.template.spec.imagePullSecrets[0].name
           value: registry-creds
-        documentIndex: 5
+        documentIndex: 4
 
   - it: mounts alembic config files into poundcake-api without shadowing image migrations
     asserts:
       - equal:
-          path: spec.template.spec.containers[0].volumeMounts[2].name
-          value: poundcake-alembic
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[2].mountPath
-          value: /app/alembic.ini
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[2].subPath
-          value: alembic.ini
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[3].mountPath
-          value: /app/alembic/env.py
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[3].subPath
-          value: env.py
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[4].mountPath
-          value: /app/alembic/script.py.mako
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[4].subPath
-          value: script.py.mako
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.volumes[2].name
-          value: poundcake-alembic
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.volumes[2].configMap.name
-          value: poundcake-alembic
-        documentIndex: 0
-
-  - it: exposes pack sync token to poundcake-api
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_PACK_SYNC_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: poundcake-secrets
-                key: PACK_SYNC_TOKEN
-        documentIndex: 0
-
-  - it: mounts stackstorm API key secret into poundcake-api and exposes env var/file path
-    asserts:
-      - equal:
-          path: spec.template.spec.initContainers[0].volumeMounts[1].name
-          value: st2-apikey
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.initContainers[0].volumeMounts[1].mountPath
-          value: /run/secrets/st2
-        documentIndex: 0
-      - equal:
           path: spec.template.spec.containers[0].volumeMounts[1].name
-          value: st2-apikey
+          value: poundcake-alembic
         documentIndex: 0
       - equal:
           path: spec.template.spec.containers[0].volumeMounts[1].mountPath
-          value: /run/secrets/st2
+          value: /app/alembic.ini
+        documentIndex: 0
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[1].subPath
+          value: alembic.ini
+        documentIndex: 0
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[2].mountPath
+          value: /app/alembic/env.py
+        documentIndex: 0
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[2].subPath
+          value: env.py
+        documentIndex: 0
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[3].mountPath
+          value: /app/alembic/script.py.mako
+        documentIndex: 0
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[3].subPath
+          value: script.py.mako
         documentIndex: 0
       - equal:
           path: spec.template.spec.volumes[1].name
-          value: st2-apikey
+          value: poundcake-alembic
         documentIndex: 0
       - equal:
-          path: spec.template.spec.volumes[1].secret.secretName
-          value: stackstorm-apikeys
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_STACKSTORM_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: stackstorm-apikeys
-                key: st2_api_key
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: ST2_API_KEY_FILE
-            value: /run/secrets/st2/st2_api_key
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].env[7].name
-          value: MONGODB_HOST
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].env[7].value
-          value: stackstorm-mongodb
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].env[13].name
-          value: REDIS_PORT
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].env[13].value
-          value: "6379"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_REDIS_URL
-            value: redis://$(REDIS_HOST):$(REDIS_PORT)/0
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].env[15].valueFrom.secretKeyRef.name
-          value: stackstorm-secrets
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].env[16].valueFrom.secretKeyRef.name
-          value: stackstorm-secrets
+          path: spec.template.spec.volumes[1].configMap.name
+          value: poundcake-alembic
         documentIndex: 0
 
-  - it: injects internal API keys into api and worker workloads when auth is enabled
+  - it: injects scoped credential keys into api and worker workloads when auth is enabled
     set:
       auth.enabled: true
     asserts:
@@ -815,21 +669,6 @@ tests:
           content:
             name: POUNDCAKE_AUTH_ENABLED
             value: "true"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_AUTH_SECRET_NAME
-            value: RELEASE-NAME-poundcake-admin
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_AUTH_SECRET_NAMESPACE
-            valueFrom:
-              fieldRef:
-                apiVersion: v1
-                fieldPath: metadata.namespace
         documentIndex: 0
       - contains:
           path: spec.template.spec.containers[0].env
@@ -852,50 +691,70 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].env
           content:
-            name: POUNDCAKE_AUTH_SERVICE_TOKEN
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
             valueFrom:
               secretKeyRef:
-                name: RELEASE-NAME-poundcake-admin
-                key: internal-api-key
+                name: poundcake-secrets
+                key: PLUGIN_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 0
       - contains:
           path: spec.template.spec.containers[0].env
           content:
-            name: POUNDCAKE_AUTH_SERVICE_TOKEN
+            name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
             valueFrom:
               secretKeyRef:
-                name: RELEASE-NAME-poundcake-admin
-                key: internal-api-key
-        documentIndex: 1
+                name: poundcake-secrets
+                key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
+        documentIndex: 2
       - contains:
           path: spec.template.spec.containers[0].env
           content:
-            name: POUNDCAKE_AUTH_SERVICE_TOKEN
+            name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
             valueFrom:
               secretKeyRef:
-                name: RELEASE-NAME-poundcake-admin
-                key: internal-api-key
+                name: poundcake-secrets
+                key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 3
       - contains:
           path: spec.template.spec.containers[0].env
           content:
-            name: POUNDCAKE_AUTH_SERVICE_TOKEN
+            name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
             valueFrom:
               secretKeyRef:
-                name: RELEASE-NAME-poundcake-admin
-                key: internal-api-key
+                name: poundcake-secrets
+                key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 4
       - contains:
           path: spec.template.spec.containers[0].env
           content:
-            name: POUNDCAKE_AUTH_SERVICE_TOKEN
+            name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
             valueFrom:
               secretKeyRef:
-                name: RELEASE-NAME-poundcake-admin
-                key: internal-api-key
+                name: poundcake-secrets
+                key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
+        documentIndex: 5
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
+        documentIndex: 2
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
+        documentIndex: 3
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
+        documentIndex: 4
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 5
 
-  - it: omits internal API key env vars when auth is disabled
+  - it: omits internal auth env vars when auth is disabled
     set:
       auth.enabled: false
     asserts:
@@ -908,17 +767,7 @@ tests:
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
-            name: POUNDCAKE_AUTH_SERVICE_TOKEN
-        documentIndex: 0
-      - notContains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_AUTH_SECRET_NAME
-        documentIndex: 0
-      - notContains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_AUTH_SECRET_NAMESPACE
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 0
       - notContains:
           path: spec.template.spec.containers[0].env
@@ -933,247 +782,20 @@ tests:
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
-            name: POUNDCAKE_AUTH_SERVICE_TOKEN
-        documentIndex: 1
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
+        documentIndex: 2
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
-            name: POUNDCAKE_AUTH_SERVICE_TOKEN
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 3
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
-            name: POUNDCAKE_AUTH_SERVICE_TOKEN
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 4
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
-            name: POUNDCAKE_AUTH_SERVICE_TOKEN
-        documentIndex: 5
-
-  - it: injects remote bakery client env vars into poundcake-api
-    set:
-      bakery.client.enabled: true
-      bakery.client.baseUrl: https://bakery.example.com
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_ENABLED
-            value: "true"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_BASE_URL
-            value: https://bakery.example.com
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_AUTH_MODE
-            value: hmac
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_ID
-            value: NAMESPACE/RELEASE-NAME
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_ENVIRONMENT_LABEL
-            value: NAMESPACE/RELEASE-NAME
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_NAMESPACE
-            value: NAMESPACE
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_RELEASE_NAME
-            value: RELEASE-NAME
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_REGION
-            value: ""
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_CLUSTER_NAME
-            value: ""
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_TAGS
-            value: "[]"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_HEARTBEAT_INTERVAL_SECONDS
-            value: "30"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_COLLECTION_POLL_INTERVAL_SECONDS
-            value: "10"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_REQUEST_TIMEOUT_SECONDS
-            value: "15"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MAX_RETRIES
-            value: "2"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_POLL_INTERVAL_SECONDS
-            value: "2"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_POLL_TIMEOUT_SECONDS
-            value: "60"
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: RELEASE-NAME-poundcake-bakery-secret
-                key: bootstrap-key-id
-                optional: true
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY
-            valueFrom:
-              secretKeyRef:
-                name: RELEASE-NAME-poundcake-bakery-secret
-                key: bootstrap-key
-                optional: true
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_SECRET_ENCRYPTION_KEY
-            valueFrom:
-              secretKeyRef:
-                name: RELEASE-NAME-poundcake-bakery-secret
-                key: monitor-encryption-key
-                optional: true
-        documentIndex: 0
-
-  - it: supports bakery auth secret overrides for poundcake-api
-    set:
-      bakery.client.enabled: true
-      bakery.client.enforceRemoteBaseUrl: true
-      bakery.client.baseUrl: https://bakery.example.com
-      bakery.client.auth.existingSecret: external-bakery-hmac
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_BASE_URL
-            value: https://bakery.example.com
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID
-            valueFrom:
-              secretKeyRef:
-                name: external-bakery-hmac
-                key: bootstrap-key-id
-                optional: true
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY
-            valueFrom:
-              secretKeyRef:
-                name: external-bakery-hmac
-                key: bootstrap-key
-                optional: true
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_SECRET_ENCRYPTION_KEY
-            valueFrom:
-              secretKeyRef:
-                name: external-bakery-hmac
-                key: monitor-encryption-key
-                optional: true
-        documentIndex: 0
-
-  - it: allows explicit bakery monitor identity overrides for shared bakery deployments
-    set:
-      bakery.client.enabled: true
-      bakery.client.baseUrl: https://bakery.example.com
-      bakery.client.monitor.id: example/poundcake
-      bakery.client.monitor.environmentLabel: example
-      bakery.client.monitor.region: test-region
-      bakery.client.monitor.clusterName: example-cluster
-      bakery.client.monitor.namespace: example-namespace
-      bakery.client.monitor.releaseName: poundcake
-      bakery.client.monitor.tags[0]: shared-bakery
-    asserts:
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_ID
-            value: example/poundcake
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_ENVIRONMENT_LABEL
-            value: example
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_REGION
-            value: test-region
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_CLUSTER_NAME
-            value: example-cluster
-        documentIndex: 0
-      - contains:
-          path: spec.template.spec.containers[0].env
-          content:
-            name: POUNDCAKE_BAKERY_MONITOR_TAGS
-            value: "[\"shared-bakery\"]"
-        documentIndex: 0
-
-  - it: fails fast when remote bakery client is enabled without baseUrl
-    set:
-      bakery.client.enabled: true
-      bakery.client.baseUrl: ""
-    asserts:
-      - failedTemplate:
-          errorMessage: "bakery.client.baseUrl must be set when bakery.client.enabled=true (remote Bakery mode)"
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
+        documentIndex: 1

@@ -1,0 +1,38 @@
+suite: poundcake-startup-rbac
+templates:
+  - templates/poundcake-startup-rbac.yaml
+tests:
+  - it: renders minimal startup RBAC for hook gates
+    asserts:
+      - hasDocuments:
+          count: 3
+      - isKind:
+          of: ServiceAccount
+        documentIndex: 0
+      - equal:
+          path: metadata.name
+          value: poundcake-startup
+        documentIndex: 0
+      - isKind:
+          of: Role
+        documentIndex: 1
+      - equal:
+          path: rules[0].resources
+          value:
+            - services
+            - endpoints
+        documentIndex: 1
+      - isKind:
+          of: RoleBinding
+        documentIndex: 2
+      - equal:
+          path: subjects[0].name
+          value: poundcake-startup
+        documentIndex: 2
+
+  - it: does not render when PoundCake is disabled
+    set:
+      poundcake.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

@@ -57,20 +57,23 @@ class KeyValueConsoleFormatter(logging.Formatter):
         "service",
     }
 
+    @staticmethod
+    def _first_present(record: logging.LogRecord, *names: str) -> object | None:
+        for name in names:
+            if hasattr(record, name):
+                value = getattr(record, name)
+                if value is not None:
+                    return value
+        return None
+
     def format(self, record: logging.LogRecord) -> str:
         # Ensure req_id always exists for format string
         req_id = getattr(record, "req_id", "SYSTEM")
         instance_id = getattr(record, "instance_id", INSTANCE_ID)
         service = getattr(record, "service", SERVICE_NAME)
-        method = getattr(record, "method", None) or getattr(record, "http_method", None) or "NA"
-        status_code = (
-            getattr(record, "status_code", None) or getattr(record, "http_status", None) or "NA"
-        )
-        latency_ms = (
-            getattr(record, "latency_ms", None)
-            or getattr(record, "processing_time_ms", None)
-            or "NA"
-        )
+        method = self._first_present(record, "method", "http_method")
+        status_code = self._first_present(record, "status_code", "http_status")
+        latency_ms = self._first_present(record, "latency_ms", "processing_time_ms")
 
         # Strip redundant "funcName:" prefix if present
         message = record.getMessage()
@@ -79,9 +82,17 @@ class KeyValueConsoleFormatter(logging.Formatter):
             message = message[len(func_prefix) :].lstrip()
 
         timestamp = self.formatTime(record, self.datefmt)
+        http_context_parts = []
+        if method is not None:
+            http_context_parts.append(f"[{method}]")
+        if status_code is not None:
+            http_context_parts.append(f"status={status_code}")
+        if latency_ms is not None:
+            http_context_parts.append(f"latency_ms={latency_ms}")
+        http_context = f" {' '.join(http_context_parts)}" if http_context_parts else ""
         base = (
-            f"{timestamp} [{req_id}] [{instance_id}] [{service}] [{record.levelname}] [{method}] "
-            f"status={status_code} latency_ms={latency_ms} {record.funcName} - {message}"
+            f"{timestamp} [{req_id}] [{instance_id}] [{service}] [{record.levelname}]"
+            f"{http_context} {record.funcName} - {message}"
         )
         extras = {
             key: value

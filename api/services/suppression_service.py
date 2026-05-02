@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from api.types import JSONObject
+
 import hashlib
 import json
 import re
@@ -18,7 +20,6 @@ from api.core.logging import get_logger
 from api.core.metrics import (
     record_suppressed_event as metric_record_suppressed_event,
     record_suppression_summary_failure,
-    record_suppression_summary_ticket,
     set_active_suppressions,
 )
 from api.models.models import (
@@ -28,7 +29,6 @@ from api.models.models import (
     SuppressedEvent,
     SuppressionSummary,
 )
-from api.services.bakery_client import close_ticket, create_ticket, poll_operation
 
 logger = get_logger(__name__)
 
@@ -64,7 +64,7 @@ def _safe_str(value: Any) -> str:
     return "" if value is None else str(value)
 
 
-def _matcher_match(matcher: AlertSuppressionMatcher, labels: dict[str, Any]) -> bool:
+def _matcher_match(matcher: AlertSuppressionMatcher, labels: JSONObject) -> bool:
     key = matcher.label_key
     operator = matcher.operator
     expected = matcher.value
@@ -92,7 +92,7 @@ def _matcher_match(matcher: AlertSuppressionMatcher, labels: dict[str, Any]) -> 
     return False
 
 
-def suppression_matches(suppression: AlertSuppression, labels: dict[str, Any]) -> bool:
+def suppression_matches(suppression: AlertSuppression, labels: JSONObject) -> bool:
     if suppression.scope == "all":
         return True
     if suppression.scope != "matchers":
@@ -102,14 +102,14 @@ def suppression_matches(suppression: AlertSuppression, labels: dict[str, Any]) -
     return all(_matcher_match(matcher, labels) for matcher in suppression.matchers)
 
 
-def _payload_hash(alert_data: dict[str, Any], req_id: str) -> str:
+def _payload_hash(alert_data: JSONObject, req_id: str) -> str:
     canonical = json.dumps(alert_data, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(f"{req_id}:{canonical}".encode("utf-8")).hexdigest()
 
 
 async def find_first_matching_suppression(
     db: AsyncSession,
-    labels: dict[str, Any],
+    labels: JSONObject,
     received_at: datetime | None = None,
 ) -> AlertSuppression | None:
     now = received_at or _utc_now()
@@ -135,7 +135,7 @@ async def find_first_matching_suppression(
 async def save_suppressed_event(
     db: AsyncSession,
     suppression: AlertSuppression,
-    alert_data: dict[str, Any],
+    alert_data: JSONObject,
     req_id: str,
     received_at: datetime | None = None,
 ) -> SuppressedEvent:
@@ -182,7 +182,7 @@ def record_suppressed_event_metric(suppression_id: int, alertname: str, severity
 def build_summary_ticket_payload(
     suppression: AlertSuppression,
     summary: SuppressionSummary,
-) -> dict[str, Any]:
+) -> JSONObject:
     by_alertname = summary.by_alertname_json or {}
     by_severity = summary.by_severity_json or {}
     starts_at = normalize_utc_datetime(suppression.starts_at)
@@ -232,7 +232,7 @@ def build_summary_ticket_payload(
 async def compute_suppression_stats(
     db: AsyncSession,
     suppression_id: int,
-) -> dict[str, Any]:
+) -> JSONObject:
     result = await db.execute(
         select(SuppressedEvent).where(SuppressedEvent.suppression_id == suppression_id)
     )
@@ -248,7 +248,7 @@ async def compute_suppression_stats(
         latest_by_fingerprint[event.fingerprint] = event
     cleared = 0
     still_firing = 0
-    still_firing_alerts: dict[str, Any] = {}
+    still_firing_alerts: JSONObject = {}
     for fingerprint, event in latest_by_fingerprint.items():
         status = (event.status or "").lower()
         if status == "resolved":
@@ -390,55 +390,6 @@ async def finalize_expired_suppressions(db: AsyncSession, req_id: str) -> int:
                 await db.commit()
                 finalized += 1
                 continue
-
-            if suppression.summary_ticket_enabled and not summary.bakery_ticket_id:
-                create_payload = build_summary_ticket_payload(suppression, summary)
-                accepted = await create_ticket(req_id=req_id, payload=create_payload)
-                summary.bakery_ticket_id = accepted.ticket_id
-                summary.bakery_create_operation_id = accepted.operation_id
-                summary.state = "created"
-                record_suppression_summary_ticket("create_accepted")
-                if summary.bakery_create_operation_id:
-                    create_op = await poll_operation(summary.bakery_create_operation_id)
-                    if create_op.status not in {"succeeded"}:
-                        raise RuntimeError(
-                            "Bakery create operation failed: "
-                            f"{create_op.model_dump(mode='json')}"
-                        )
-                    record_suppression_summary_ticket("create_succeeded")
-
-            if (
-                suppression.summary_ticket_enabled
-                and summary.bakery_ticket_id
-                and not summary.bakery_close_operation_id
-            ):
-                close_payload = {
-                    "resolution_notes": (
-                        f"Suppression window {suppression.id} ended; "
-                        "moving summary ticket to confirmed solved."
-                    ),
-                    "state": (
-                        (settings.bakery_rackspace_confirmed_solved_status or "confirmed solved")
-                        .lower()
-                        .replace(" ", "_")
-                        if settings.bakery_active_provider.lower() == "rackspace_core"
-                        else "closed"
-                    ),
-                }
-                close_accepted = await close_ticket(
-                    req_id=req_id,
-                    ticket_id=summary.bakery_ticket_id,
-                    payload=close_payload,
-                )
-                summary.bakery_close_operation_id = close_accepted.operation_id
-                record_suppression_summary_ticket("close_accepted")
-                if summary.bakery_close_operation_id:
-                    close_op = await poll_operation(summary.bakery_close_operation_id)
-                    if close_op.status not in {"succeeded"}:
-                        raise RuntimeError(
-                            "Bakery close operation failed: " f"{close_op.model_dump(mode='json')}"
-                        )
-                    record_suppression_summary_ticket("close_succeeded")
 
             summary.state = "closed"
             summary.summary_close_at = _utc_now()

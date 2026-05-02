@@ -4,6 +4,7 @@
 # |  __/ (_) | |_| | | | | (_| | |__| (_| |   <  __/
 # |_|   \___/ \__,_|_| |_|\__,_|\____\__,_|_|\_\___|
 # PoundCake .gitignore
+docs/old
 # Python
 __pycache__/
 *.py[cod]
@@ -28,6 +29,7 @@ wheels/
 MANIFEST
 ui/node_modules/
 ui/dist/
+ui/.npm-cache/
 
 # Virtual Environments
 .env
@@ -44,6 +46,9 @@ venv.bak/
 *.swp
 *.swo
 *~
+
+#ai
+.opencode/
 
 # Testing
 htmlcov/
@@ -96,6 +101,8 @@ docker-compose.override.yml
 # StackStorm runtime key (generated)
 .st2_api_key
 config/st2_api_key
+config/poundcake_bootstrap_ready
+.podman-docker-config/
 
 # ==============================================================================
 # IMPORTANT: DO NOT IGNORE ALEMBIC MIGRATIONS!

@@ -14,14 +14,12 @@
 #
 # High-level chart shape:
 # - PoundCake API + UI + workers
-# - StackStorm and supporting infra
 # - PoundCake DB can be embedded or shared-operator backed
-# - remote Bakery is configured through bakery.client.*
 
 replicaCount: 1
 
 # Service selection:
-# - poundcake.enabled=true renders PoundCake + StackStorm resources
+# - poundcake.enabled=true renders PoundCake resources
 poundcake:
   enabled: true
 
@@ -29,7 +27,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 serviceAccount:
-  # Service account for non-bakery workloads (for example startup/bootstrap hooks).
+  # Service account for PoundCake workloads and startup/bootstrap hooks.
   create: true
   annotations: {}
   name: ""
@@ -41,11 +39,6 @@ podSecurityContext:
   runAsNonRoot: true
   seccompProfile:
     type: RuntimeDefault
-
-# StackStorm pods and startup hooks inherit the global podSecurityContext by default.
-# Override here when the StackStorm image or shared RWX pack volumes need a different
-# group mapping, for example the numeric GID that owns /opt/stackstorm/packs.
-stackstormPodSecurityContext: {}
 
 securityContext:
   capabilities:
@@ -101,11 +94,10 @@ gateway:
   # Parent Gateway reference.
   # gatewayName should point to an existing shared Gateway.
   # gatewayNamespace is optional; if omitted, the HTTPRoute namespace is used.
-  gatewayName: ""  # Example: <gateway-name>
+  gatewayName: poundcake-gateway
   gatewayNamespace: ""  # Example: <gateway-namespace>
 
   # Existing listener section on the parent Gateway.
-  # If omitted, route defaults are derived from gateway.listeners.* compatibility fields.
   listener:
     # Existing listener section name on parent Gateway (used as HTTPRoute parentRefs.sectionName)
     name: ""  # Example: <gateway-listener-name>
@@ -113,15 +105,8 @@ gateway:
     # Optional default hostname used by both API/UI HTTPRoutes when gateway.hostnames is empty.
     hostname: ""  # Example: poundcake.example.com
 
-    # Informational/compatibility fields.
-    port: 443
-    protocol: "HTTPS"
-    tlsSecretName: ""  # Example: <gateway-tls-secret-name>
-    allowedNamespaces: "All"
-    updateIfExists: true
-
   # HTTPRoute hostnames. Applied to both API and UI routes.
-  # If empty, listener.hostname is used, then legacy listeners.api/ui.hostname values.
+  # If empty, listener.hostname is used.
   # - poundcake.example.com
   hostnames: []
 
@@ -131,10 +116,7 @@ gateway:
   #   application: gateway-api
   #   route: poundcake
 
-  # Legacy compatibility fields used for path prefix and fallback section names.
-  # If gatewayName is empty, gateway.name is used as parentRefs.name.
-  className: envoyproxy
-  name: poundcake-gateway
+  # Per-route Gateway settings.
   listeners:
     # If api/ui share hostname+port+protocol, chart renders one listener (api)
     # and attaches both HTTPRoutes to that section.
@@ -209,6 +191,10 @@ config:
   # Remediation settings
   defaultTimeout: 300
   maxConcurrentRemediations: 10
+  # Service plugins enabled at bootstrap. Production Helm does not infer external
+  # adapter enablement or inject adapter credentials; operators manage adapter
+  # connection records through PoundCake and credential-manager.
+  enabledPlugins: "dummy"
 
 # Alert suppression behavior in PoundCake API
 suppressions:
@@ -216,166 +202,6 @@ suppressions:
   lifecycleEnabled: true
   lifecycleIntervalSeconds: 30
   lifecycleBatchLimit: 25
-
-# StackStorm integration (external chart managed by install script).
-stackstorm:
-  # External StackStorm release name used for service/secret defaults.
-  # Example: "stackstorm" -> stackstorm-st2api, stackstorm-st2auth, stackstorm-st2-apikeys.
-  releaseName: ""
-
-  # Connection configuration
-  # Auto-generated from releaseName if empty; can be set explicitly.
-  url: ""  # Example external: http://stackstorm-st2api.<namespace>.svc.cluster.local:9101
-  authUrl: ""  # Example external: http://stackstorm-st2auth.<namespace>.svc.cluster.local:9100
-  verifySsl: false
-
-  # API key secret mapping.
-  apiKeySecretName: ""
-  apiKeySecretKey: "api-key"
-
-  # Auto-discovery settings
-  autoDiscover: true
-  discoverAcrossNamespaces: true
-  # Admin credentials for auto API key generation
-  adminUser: "st2admin"
-  adminPassword: ""
-  # Optional override for the secret that stores StackStorm admin password.
-  # Leave empty to use the StackStorm auth secret automatically.
-  adminPasswordSecret: ""
-  adminPasswordSecretKey: "ST2_AUTH_PASSWORD"
-  # Resource naming for StackStorm backend dependencies managed by this chart.
-  resourceNames:
-    mongodb: "st2-mongodb"
-    rabbitmq: "st2-rabbitmq"
-    redis: "st2-redis"
-  bootstrap:
-    packs:
-      kubernetes:
-        enabled: false
-        version: ""
-        source:
-          type: exchange
-          name: kubernetes
-          repoUrl: ""
-        # Runtime settings for the installed kubernetes pack.
-        # When enabled, stackstorm-bootstrap seeds StackStorm datastore keys
-        # from the bootstrap pod's service account token. Those datastore keys
-        # are then available to StackStorm runtime components including
-        # st2client and st2actionrunner.
-        runtime:
-          seedDatastore: true
-          host: "https://cluster.local"
-          verifySsl: false
-        config:
-          kubeconfig: ""
-          caCert: ""
-      openstack:
-        enabled: false
-        version: ""
-        source:
-          type: exchange
-          name: openstack
-          repoUrl: ""
-        config:
-          cloudsYaml: ""
-          caCert: ""
-
-# Redis configuration (used by StackStorm for coordination and optionally by PoundCake for caching)
-# Uses Redis Operator (OpsTree Labs) to deploy Redis
-redis:
-  # Enable Redis for state management (required for replicaCount > 1)
-  enabled: true
-
-  # Deploy Redis as part of this chart (independent deployment)
-  # Set to false to use an external Redis instance
-  deploy: true
-
-  # External Redis configuration (when deploy: false)
-  external:
-    # Redis connection URL (e.g., redis://my-redis:6379/0)
-    url: "redis://redis.default.svc.cluster.local:6379/0"
-    # Explicit host/port for components that do TCP health checks.
-    host: "redis.default.svc.cluster.local"
-    port: 6379
-    # Password for external Redis
-    password: ""
-    existingSecret: ""
-    secretKey: "redis-password"
-
-  # Redis image configuration
-  image:
-    repository: quay.io/opstree/redis
-    tag: v7.0.15
-    pullPolicy: IfNotPresent
-
-  # Redis authentication
-  password: ""
-  existingSecret: ""
-  secretKey: "redis-password"
-
-  auth:
-    enabled: false
-    password: ""
-
-  # Persistence configuration
-  persistence:
-    enabled: true
-    size: 1Gi
-    storageClassName: ""
-
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-
-  metrics:
-    enabled: false
-    image:
-      repository: quay.io/opstree/redis-exporter
-      tag: v1.44.0
-
-  # State management settings
-  alertTtlHours: 24  # How long to keep resolved orders
-  lockTimeoutSeconds: 300  # Distributed lock timeout
-
-# RabbitMQ configuration (used by StackStorm for task distribution and workflow coordination)
-# Uses RabbitMQ Operator to deploy RabbitMQ cluster
-rabbitmq:
-  enabled: true
-  # Use external RabbitMQ or deploy via operator
-  external: false
-  # Optional existing secret for RabbitMQ credentials
-  # If set, this chart will use the secret and skip creating one.
-  existingSecret: ""
-  secretKeys:
-    username: "username"
-    password: "password"
-  # External RabbitMQ settings (if external: true)
-  host: "rabbitmq.default.svc.cluster.local"
-  port: 5672
-  username: "stackstorm"
-  password: "stackstorm"
-  vhost: "/"
-  # Deployment settings (if external: false, uses RabbitMQ Operator)
-  replicas: 1
-  auth:
-    username: stackstorm
-    password: stackstorm
-  persistence:
-    size: 8Gi
-    storageClassName: ""
-  service:
-    type: ClusterIP
-  resources:
-    requests:
-      cpu: 500m
-      memory: 512Mi
-    limits:
-      cpu: 1000m
-      memory: 1Gi
 
 # Alert-to-action mappings
 # These will be mounted as ConfigMap
@@ -439,35 +265,15 @@ persistence:
   storageClass: ""
   accessMode: ReadWriteOnce
   size: 100Mi
-  # Legacy/infra storage options consumed by StackStorm-related templates.
   storageClassName: ""
   mariadb:
     size: 10Gi
-    accessMode: ReadWriteOnce
-    storageClassName: ""
-  mongo:
-    size: 10Gi
-    accessMode: ReadWriteOnce
-    storageClassName: ""
-  rabbitmq:
-    size: 5Gi
-    accessMode: ReadWriteOnce
-    storageClassName: ""
-  redis:
-    size: 2Gi
     accessMode: ReadWriteOnce
     storageClassName: ""
   config:
     size: 1Gi
     accessMode: ReadWriteMany
     storageClassName: ""
-  stackstormSharedStorage:
-    enabled: false
-    accessMode: ReadWriteMany
-    storageClassName: ""
-    packVolumeSize: 5Gi
-    virtualenvVolumeSize: 10Gi
-
 longhorn:
   rwxStorageClass:
     create: false
@@ -482,98 +288,51 @@ longhorn:
     volumeBindingMode: Immediate
     allowVolumeExpansion: true
 
-# Prometheus integration
-prometheus:
-  # Prometheus API URL for querying metrics
-  # Default for kube-prometheus-stack installation
-  url: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
-  verifySsl: false
+# Optional Kubernetes RBAC for external service plugins. These grants only
+# authorize the PoundCake service account against cluster APIs; adapter runtime
+# configuration and secrets must still be stored through credential-manager.
+servicePluginRbac:
+  prometheusRules:
+    enabled: true
+  podActions:
+    enabled: true
+  workloadTriage:
+    enabled: true
+  nodeTriage:
+    enabled: true
 
-  # Prometheus Operator CRD settings (Kubernetes)
-  # When enabled, PoundCake can manage PrometheusRule CRDs directly
-  useCrds: true
-  # Namespace for PrometheusRule CRDs. Empty defaults to the Helm release namespace.
-  crdNamespace: ""
-
-  # Allow creating/updating/deleting PrometheusRule CRDs
-  # Set to false for read-only access (can only view rules)
-  allowRuleManagement: true
-
-  # IMPORTANT: Labels to apply to PrometheusRule CRDs created by PoundCake
-  # These MUST match your Prometheus Operator's ruleSelector, otherwise
-  # Prometheus will not load the rules. Check your Prometheus CR with:
-  #   kubectl get prometheus -n monitoring -o jsonpath='{.items[0].spec.ruleSelector}'
-  #
-  # Default is for kube-prometheus-stack. Adjust if using a different release name.
-  crdLabels:
-    release: kube-prometheus-stack
-
-# Git repository integration for Prometheus rule management
-# Enables GitOps workflow: edit rules in UI -> commit to Git -> create PR
-git:
-  # Enable Git integration (optional - rules can be managed via CRDs alone)
+# Optional external monitoring backend URLs for plugin health/config validation.
+# These services are not rendered by the PoundCake chart; devstack installs them
+# as separate Helm releases and production should supply existing service URLs.
+monitoring:
   enabled: false
-
-  # Git repository URL (HTTPS or SSH)
-  # Example: https://github.com/yourorg/prometheus-config.git
-  repoUrl: ""
-
-  # Branch to create PRs against
-  branch: main
-
-  # Path to Prometheus rules directory in repo
-  rulesPath: prometheus/rules
-
-  # Path to workflow export/import directory in repo
-  workflowsPath: poundcake/workflows
-
-  # Path to action export/import directory in repo
-  actionsPath: poundcake/actions
-
-  # File organization strategy
-  # When true, each alert gets its own file (recommended)
-  # When false, orders are grouped in files by CRD name
-  filePerAlert: true
-
-  # File naming pattern (used when filePerAlert: true)
-  # Available variables: {alert_name}, {group_name}, {crd_name}
-  filePattern: "{alert_name}.yaml"
-
-  # Git authentication
-  # Git credentials must come from an existing secret.
-  # The secret may contain either or both of:
-  # - git-token
-  # - git-ssh-key
-
-  # Git commit author
-  userName: PoundCake
-  userEmail: poundcake@example.com
-
-  # Git provider for PR creation
-  # Options: github, gitlab, gitea, none
-  # Use "none" to commit without creating PRs
-  provider: github
-
-  # Reference to existing secret containing Git credentials
-  existingSecret: ""
-  secretKeys:
-    token: "git-token"
-    sshKey: "git-ssh-key"
+  prometheus:
+    url: ""
+    crdNamespace: "prometheus"
+  alertmanager:
+    url: ""
 
 # Authentication configuration
 auth:
   # Enable authentication for web UI and API
   enabled: true
-  # Session timeout in seconds (default: 24 hours)
-  sessionTimeout: 86400
+  # Browser origins allowed to send cross-origin UI requests to the API.
+  # Keep this explicit in production; do not use ["*"] when browser OIDC login
+  # is enabled.
+  allowedOrigins:
+    - http://poundcake.local
+    - http://ui.poundcake.local
+    - https://poundcake.local
+    - https://ui.poundcake.local
+  # Session timeout in seconds (default: 15 min sliding TTL)
+  sessionTimeout: 900
   # OIDC state token lifetime in seconds for browser login providers.
   oidcStateTtl: 600
-  # Shared internal API key for service-to-service auth (API <-> workers).
-  # If empty, Helm will generate one and persist it in the admin secret.
-  internalApiKey: ""
+  # Absolute maximum session lifetime in seconds (8 hours).
+  # Sessions cannot be refreshed beyond this cap.
+  absoluteMaxSession: 28800
   # Secret name will be: <release-name>-poundcake-admin
   # Get password with: kubectl get secret <release-name>-poundcake-admin -n <namespace> -o jsonpath='{.data.password}' | base64 -d
-  # Get internal key with: kubectl get secret <release-name>-poundcake-admin -n <namespace> -o jsonpath='{.data.internal-api-key}' | base64 -d
   # Access page manages role bindings only. Provider enablement happens here at deploy time.
 
   local:
@@ -632,7 +391,6 @@ auth:
     enabled: false
     shared:
       tenant: ""
-      audience: ""
       scope: "openid profile email"
       usernameClaim: "preferred_username"
       displayNameClaim: "name"
@@ -718,90 +476,8 @@ mariadbOperator:
 
   # User configuration
   user:
-    # Username to create
-    name: poundcake
-    # Password (auto-generated if not provided)
-    password: ""
-    # Use existing secret for user password
-    passwordSecret: ""
-    passwordSecretKey: "password"
     # Max connections for this user
     maxUserConnections: 20
-
-  # Grant configuration
-  grants:
-    # Privileges to grant (default: full access to the database)
-    privileges:
-      - "ALL PRIVILEGES"
-
-# MongoDB configuration (shared by external StackStorm and PoundCake)
-# StackStorm uses this for the st2 database.
-mongodb:
-  # Enable MongoDB deployment
-  enabled: true
-
-  # Use external MongoDB or deploy as part of the chart
-  external: false
-
-  # External MongoDB settings (if external: true)
-  host: "mongodb.default.svc.cluster.local"
-  port: 27017
-  database: "stackstorm"
-  username: "stackstorm"
-  password: ""
-  # Reference to existing secret containing MongoDB credentials
-  existingSecret: ""
-  usernameKey: "mongodb-username"
-  passwordKey: "mongodb-password"
-
-  # MongoDB deployment settings (if external: false)
-  image:
-    repository: mongo
-    tag: "7.0.28"  # MongoDB 7.0.28 (fully supported by StackStorm 3.9.0)
-    pullPolicy: IfNotPresent
-
-  # Authentication settings
-  auth:
-    enabled: true
-    rootPassword: ""  # Auto-generated if not provided
-    # Primary user for StackStorm
-    username: "stackstorm"
-    password: "stackstorm"
-    database: "st2"
-
-  # Storage configuration (increased for both StackStorm + PoundCake data)
-  persistence:
-    enabled: true
-    size: 20Gi
-    storageClassName: ""
-
-  # Resource limits
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-    limits:
-      cpu: 1000m
-      memory: 2Gi
-
-  # Service configuration
-  service:
-    type: ClusterIP
-    port: 27017
-
-# Chef service configuration
-# Executor service that polls for dishes and triggers their execution
-chef:
-  enabled: true
-  replicaCount: 1
-  interval: 5
-  resources:
-    limits:
-      cpu: 200m
-      memory: 128Mi
-    requests:
-      cpu: 50m
-      memory: 64Mi
 
 # Prep chef service configuration
 # Polls API and converts new orders into dishes.
@@ -818,14 +494,26 @@ prepChef:
       memory: 64Mi
 
 # Timer service configuration
-# Monitoring service that tracks dish execution status in StackStorm
+# Monitoring service that tracks dish execution status
 timer:
   enabled: true
   replicaCount: 1
   interval: 10
-  slaBufferPercent: 0.2
-  incidentReconcileIntervalSeconds: 30
-  incidentReconcileLimit: 25
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+# Expediter Runner service configuration
+# Performs workload execution for runner-dispatched dish ingredients.
+expediterRunner:
+  enabled: true
+  replicaCount: 1
+  interval: 2
+  limit: 50
   resources:
     limits:
       cpu: 200m
@@ -835,14 +523,11 @@ timer:
       memory: 64Mi
 
 # Dishwasher service configuration
-# Periodic sync job that reconciles StackStorm content/state.
+# Periodic sync job that reconciles PoundCake content/state.
 dishwasher:
   enabled: true
   replicaCount: 1
   interval: 300
-  defaultDuration: 60
-  defaultTimeout: 300
-  pruneMissing: false
   resources:
     limits:
       cpu: 200m
@@ -852,7 +537,7 @@ dishwasher:
       memory: 64Mi
 
 # Bootstrap runtime configuration
-# Startup orchestration jobs are defined in stackstorm-startup-order-jobs.yaml.
+# Startup orchestration jobs are defined in poundcake-startup-jobs.yaml.
 bootstrap:
   ingredientsDir: /app/bootstrap/ingredients
   recipesDir: /app/bootstrap/recipes
@@ -861,60 +546,11 @@ bootstrap:
   rulesRepoUrl: ""
   rulesBranch: main
   rulesPath: alerts
-  # One-shot job that mirrors poundcake-bootstrap (dishwasher in bootstrap mode).
+  # Legacy local bootstrap tuning; production startup now uses split jobs.
   poundcakeBootstrap:
     defaultDuration: 60
     defaultTimeout: 300
     pruneMissing: false
-
-# StackStorm actionrunner runtime configuration
-stackstormActionrunner:
-  serviceAccount:
-    create: true
-    annotations: {}
-    name: ""
-  pvcPatchRbac:
-    enabled: true
-  workloadRecycleRbac:
-    enabled: true
-
-# Remote Bakery client configuration.
-# Bakery is now deployed from the standalone bakery repo and PoundCake talks to it over HTTP.
-bakery:
-  config:
-    activeProvider: rackspace_core
-
-  client:
-    enabled: false
-    # Remote Bakery is the only supported mode in PoundCake after the repo split.
-    enforceRemoteBaseUrl: true
-    baseUrl: ""
-    collectionRbac:
-      enabled: true
-      # Extra namespaces the cluster_inventory collector may inspect.
-      # The monitor namespace (or the release namespace when unset) is always included.
-      namespaces: []
-    monitor:
-      id: ""
-      environmentLabel: ""
-      region: ""
-      clusterName: ""
-      namespace: ""
-      releaseName: ""
-      tags: []
-    auth:
-      mode: hmac
-      existingSecret: ""
-      secretKeys:
-        bootstrapKeyId: "bootstrap-key-id"
-        bootstrapKey: "bootstrap-key"
-        monitorEncryptionKey: "monitor-encryption-key"
-    heartbeatIntervalSeconds: 30
-    collectionPollIntervalSeconds: 10
-    requestTimeoutSeconds: 15
-    maxRetries: 2
-    pollIntervalSeconds: 2
-    pollTimeoutSeconds: 60
 
 poundcakeImage:
   repository: ghcr.io/rackerlabs/poundcake
@@ -937,21 +573,9 @@ uiImage:
   tag: ""
   pullPolicy: Always
   containerPort: 8080
+  nginxAccessLog: "off"
   runtimeWritablePaths:
     enabled: true
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 1000
-    allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: false
-    capabilities:
-      drop:
-        - ALL
-
-stackstormImage:
-  repository: stackstorm/st2
-  tag: "3.9.0"
-  pullPolicy: IfNotPresent
   securityContext:
     runAsNonRoot: true
     runAsUser: 1000
@@ -972,16 +596,9 @@ utilitySecurityContext:
 
 images:
   mariadb: mariadb:11.6
-  mongodb: mongo:7.0
-  rabbitmq: rabbitmq:3.13-management
-  redis: redis:7.4-alpine
   alpine: alpine:3.19
   busybox: busybox:1.36
   kubectl: bitnami/kubectl:latest
-
-stackstormApi:
-  readiness:
-    initialDelaySeconds: 5
 
 poundcakeApi:
   readiness:
@@ -995,31 +612,39 @@ poundcakeApi:
     timeoutSeconds: 5
     failureThreshold: 6
   ticketing:
-    catchAllRecipeName: "fallback-recipe"
     rackspaceConfirmedSolvedStatus: "confirmed solved"
 
 secrets:
   # REQUIRED: Provide these values or they will be randomly generated on install
   dbRootPassword: ""
   dbName: poundcake
-  dbUser: poundcake
-  dbPassword: ""
-  mongoRootPassword: ""
-  mongoUsername: stackstorm
-  mongoPassword: ""
-  rabbitmqUser: stackstorm
-  rabbitmqPassword: ""
-  st2AuthUser: st2admin
-  st2AuthPassword: ""
-  packSyncToken: ""
-
-stackstormPackSync:
-  enabled: true
-  endpoint: "http://poundcake-api:8000/api/v1/cook/packs"
-  pollIntervalSeconds: 5
-  bootstrapPollIntervalSeconds: 2
-  timeoutSeconds: 10
-
+  dbMigratorUser: poundcake_migrator
+  dbMigratorPassword: ""
+  dbPluginRegistryUser: poundcake_plugin_registry
+  dbPluginRegistryPassword: ""
+  dbApiUser: poundcake_api
+  dbApiPassword: ""
+  dbAuthVerifierUser: poundcake_auth_verifier
+  dbAuthVerifierPassword: ""
+  dbServiceIdentityManagerUser: poundcake_service_identity_manager
+  dbServiceIdentityManagerPassword: ""
+  dbCredentialManagerUser: poundcake_credential_manager
+  dbCredentialManagerPassword: ""
+  dbPluginOperationUser: poundcake_plugin_operation
+  dbPluginOperationPassword: ""
+  dbPrepChefReaderUser: poundcake_prep_chef_reader
+  dbPrepChefReaderPassword: ""
+  dbTimerReaderUser: poundcake_timer_reader
+  dbTimerReaderPassword: ""
+  dbExpediterRunnerReaderUser: poundcake_expediter_runner_reader
+  dbExpediterRunnerReaderPassword: ""
+  dbDishwasherReaderUser: poundcake_dishwasher_reader
+  dbDishwasherReaderPassword: ""
+  dbReadonlyUser: poundcake_readonly
+  dbReadonlyPassword: ""
+  pluginCredentialEncryptionKey: ""
+  serviceIdentityCredentialEncryptionKey: ""
+  webhookBearerToken: ""
 services:
   api:
     type: ClusterIP
@@ -1028,70 +653,11 @@ services:
   ui:
     type: ClusterIP
     port: 80
-  stackstormApi:
-    type: ClusterIP
-    port: 9101
-  stackstormAuth:
-    type: ClusterIP
-    port: 9100
-  stackstormStream:
-    type: ClusterIP
-    port: 9102
-  stackstormWeb:
-    type: ClusterIP
-    port: 8080
-
-stackstormComponents:
-  register:
-    enabled: false
-  stream:
-    enabled: true
-  web:
-    enabled: false
-  client:
-    enabled: true
-
-stackstormServices:
-  mongodb:
-    enabled: true
-  rabbitmq:
-    enabled: true
-  redis:
-    enabled: true
-  auth:
-    enabled: true
-  api:
-    enabled: true
-  actionrunner:
-    enabled: true
-  rulesengine:
-    enabled: true
-  workflowengine:
-    enabled: true
-  scheduler:
-    enabled: true
-  notifier:
-    enabled: false
-  garbagecollector:
-    enabled: true
-  timersengine:
-    enabled: false
-  sensorcontainer:
-    enabled: false
-  register:
-    enabled: false
-  stream:
-    enabled: true
-  web:
-    enabled: false
-  client:
-    enabled: true
 
 intervals:
-  chef: "5"
   prepChef: "5"
+  expediterRunner: "2"
   timer: "10"
-  dishwasher: "300"
   prepInterval: "5"
 
 logFormat: console
@@ -1116,30 +682,6 @@ infraSecurityContext:
     capabilities:
       drop:
         - ALL
-  mongodb:
-    runAsNonRoot: true
-    runAsUser: 1000
-    allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: false
-    capabilities:
-      drop:
-        - ALL
-  rabbitmq:
-    runAsNonRoot: true
-    runAsUser: 1000
-    allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: false
-    capabilities:
-      drop:
-        - ALL
-  redis:
-    runAsNonRoot: true
-    runAsUser: 1000
-    allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: false
-    capabilities:
-      drop:
-        - ALL
 
 startupHooks:
   gateLogging:
@@ -1154,6 +696,7 @@ startupHooks:
     enabled: true
     deleteSuccessful: true
     deleteFailed: false
+    ttlSecondsAfterFinished: 300
 
 # Pod disruption budget settings
 pdb:

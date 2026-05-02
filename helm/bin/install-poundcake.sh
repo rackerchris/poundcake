@@ -39,11 +39,6 @@ MARIADB_OPERATOR_CRDS_CHART_NAME="${POUNDCAKE_MARIADB_OPERATOR_CRDS_CHART_NAME:-
 MARIADB_OPERATOR_CHART_NAME="${POUNDCAKE_MARIADB_OPERATOR_CHART_NAME:-mariadb-operator}"
 MARIADB_OPERATOR_CHART_REPO_URL="${POUNDCAKE_MARIADB_OPERATOR_CHART_REPO_URL:-https://helm.mariadb.com/mariadb-operator}"
 MARIADB_OPERATOR_VERSION="${POUNDCAKE_MARIADB_OPERATOR_CHART_VERSION:-0.38.1}"
-REDIS_OPERATOR_RELEASE_NAME="${POUNDCAKE_REDIS_OPERATOR_RELEASE_NAME:-redis-operator}"
-REDIS_OPERATOR_NAMESPACE="${POUNDCAKE_REDIS_OPERATOR_NAMESPACE:-redis-systems}"
-REDIS_OPERATOR_CHART_NAME="${POUNDCAKE_REDIS_OPERATOR_CHART_NAME:-redis-operator}"
-REDIS_OPERATOR_CHART_REPO_URL="${POUNDCAKE_REDIS_OPERATOR_CHART_REPO_URL:-https://ot-container-kit.github.io/helm-charts}"
-REDIS_OPERATOR_VERSION="${POUNDCAKE_REDIS_OPERATOR_CHART_VERSION:-0.22.1}"
 RABBITMQ_OPERATOR_NAMESPACE="${POUNDCAKE_RABBITMQ_OPERATOR_NAMESPACE:-rabbitmq-system}"
 RABBITMQ_CLUSTER_OPERATOR_MANIFEST_URL="${POUNDCAKE_RABBITMQ_CLUSTER_OPERATOR_MANIFEST_URL:-https://github.com/rabbitmq/cluster-operator/releases/download/v2.12.0/cluster-operator.yml}"
 RABBITMQ_TOPOLOGY_OPERATOR_MANIFEST_URL="${POUNDCAKE_RABBITMQ_TOPOLOGY_OPERATOR_MANIFEST_URL:-https://github.com/rabbitmq/messaging-topology-operator/releases/download/v1.15.0/messaging-topology-operator-with-certmanager.yaml}"
@@ -124,11 +119,6 @@ Environment overrides:
   POUNDCAKE_MARIADB_OPERATOR_CHART_NAME
   POUNDCAKE_MARIADB_OPERATOR_CHART_REPO_URL
   POUNDCAKE_MARIADB_OPERATOR_CHART_VERSION
-  POUNDCAKE_REDIS_OPERATOR_RELEASE_NAME
-  POUNDCAKE_REDIS_OPERATOR_NAMESPACE
-  POUNDCAKE_REDIS_OPERATOR_CHART_NAME
-  POUNDCAKE_REDIS_OPERATOR_CHART_REPO_URL
-  POUNDCAKE_REDIS_OPERATOR_CHART_VERSION
   POUNDCAKE_RABBITMQ_OPERATOR_NAMESPACE
   POUNDCAKE_RABBITMQ_CLUSTER_OPERATOR_MANIFEST_URL
   POUNDCAKE_RABBITMQ_TOPOLOGY_OPERATOR_MANIFEST_URL
@@ -156,45 +146,14 @@ Image repositories/tags/digests:
   - Image env vars and image --set overrides are intentionally not supported.
 
 Runtime deployment settings:
-  - Configure remote Bakery, shared DB mode, StackStorm pack sync, and imagePullSecrets
+  - Configure shared DB mode and imagePullSecrets
     in Helm values files or override files only.
-  - The installer no longer auto-discovers or injects those app runtime settings.
 
 Examples:
   ./install/install-poundcake-helm.sh
   ./install/install-poundcake-helm.sh --validate
   ./install/install-poundcake-helm.sh --skip-preflight -f /path/to/values.yaml
 USAGE_EOF
-}
-
-validate_image_env_inputs() {
-  local deprecated_image_envs=()
-  local env_name=""
-
-  for env_name in \
-    POUNDCAKE_GHCR_OWNER \
-    POUNDCAKE_IMAGE_REPO \
-    POUNDCAKE_IMAGE_TAG \
-    POUNDCAKE_IMAGE_DIGEST \
-    POUNDCAKE_BAKERY_IMAGE_REPO \
-    POUNDCAKE_BAKERY_IMAGE_TAG \
-    POUNDCAKE_BAKERY_IMAGE_DIGEST \
-    POUNDCAKE_UI_IMAGE_REPO \
-    POUNDCAKE_UI_IMAGE_TAG \
-    POUNDCAKE_STACKSTORM_IMAGE_REPO \
-    POUNDCAKE_STACKSTORM_IMAGE_TAG
-  do
-    if [[ -n "${!env_name:-}" ]]; then
-      deprecated_image_envs+=("${env_name}")
-    fi
-  done
-
-  if (( ${#deprecated_image_envs[@]} > 0 )); then
-    log_error "Image environment variables are no longer supported by the Helm installers: ${deprecated_image_envs[*]}"
-    log_error "Configure image repositories/tags/digests in values files or override files instead."
-    log_error "Default active override dir: /etc/poundcake/helm-configs/poundcake/"
-    exit 1
-  fi
 }
 
 reject_image_override_args() {
@@ -205,7 +164,7 @@ reject_image_override_args() {
     if [[ "${next_is_set_payload}" == "true" ]]; then
       next_is_set_payload="false"
       case "${arg}" in
-        poundcakeImage.*=*|uiImage.*=*|stackstormImage.*=*|bakery.image.*=*)
+        poundcakeImage.*=*|uiImage.*=*)
           log_error "Image --set overrides are not supported by the Helm installers."
           log_error "Configure image repositories/tags/digests in values files or override files instead."
           exit 1
@@ -220,7 +179,7 @@ reject_image_override_args() {
         ;;
       --set=*|--set-string=*|--set-json=*|--set-literal=*|--set-file=*)
         case "${arg}" in
-          *poundcakeImage.*=*|*uiImage.*=*|*stackstormImage.*=*|*bakery.image.*=*)
+          *poundcakeImage.*=*|*uiImage.*=*)
             log_error "Image --set overrides are not supported by the Helm installers."
             log_error "Configure image repositories/tags/digests in values files or override files instead."
             exit 1
@@ -308,7 +267,6 @@ resolve_operator_version_from_config() {
 
 resolve_operator_versions() {
   MARIADB_OPERATOR_VERSION="$(resolve_operator_version_from_config "${POUNDCAKE_MARIADB_OPERATOR_CHART_VERSION:-}" "mariadb-operator" "${MARIADB_OPERATOR_VERSION}")"
-  REDIS_OPERATOR_VERSION="$(resolve_operator_version_from_config "${POUNDCAKE_REDIS_OPERATOR_CHART_VERSION:-}" "redis-operator" "${REDIS_OPERATOR_VERSION}")"
   MONGODB_OPERATOR_VERSION="$(resolve_operator_version_from_config "${POUNDCAKE_MONGODB_OPERATOR_CHART_VERSION:-}" "mongodb-operator" "${MONGODB_OPERATOR_VERSION}")"
 }
 
@@ -472,15 +430,6 @@ ensure_required_operators() {
   resolve_operator_versions
 
   install_or_verify_mariadb_operator
-
-  install_or_verify_helm_operator \
-    "redis-operator" \
-    "redis.redis.redis.opstreelabs.in,redis.redis.opstreelabs.in" \
-    "${REDIS_OPERATOR_RELEASE_NAME}" \
-    "${REDIS_OPERATOR_CHART_NAME}" \
-    "${REDIS_OPERATOR_CHART_REPO_URL}" \
-    "${REDIS_OPERATOR_VERSION}" \
-    "${REDIS_OPERATOR_NAMESPACE}"
 
   install_or_verify_manifest_operator \
     "rabbitmq-cluster-operator" \
@@ -677,14 +626,8 @@ rotate_chart_secrets() {
 
   local secrets=(
     "${release_name}-poundcake-admin"
-    "${release_name}-poundcake-stackstorm"
-    "${release_name}-stackstorm-ha-st2-apikeys"
     "${release_name}-poundcake-mariadb-root"
     "${release_name}-poundcake-mariadb-user"
-    "st2-st2-apikeys"
-    "st2-mongodb-secret"
-    "st2-rabbitmq"
-    "poundcake-st2-auth"
   )
 
   log_info "Rotating selected chart-managed secrets (if present)..."
@@ -711,12 +654,12 @@ verify_rendered_endpoint_contract() {
     }
     want && /^[[:space:]]+readinessProbe:[[:space:]]*$/ { probe="ready"; next }
     want && /^[[:space:]]+livenessProbe:[[:space:]]*$/ { probe="live"; next }
-    want && probe=="ready" && /^[[:space:]]+path:[[:space:]]*\/api\/v1\/ready[[:space:]]*$/ { ready=1; next }
-    want && probe=="live" && /^[[:space:]]+path:[[:space:]]*\/api\/v1\/live[[:space:]]*$/ { live=1; next }
+    want && probe=="ready" && /^[[:space:]]+path:[[:space:]]*\/readyz[[:space:]]*$/ { ready=1; next }
+    want && probe=="live" && /^[[:space:]]+path:[[:space:]]*\/livez[[:space:]]*$/ { live=1; next }
     /^---[[:space:]]*$/ { kind=""; name=""; inmeta=0; want=0; probe="" }
     END { exit((ready && live) ? 0 : 1) }
   ' "${rendered_manifest}"; then
-    log_error "Rendered manifest contract failed: poundcake-api probes must target /api/v1/ready and /api/v1/live."
+    log_error "Rendered manifest contract failed: poundcake-api probes must target /readyz and /livez."
     exit 1
   fi
 }
@@ -725,62 +668,6 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   usage
   exit 0
 fi
-
-if [[ -n "${POUNDCAKE_INSTALL_MODE:-}" ]]; then
-  log_error "POUNDCAKE_INSTALL_MODE is no longer supported."
-  log_error "PoundCake now installs only PoundCake from this repo."
-  log_error "Deploy Bakery from https://github.com/rackerlabs/bakery."
-  exit 1
-fi
-
-if [[ "${POUNDCAKE_NO_LOCAL_BAKERY:-false}" == "true" ]]; then
-  log_error "POUNDCAKE_NO_LOCAL_BAKERY is no longer supported."
-  log_error "Configure Bakery client settings in values files or override files instead."
-  exit 1
-fi
-
-for deprecated_toggle_env in \
-  POUNDCAKE_ENABLED \
-  POUNDCAKE_ENABLE_BAKERY
-do
-  if [[ -n "${!deprecated_toggle_env:-}" ]]; then
-    log_error "${deprecated_toggle_env} is no longer supported."
-    log_error "PoundCake installer now installs PoundCake resources only."
-    exit 1
-  fi
-done
-
-for values_only_env in \
-  POUNDCAKE_REMOTE_BAKERY_ENABLED \
-  POUNDCAKE_REMOTE_BAKERY_URL \
-  POUNDCAKE_REMOTE_BAKERY_AUTH_MODE \
-  POUNDCAKE_REMOTE_BAKERY_AUTH_SECRET \
-  POUNDCAKE_REMOTE_BAKERY_HMAC_KEY \
-  POUNDCAKE_REMOTE_BAKERY_HMAC_KEY_ID \
-  POUNDCAKE_SHARED_DB_MODE \
-  POUNDCAKE_SHARED_DB_SERVER_NAME \
-  POUNDCAKE_PACK_SYNC_ENDPOINT \
-  POUNDCAKE_IMAGE_PULL_SECRET_ENABLED
-do
-  if [[ -n "${!values_only_env:-}" ]]; then
-    log_error "${values_only_env} is no longer supported by install-poundcake.sh."
-    log_error "Configure this setting in values files or override files instead."
-    exit 1
-  fi
-done
-
-for deprecated_env in \
-  POUNDCAKE_BAKERY_DB_INTEGRATED \
-  POUNDCAKE_BAKERY_DB_HOST \
-  POUNDCAKE_BAKERY_DB_NAME \
-  POUNDCAKE_BAKERY_DB_USER
-do
-  if [[ -n "${!deprecated_env:-}" ]]; then
-    log_error "${deprecated_env} is no longer supported."
-    log_error "Bakery database settings now live in the standalone Bakery repo."
-    exit 1
-  fi
-done
 
 log_phase "argument parsing"
 while [[ $# -gt 0 ]]; do
@@ -792,18 +679,6 @@ while [[ $# -gt 0 ]]; do
     --validate)
       VALIDATE="true"
       shift
-      ;;
-    --enable-bakery)
-      log_error "Option '$1' was removed."
-      log_error "PoundCake installer always deploys PoundCake only."
-      log_error "Deploy Bakery from https://github.com/rackerlabs/bakery."
-      exit 1
-      ;;
-    --mode|--mode=*)
-      log_error "Option '$1' was removed."
-      log_error "PoundCake now installs only PoundCake from this repo."
-      log_error "Deploy Bakery from https://github.com/rackerlabs/bakery."
-      exit 1
       ;;
     --operators-mode)
       OPERATOR_MODE="$2"
@@ -825,36 +700,6 @@ while [[ $# -gt 0 ]]; do
       ROTATE_SECRETS="true"
       shift
       ;;
-    --interactive-bakery-creds|--interactive-bakery-credentials)
-      log_error "Option '$1' is not supported by install-poundcake.sh."
-      log_error "Bakery credentials are configured from the standalone Bakery repo."
-      exit 1
-      ;;
-    --bakery-rackspace-url|--bakery-rackspace-username|--bakery-rackspace-password|--bakery-rackspace-secret-name)
-      log_error "Option '$1' is not supported by install-poundcake.sh."
-      log_error "Use the standalone Bakery repo to configure Bakery credentials and secrets."
-      exit 1
-      ;;
-    --remote-bakery-url|--remote-bakery-enabled|--remote-bakery-auth-mode|--remote-bakery-auth-secret|--remote-bakery-hmac-key|--remote-bakery-hmac-key-id|--shared-db-mode|--shared-db-server-name)
-      log_error "Option '$1' is no longer supported by install-poundcake.sh."
-      log_error "Configure remote Bakery and shared DB settings in values files or override files instead."
-      exit 1
-      ;;
-    --remote-bakery-url=*|--remote-bakery-enabled=*|--remote-bakery-auth-mode=*|--remote-bakery-auth-secret=*|--remote-bakery-hmac-key=*|--remote-bakery-hmac-key-id=*|--shared-db-mode=*|--shared-db-server-name=*)
-      log_error "Option '$1' is no longer supported by install-poundcake.sh."
-      log_error "Configure remote Bakery and shared DB settings in values files or override files instead."
-      exit 1
-      ;;
-    --no-local-bakery)
-      log_error "Option '$1' is no longer supported."
-      log_error "Configure Bakery client settings in values files or override files instead."
-      exit 1
-      ;;
-    --bakery-db-integrated|--bakery-db-host|--bakery-db-name|--bakery-db-user|--bakery-db-password|--bakery-db-password-secret-name|--bakery-db-password-secret-key|--bakery-db-admin-secret-name|--bakery-db-admin-password-key|--bakery-db-sql-image)
-      log_error "Option '$1' is no longer supported."
-      log_error "Bakery DB flags now belong to the standalone Bakery repo."
-      exit 1
-      ;;
     *)
       EXTRA_ARGS+=("$1")
       shift
@@ -874,7 +719,6 @@ fi
 if [[ -n "${POUNDCAKE_INSTALL_PROFILE:-}" && "${POUNDCAKE_INSTALL_PROFILE}" != "poundcake" ]]; then
   log_error "Invalid installer profile '${POUNDCAKE_INSTALL_PROFILE}'."
   log_error "This repo supports only the 'poundcake' installer profile."
-  log_error "Deploy Bakery from https://github.com/rackerlabs/bakery."
   exit 1
 fi
 
@@ -887,7 +731,6 @@ fi
 log_info "Installer options: operators_mode=${OPERATOR_MODE}, validate=${VALIDATE}, skip_preflight=${SKIP_PREFLIGHT}, rotate_secrets=${ROTATE_SECRETS}, debug=${INSTALL_DEBUG}"
 
 log_phase "preflight checks"
-validate_image_env_inputs
 if [[ "${SKIP_PREFLIGHT}" != "true" ]]; then
   perform_preflight_checks
 else
@@ -1060,7 +903,6 @@ log_phase "helm install execution"
 log_info "Installing PoundCake release: ${RELEASE_NAME}"
 log_info "Namespace: ${NAMESPACE}"
 log_info "PoundCake resources: enabled"
-log_info "Bakery resources: external only"
 log_info "Chart source: ${CHART_SOURCE}"
 if [[ "${CHART_SOURCE}" == oci://* ]]; then
   log_info "Chart version: ${CHART_VERSION:-"(not set)"}"

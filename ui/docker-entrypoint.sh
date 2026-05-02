@@ -7,9 +7,13 @@ set -eu
 TEMPLATE_PATH="${NGINX_TEMPLATE_PATH:-/etc/nginx/templates/default.conf.template}"
 OUTPUT_PATH="${NGINX_OUTPUT_PATH:-/etc/nginx/conf.d/default.conf}"
 API_URL="${API_URL:-http://poundcake:8080}"
+UI_NGINX_ACCESS_LOG="${UI_NGINX_ACCESS_LOG:-off}"
+NGINX_RESOLVER="${NGINX_RESOLVER:-$(awk '/^nameserver[[:space:]]+/ { print $2; exit }' /etc/resolv.conf)}"
+NGINX_RESOLVER="${NGINX_RESOLVER:-127.0.0.11}"
+export API_URL UI_NGINX_ACCESS_LOG NGINX_RESOLVER
 
 echo "[ui-entrypoint] Rendering ${TEMPLATE_PATH} -> ${OUTPUT_PATH}"
-envsubst '${API_URL}' < "${TEMPLATE_PATH}" > "${OUTPUT_PATH}"
+envsubst '${API_URL} ${UI_NGINX_ACCESS_LOG} ${NGINX_RESOLVER}' < "${TEMPLATE_PATH}" > "${OUTPUT_PATH}"
 
 privileged_ports="$(
   awk '
@@ -47,5 +51,5 @@ fi
 echo "[ui-entrypoint] Validating nginx configuration"
 nginx -t
 
-echo "[ui-entrypoint] Starting nginx (API_URL=${API_URL})"
+echo "[ui-entrypoint] Starting nginx (API_URL=${API_URL}, UI_NGINX_ACCESS_LOG=${UI_NGINX_ACCESS_LOG}, NGINX_RESOLVER=${NGINX_RESOLVER})"
 exec "$@"

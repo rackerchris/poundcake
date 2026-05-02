@@ -9,8 +9,6 @@
 
 import os
 import time
-from datetime import datetime, timezone
-from api.core.http_client import request_with_retry_sync
 
 from api.core.logging import setup_logging, get_logger
 from api.core.config import get_settings
@@ -27,7 +25,7 @@ PREP_INTERVAL = int(os.getenv("PREP_INTERVAL", "5"))
 # System request ID for prep chef operations
 SYSTEM_REQ_ID = "SYSTEM-PREP-CHEF"
 POLLER_RETRIES = get_settings().poller_http_retries
-POLL_LIMIT = int(os.getenv("PREP_CHEF_LIMIT", "1"))
+POLL_LIMIT = int(os.getenv("PREP_CHEF_LIMIT", "10"))
 
 
 def prep_loop() -> None:
@@ -40,34 +38,49 @@ def prep_loop() -> None:
     api_unavailable_since: float | None = None
 
     while True:
+        runtime_config = service_helpers.get_worker_runtime_config(
+            api_base_url=API_URL,
+            service_type="prep-chef",
+            req_id=SYSTEM_REQ_ID,
+            default_interval=PREP_INTERVAL,
+            default_query_limit=POLL_LIMIT,
+            logger=logger,
+        )
+        loop_interval = int(runtime_config["run_interval_seconds"])
+        loop_limit = int(runtime_config["query_limit"])
+        if not runtime_config["enabled"]:
+            logger.info(
+                "Prep chef paused by internal plugin configuration",
+                extra={"req_id": SYSTEM_REQ_ID, "poll_interval": loop_interval},
+            )
+            time.sleep(loop_interval)
+            continue
         try:
-            orders = []
-            for status in ("new", "escalation", "resolving", "waiting_clear"):
-                start_time = time.time()
-                resp = request_with_retry_sync(
-                    "GET",
-                    f"{API_URL}/orders",
-                    params={"processing_status": status, "limit": POLL_LIMIT},
-                    headers=_service_headers(SYSTEM_REQ_ID),
-                    timeout=10,
-                    retries=POLLER_RETRIES,
+            start_time = time.time()
+            resp = service_helpers.request_control_plane_sync(
+                "GET",
+                f"{API_URL}/orders",
+                params={"processing_status": "new", "limit": loop_limit},
+                req_id=SYSTEM_REQ_ID,
+                timeout=10,
+                retries=POLLER_RETRIES,
+            )
+            latency_ms = int((time.time() - start_time) * 1000)
+            if resp.status_code != 200:
+                logger.error(
+                    "Failed to fetch orders",
+                    extra={
+                        "req_id": SYSTEM_REQ_ID,
+                        "method": "GET",
+                        "status": "new",
+                        "status_code": resp.status_code,
+                        "latency_ms": latency_ms,
+                    },
                 )
-                latency_ms = int((time.time() - start_time) * 1000)
-                if resp.status_code != 200:
-                    logger.error(
-                        "Failed to fetch orders",
-                        extra={
-                            "req_id": SYSTEM_REQ_ID,
-                            "method": "GET",
-                            "status": status,
-                            "status_code": resp.status_code,
-                            "latency_ms": latency_ms,
-                        },
-                    )
-                    continue
+                orders = []
+            else:
                 fetched = resp.json()
-                if isinstance(fetched, list):
-                    orders.extend(fetched)
+                orders = fetched if isinstance(fetched, list) else []
 
             if api_unavailable_since is not None:
                 downtime_sec = int(time.time() - api_unavailable_since)
@@ -81,40 +94,18 @@ def prep_loop() -> None:
                 req_id = order.get("req_id", "UNKNOWN")
                 order_id = order.get("id")
                 processing_status = order.get("processing_status")
-                if processing_status == "waiting_clear":
-                    clear_deadline_at = order.get("clear_deadline_at")
-                    clear_timed_out_at = order.get("clear_timed_out_at")
-                    alert_status = str(order.get("alert_status") or "").lower()
-                    if alert_status == "resolved":
-                        continue
-                    if clear_timed_out_at:
-                        continue
-                    if not clear_deadline_at:
-                        continue
-                    try:
-                        deadline = datetime.fromisoformat(
-                            str(clear_deadline_at).replace("Z", "+00:00")
-                        )
-                    except ValueError:
-                        continue
-                    if deadline.tzinfo is None:
-                        deadline = deadline.replace(tzinfo=timezone.utc)
-                    if deadline > datetime.now(timezone.utc):
-                        continue
 
                 # Pass the original Request ID to the next hop
-                headers = _service_headers(req_id)
-
                 logger.info(
                     "Preparing order for cooking",
                     extra={"req_id": req_id, "order_id": order_id},
                 )
 
                 start_time = time.time()
-                cook_resp = request_with_retry_sync(
+                cook_resp = service_helpers.request_control_plane_sync(
                     "POST",
-                    f"{API_URL}/orders/{order_id}/dispatch",
-                    headers=headers,
+                    f"{API_URL}/cook/orders/{order_id}",
+                    req_id=req_id,
                     timeout=15,
                     retries=POLLER_RETRIES,
                 )
@@ -165,13 +156,7 @@ def prep_loop() -> None:
                     extra={"req_id": SYSTEM_REQ_ID, "error": str(e)},
                 )
 
-        time.sleep(PREP_INTERVAL)
-
-
-def _service_headers(req_id: str) -> dict[str, str]:
-    if hasattr(service_helpers, "get_service_headers"):
-        return service_helpers.get_service_headers(req_id)
-    return {"X-Request-ID": req_id}
+        time.sleep(loop_interval)
 
 
 if __name__ == "__main__":

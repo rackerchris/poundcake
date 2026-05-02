@@ -1,0 +1,696 @@
+{{- if .Values.poundcake.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: poundcake-mariadb-ready
+  labels:
+    app.kubernetes.io/component: poundcake-mariadb-ready
+    {{- include "poundcake.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "20"
+    "helm.sh/hook-delete-policy": {{ include "poundcake.startupHookDeletePolicy" . | quote }}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: {{ .Values.startupHooks.cleanup.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: poundcake-mariadb-ready
+        {{- include "poundcake.logLabelsForComponent" (dict "component" "poundcake-mariadb-ready") | nindent 8 }}
+        {{- include "poundcake.selectorLabels" . | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      {{- include "poundcake.podPlacement" . | nindent 6 }}
+      serviceAccountName: poundcake-startup
+      restartPolicy: OnFailure
+      containers:
+        - name: wait-mariadb
+          image: {{ .Values.images.kubectl }}
+          securityContext:
+            {{- toYaml .Values.utilitySecurityContext | nindent 12 }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              NS="{{ .Release.Namespace }}"
+              DB_NS="{{ include "poundcake.databaseServiceNamespace" . }}"
+              DB_SVC="{{ include "poundcake.databaseServerName" . }}"
+              DB_HOST="{{ include "poundcake.databaseHost" . }}"
+              {{- include "poundcake.gateLogHelpers" . | nindent 14 }}
+              gate_log_wait_start "poundcake-mariadb-ready" "service endpoint ${DB_SVC} (${DB_HOST})"
+              until [ -n "$(kubectl -n "${DB_NS}" get endpoints "${DB_SVC}" -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)" ]; do
+                gate_log_wait_tick "poundcake-mariadb-ready" "service endpoint ${DB_SVC} (${DB_HOST})"
+                sleep 2
+              done
+              gate_log_wait_ready "poundcake-mariadb-ready"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: poundcake-mariadb-users
+  labels:
+    app.kubernetes.io/component: poundcake-mariadb-users
+    {{- include "poundcake.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "22"
+    "helm.sh/hook-delete-policy": {{ include "poundcake.startupHookDeletePolicy" . | quote }}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: {{ .Values.startupHooks.cleanup.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: poundcake-mariadb-users
+        {{- include "poundcake.logLabelsForComponent" (dict "component" "poundcake-mariadb-users") | nindent 8 }}
+        {{- include "poundcake.selectorLabels" . | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      {{- include "poundcake.podPlacement" . | nindent 6 }}
+      serviceAccountName: poundcake-startup
+      restartPolicy: OnFailure
+      containers:
+        - name: reconcile-users
+          image: {{ .Values.images.mariadb }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- toYaml .Values.utilitySecurityContext | nindent 12 }}
+          command:
+            - /bin/bash
+            - /scripts/mariadb-init.sh
+          env:
+            - name: MYSQL_INIT_PHASE
+              value: pre_migrate
+            - name: MYSQL_HOST
+              value: {{ include "poundcake.databaseHost" . | quote }}
+            - name: MYSQL_PORT
+              value: "3306"
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_ROOT_PASSWORD
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_NAME
+            - name: MYSQL_MIGRATOR_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_MIGRATOR_USER
+            - name: MYSQL_MIGRATOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_MIGRATOR_PASSWORD
+            - name: MYSQL_PLUGIN_REGISTRY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_REGISTRY_USER
+            - name: MYSQL_PLUGIN_REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_REGISTRY_PASSWORD
+            - name: MYSQL_API_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_API_USER
+            - name: MYSQL_API_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_API_PASSWORD
+            - name: MYSQL_AUTH_VERIFIER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_AUTH_VERIFIER_USER
+            - name: MYSQL_AUTH_VERIFIER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_AUTH_VERIFIER_PASSWORD
+            - name: MYSQL_SERVICE_IDENTITY_MANAGER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_SERVICE_IDENTITY_MANAGER_USER
+            - name: MYSQL_SERVICE_IDENTITY_MANAGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_SERVICE_IDENTITY_MANAGER_PASSWORD
+            - name: MYSQL_CREDENTIAL_MANAGER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_CREDENTIAL_MANAGER_USER
+            - name: MYSQL_CREDENTIAL_MANAGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_CREDENTIAL_MANAGER_PASSWORD
+            - name: MYSQL_PLUGIN_OPERATION_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_OPERATION_USER
+            - name: MYSQL_PLUGIN_OPERATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_OPERATION_PASSWORD
+            - name: MYSQL_PREP_CHEF_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PREP_CHEF_READER_USER
+            - name: MYSQL_PREP_CHEF_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PREP_CHEF_READER_PASSWORD
+            - name: MYSQL_TIMER_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_TIMER_READER_USER
+            - name: MYSQL_TIMER_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_TIMER_READER_PASSWORD
+            - name: MYSQL_EXPEDITER_RUNNER_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_EXPEDITER_RUNNER_READER_USER
+            - name: MYSQL_EXPEDITER_RUNNER_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_EXPEDITER_RUNNER_READER_PASSWORD
+            - name: MYSQL_DISHWASHER_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_DISHWASHER_READER_USER
+            - name: MYSQL_DISHWASHER_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_DISHWASHER_READER_PASSWORD
+            - name: MYSQL_READONLY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_READONLY_USER
+            - name: MYSQL_READONLY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_READONLY_PASSWORD
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts/mariadb-init.sh
+              subPath: mariadb-init.sh
+      volumes:
+        - name: scripts
+          configMap:
+            name: poundcake-scripts
+            defaultMode: 0755
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: poundcake-migrate
+  labels:
+    app.kubernetes.io/component: poundcake-migrate
+    {{- include "poundcake.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "25"
+    "helm.sh/hook-delete-policy": {{ include "poundcake.startupHookDeletePolicy" . | quote }}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: {{ .Values.startupHooks.cleanup.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: poundcake-migrate
+        {{- include "poundcake.logLabelsForComponent" (dict "component" "poundcake-migrate") | nindent 8 }}
+        {{- include "poundcake.selectorLabels" . | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      {{- include "poundcake.podPlacement" . | nindent 6 }}
+      {{- include "poundcake.poundcakePullSecrets" . | nindent 6 }}
+      serviceAccountName: poundcake-startup
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: {{ include "poundcake.poundcakeImageRef" . }}
+          securityContext:
+            {{- toYaml .Values.utilitySecurityContext | nindent 12 }}
+          imagePullPolicy: {{ .Values.poundcakeImage.pullPolicy }}
+          workingDir: /app
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              export POUNDCAKE_DATABASE_URL="mysql+pymysql://${DB_MIGRATOR_USER}:${DB_MIGRATOR_PASSWORD}@{{ include "poundcake.databaseHost" . }}:3306/${DB_NAME}"
+              python3 -m alembic upgrade head
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_NAME
+            - name: DB_MIGRATOR_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_MIGRATOR_USER
+            - name: DB_MIGRATOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_MIGRATOR_PASSWORD
+            - name: SERVICE_NAME
+              value: "poundcake-migrate"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: poundcake-mariadb-grants
+  labels:
+    app.kubernetes.io/component: poundcake-mariadb-grants
+    {{- include "poundcake.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "30"
+    "helm.sh/hook-delete-policy": {{ include "poundcake.startupHookDeletePolicy" . | quote }}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: {{ .Values.startupHooks.cleanup.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: poundcake-mariadb-grants
+        {{- include "poundcake.logLabelsForComponent" (dict "component" "poundcake-mariadb-grants") | nindent 8 }}
+        {{- include "poundcake.selectorLabels" . | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      {{- include "poundcake.podPlacement" . | nindent 6 }}
+      serviceAccountName: poundcake-startup
+      restartPolicy: OnFailure
+      containers:
+        - name: reconcile-grants
+          image: {{ .Values.images.mariadb }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- toYaml .Values.utilitySecurityContext | nindent 12 }}
+          command:
+            - /bin/bash
+            - /scripts/mariadb-init.sh
+          env:
+            - name: MYSQL_HOST
+              value: {{ include "poundcake.databaseHost" . | quote }}
+            - name: MYSQL_PORT
+              value: "3306"
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_ROOT_PASSWORD
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_NAME
+            - name: MYSQL_MIGRATOR_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_MIGRATOR_USER
+            - name: MYSQL_MIGRATOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_MIGRATOR_PASSWORD
+            - name: MYSQL_PLUGIN_REGISTRY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_REGISTRY_USER
+            - name: MYSQL_PLUGIN_REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_REGISTRY_PASSWORD
+            - name: MYSQL_API_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_API_USER
+            - name: MYSQL_API_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_API_PASSWORD
+            - name: MYSQL_AUTH_VERIFIER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_AUTH_VERIFIER_USER
+            - name: MYSQL_AUTH_VERIFIER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_AUTH_VERIFIER_PASSWORD
+            - name: MYSQL_SERVICE_IDENTITY_MANAGER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_SERVICE_IDENTITY_MANAGER_USER
+            - name: MYSQL_SERVICE_IDENTITY_MANAGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_SERVICE_IDENTITY_MANAGER_PASSWORD
+            - name: MYSQL_CREDENTIAL_MANAGER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_CREDENTIAL_MANAGER_USER
+            - name: MYSQL_CREDENTIAL_MANAGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_CREDENTIAL_MANAGER_PASSWORD
+            - name: MYSQL_PLUGIN_OPERATION_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_OPERATION_USER
+            - name: MYSQL_PLUGIN_OPERATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_OPERATION_PASSWORD
+            - name: MYSQL_PREP_CHEF_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PREP_CHEF_READER_USER
+            - name: MYSQL_PREP_CHEF_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PREP_CHEF_READER_PASSWORD
+            - name: MYSQL_TIMER_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_TIMER_READER_USER
+            - name: MYSQL_TIMER_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_TIMER_READER_PASSWORD
+            - name: MYSQL_EXPEDITER_RUNNER_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_EXPEDITER_RUNNER_READER_USER
+            - name: MYSQL_EXPEDITER_RUNNER_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_EXPEDITER_RUNNER_READER_PASSWORD
+            - name: MYSQL_DISHWASHER_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_DISHWASHER_READER_USER
+            - name: MYSQL_DISHWASHER_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_DISHWASHER_READER_PASSWORD
+            - name: MYSQL_READONLY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_READONLY_USER
+            - name: MYSQL_READONLY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_READONLY_PASSWORD
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts/mariadb-init.sh
+              subPath: mariadb-init.sh
+      volumes:
+        - name: scripts
+          configMap:
+            name: poundcake-scripts
+            defaultMode: 0755
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: poundcake-bootstrap-plugin-registry
+  labels:
+    app.kubernetes.io/component: poundcake-bootstrap-plugin-registry
+    {{- include "poundcake.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "35"
+    "helm.sh/hook-delete-policy": {{ include "poundcake.startupHookDeletePolicy" . | quote }}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: {{ .Values.startupHooks.cleanup.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: poundcake-bootstrap-plugin-registry
+        {{- include "poundcake.logLabelsForComponent" (dict "component" "poundcake-bootstrap-plugin-registry") | nindent 8 }}
+        {{- include "poundcake.selectorLabels" . | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      {{- include "poundcake.podPlacement" . | nindent 6 }}
+      {{- include "poundcake.poundcakePullSecrets" . | nindent 6 }}
+      serviceAccountName: poundcake-startup
+      restartPolicy: OnFailure
+      containers:
+        - name: initialize-plugin-registry
+          image: {{ include "poundcake.poundcakeImageRef" . }}
+          securityContext:
+            {{- toYaml .Values.utilitySecurityContext | nindent 12 }}
+          imagePullPolicy: {{ .Values.poundcakeImage.pullPolicy }}
+          workingDir: /app
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              export POUNDCAKE_DATABASE_URL="mysql+pymysql://${DB_PLUGIN_REGISTRY_USER}:${DB_PLUGIN_REGISTRY_PASSWORD}@{{ include "poundcake.databaseHost" . }}:3306/${DB_NAME}"
+              python3 -m api.scripts.bootstrap_plugin_registry
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_NAME
+            - name: DB_PLUGIN_REGISTRY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_REGISTRY_USER
+            - name: DB_PLUGIN_REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_REGISTRY_PASSWORD
+            - name: POUNDCAKE_ENABLED_PLUGINS
+              value: {{ include "poundcake.enabledPlugins" . | quote }}
+            {{- include "poundcake.monitoringEnv" . | nindent 12 }}
+            - name: POUNDCAKE_AUTH_ENABLED
+              value: {{ .Values.auth.enabled | quote }}
+            - name: SERVICE_NAME
+              value: "plugin-registry"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: poundcake-bootstrap-service-identity
+  labels:
+    app.kubernetes.io/component: poundcake-bootstrap-service-identity
+    {{- include "poundcake.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "36"
+    "helm.sh/hook-delete-policy": {{ include "poundcake.startupHookDeletePolicy" . | quote }}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: {{ .Values.startupHooks.cleanup.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: poundcake-bootstrap-service-identity
+        {{- include "poundcake.logLabelsForComponent" (dict "component" "poundcake-bootstrap-service-identity") | nindent 8 }}
+        {{- include "poundcake.selectorLabels" . | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      {{- include "poundcake.podPlacement" . | nindent 6 }}
+      {{- include "poundcake.poundcakePullSecrets" . | nindent 6 }}
+      serviceAccountName: poundcake-startup
+      restartPolicy: OnFailure
+      containers:
+        - name: initialize-service-identities
+          image: {{ include "poundcake.poundcakeImageRef" . }}
+          securityContext:
+            {{- toYaml .Values.utilitySecurityContext | nindent 12 }}
+          imagePullPolicy: {{ .Values.poundcakeImage.pullPolicy }}
+          workingDir: /app
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              export POUNDCAKE_DATABASE_URL="mysql+pymysql://${DB_SERVICE_IDENTITY_MANAGER_USER}:${DB_SERVICE_IDENTITY_MANAGER_PASSWORD}@{{ include "poundcake.databaseHost" . }}:3306/${DB_NAME}"
+              python3 -m api.scripts.bootstrap_service_identities
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_NAME
+            - name: DB_SERVICE_IDENTITY_MANAGER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_SERVICE_IDENTITY_MANAGER_USER
+            - name: DB_SERVICE_IDENTITY_MANAGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_SERVICE_IDENTITY_MANAGER_PASSWORD
+            - name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
+            - name: SERVICE_NAME
+              value: "service-identity-manager"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: poundcake-bootstrap-adapter-credentials
+  labels:
+    app.kubernetes.io/component: poundcake-bootstrap-adapter-credentials
+    {{- include "poundcake.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "37"
+    "helm.sh/hook-delete-policy": {{ include "poundcake.startupHookDeletePolicy" . | quote }}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: {{ .Values.startupHooks.cleanup.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: poundcake-bootstrap-adapter-credentials
+        {{- include "poundcake.logLabelsForComponent" (dict "component" "poundcake-bootstrap-adapter-credentials") | nindent 8 }}
+        {{- include "poundcake.selectorLabels" . | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      {{- include "poundcake.podPlacement" . | nindent 6 }}
+      {{- include "poundcake.poundcakePullSecrets" . | nindent 6 }}
+      serviceAccountName: poundcake-startup
+      restartPolicy: OnFailure
+      containers:
+        - name: initialize-adapter-credentials
+          image: {{ include "poundcake.poundcakeImageRef" . }}
+          securityContext:
+            {{- toYaml .Values.utilitySecurityContext | nindent 12 }}
+          imagePullPolicy: {{ .Values.poundcakeImage.pullPolicy }}
+          workingDir: /app
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              export POUNDCAKE_DATABASE_URL="mysql+pymysql://${DB_CREDENTIAL_MANAGER_USER}:${DB_CREDENTIAL_MANAGER_PASSWORD}@{{ include "poundcake.databaseHost" . }}:3306/${DB_NAME}"
+              export POUNDCAKE_CREDENTIAL_MANAGER_DATABASE_URL="${POUNDCAKE_DATABASE_URL}"
+              python3 -m api.scripts.bootstrap_adapter_credentials
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_NAME
+            - name: DB_CREDENTIAL_MANAGER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_CREDENTIAL_MANAGER_USER
+            - name: DB_CREDENTIAL_MANAGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_CREDENTIAL_MANAGER_PASSWORD
+            - name: POUNDCAKE_ENABLED_PLUGINS
+              value: {{ include "poundcake.enabledPlugins" . | quote }}
+            {{- include "poundcake.monitoringEnv" . | nindent 12 }}
+            - name: POUNDCAKE_AUTH_ENABLED
+              value: {{ .Values.auth.enabled | quote }}
+            - name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: PLUGIN_CREDENTIAL_ENCRYPTION_KEY
+            - name: SERVICE_NAME
+              value: "credential-manager"
+{{- end }}

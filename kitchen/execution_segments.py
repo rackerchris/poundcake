@@ -1,10 +1,23 @@
-"""Helpers for ordered execution segments within a dish."""
+"""Helpers for ordered runtime execution segments within a dish."""
 
 from __future__ import annotations
 
-from typing import Any
+from api.types import JSONObject
 
-PENDING_EXECUTION_STATUSES = {"pending", "queued", "processing", "running", None}
+from typing import Any
+from typing import NamedTuple
+
+PENDING_EXECUTION_STATUSES = {"pending", None}
+IN_FLIGHT_EXECUTION_STATUSES = {"dispatched", "running"}
+SUCCESS_EXECUTION_STATUSES = {"succeeded"}
+FAILURE_EXECUTION_STATUSES = {"failed", "errored", "timeout", "canceled"}
+
+
+class ExecutionSegment(NamedTuple):
+    depth: int
+    parallel_group: int
+    service_types: tuple[str, ...]
+    rows: list[JSONObject]
 
 
 def _coerce_int(value: Any) -> int | None:
@@ -27,7 +40,11 @@ def _parse_step_order_from_task_key(task_key: str | None) -> int | None:
     return None
 
 
-def build_recipe_step_order_map(dish: dict[str, Any]) -> dict[int, int]:
+def _runtime_int(item: JSONObject, key: str) -> int | None:
+    return _coerce_int(item.get(key))
+
+
+def build_recipe_step_order_map(dish: JSONObject) -> dict[int, int]:
     raw_recipe = dish.get("recipe")
     recipe = raw_recipe if isinstance(raw_recipe, dict) else {}
     raw_recipe_ingredients = recipe.get("recipe_ingredients")
@@ -45,23 +62,28 @@ def build_recipe_step_order_map(dish: dict[str, Any]) -> dict[int, int]:
 
 
 def sort_ingredients_for_execution(
-    dish: dict[str, Any], ingredients: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
+    dish: JSONObject, ingredients: list[JSONObject]
+) -> list[JSONObject]:
     step_orders = build_recipe_step_order_map(dish)
 
-    def _sort_key(item: dict[str, Any]) -> tuple[int, str, str, int]:
+    def _sort_key(item: JSONObject) -> tuple[int, int, int, str, int]:
         recipe_ingredient_id = _coerce_int(item.get("recipe_ingredient_id"))
         task_key = str(item.get("task_key") or "")
-        step_order = (
-            step_orders.get(recipe_ingredient_id) if recipe_ingredient_id is not None else None
-        )
+        step_order = _runtime_int(item, "step_order")
+        if step_order is None and recipe_ingredient_id is not None:
+            step_order = step_orders.get(recipe_ingredient_id)
         if step_order is None:
             step_order = _parse_step_order_from_task_key(task_key)
         if step_order is None:
             step_order = 1_000_000
-        created_at = str(item.get("created_at") or "")
+        depth = _runtime_int(item, "depth")
+        if depth is None:
+            depth = step_order
+        parallel_group = _runtime_int(item, "parallel_group")
+        if parallel_group is None:
+            parallel_group = 0
         item_id = _coerce_int(item.get("id")) or 0
-        return (step_order, task_key, created_at, item_id)
+        return (depth, parallel_group, step_order, task_key, item_id)
 
     return sorted(
         [item for item in ingredients if isinstance(item, dict)],
@@ -69,39 +91,73 @@ def sort_ingredients_for_execution(
     )
 
 
-def next_pending_execution_segment(
-    dish: dict[str, Any], ingredients: list[dict[str, Any]]
-) -> tuple[str, list[dict[str, Any]]] | None:
-    ordered = sort_ingredients_for_execution(dish, ingredients)
-    first_pending_index: int | None = None
-    segment_engine: str | None = None
+def _execution_bucket(item: JSONObject) -> tuple[int, int]:
+    depth = _runtime_int(item, "depth")
+    if depth is None:
+        depth = _runtime_int(item, "step_order")
+    if depth is None:
+        depth = 1_000_000
+    parallel_group = _runtime_int(item, "parallel_group")
+    if parallel_group is None:
+        parallel_group = 0
+    return depth, parallel_group
 
-    for idx, item in enumerate(ordered):
-        if item.get("execution_status") not in PENDING_EXECUTION_STATUSES:
+
+def next_pending_execution_segment(
+    dish: JSONObject, ingredients: list[JSONObject]
+) -> ExecutionSegment | None:
+    ordered = sort_ingredients_for_execution(dish, ingredients)
+    ready_bucket: tuple[int, int] | None = None
+
+    for item in ordered:
+        status = item.get("service_exec_status")
+        if status in SUCCESS_EXECUTION_STATUSES:
             continue
-        engine = str(item.get("execution_engine") or "").strip().lower()
-        if engine not in {"stackstorm", "bakery"}:
+        if status in FAILURE_EXECUTION_STATUSES:
+            if str(item.get("on_failure") or "stop").strip().lower() == "continue":
+                continue
+            return None
+        if status in IN_FLIGHT_EXECUTION_STATUSES:
+            return None
+        if status not in PENDING_EXECUTION_STATUSES:
             continue
-        first_pending_index = idx
-        segment_engine = engine
+        ready_bucket = _execution_bucket(item)
         break
 
-    if first_pending_index is None or segment_engine is None:
+    if ready_bucket is None:
         return None
 
-    segment: list[dict[str, Any]] = []
-    for item in ordered[first_pending_index:]:
-        if item.get("execution_status") not in PENDING_EXECUTION_STATUSES:
-            break
-        engine = str(item.get("execution_engine") or "").strip().lower()
-        if engine != segment_engine:
-            break
+    segment: list[JSONObject] = []
+    service_types: set[str] = set()
+    for item in ordered:
+        if _execution_bucket(item) != ready_bucket:
+            continue
+        if item.get("service_exec_status") not in PENDING_EXECUTION_STATUSES:
+            continue
+        service_type = str(item.get("service_type") or "").strip().lower()
+        if not service_type:
+            return None
+        service_types.add(service_type)
         segment.append(item)
 
     if not segment:
         return None
-    return segment_engine, segment
+    depth, parallel_group = ready_bucket
+    return ExecutionSegment(
+        depth=depth,
+        parallel_group=parallel_group,
+        service_types=tuple(sorted(service_types)),
+        rows=segment,
+    )
 
 
-def has_pending_execution(dish: dict[str, Any], ingredients: list[dict[str, Any]]) -> bool:
+def has_pending_execution(dish: JSONObject, ingredients: list[JSONObject]) -> bool:
     return next_pending_execution_segment(dish, ingredients) is not None
+
+
+def has_in_flight_execution(ingredients: list[JSONObject]) -> bool:
+    return any(
+        item.get("service_exec_status") in IN_FLIGHT_EXECUTION_STATUSES
+        for item in ingredients
+        if isinstance(item, dict)
+    )

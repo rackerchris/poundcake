@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from shared.types import JSONObject
+
 import getpass
 from typing import Any
 
@@ -12,7 +14,7 @@ from cli.commands.common import get_client, get_output_format
 from cli.utils import parse_json_object, print_error, print_output, render_sections, to_plain_data
 
 
-def _suppression_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _suppression_rows(rows: list[JSONObject]) -> list[JSONObject]:
     return [
         {
             "id": item.get("id"),
@@ -27,7 +29,7 @@ def _suppression_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _suppression_detail_table(item: dict[str, Any]) -> str:
+def _suppression_detail_table(item: JSONObject) -> str:
     sections: list[tuple[str, Any]] = [
         (
             "Suppression",
@@ -70,8 +72,8 @@ def _build_matchers(
     matcher_operator: str | None,
     matcher_value: str | None,
     matcher_json: tuple[str, ...],
-) -> list[dict[str, Any]]:
-    matchers: list[dict[str, Any]] = []
+) -> list[JSONObject]:
+    matchers: list[JSONObject] = []
     if matcher_key:
         matchers.append(
             {
@@ -99,7 +101,7 @@ def suppressions() -> None:
 @click.option("--limit", type=int, default=100, show_default=True)
 @click.option("--offset", type=int, default=0, show_default=True)
 @click.pass_context
-def list_suppressions_cmd(
+def list_suppressions(
     ctx: click.Context,
     status: str | None,
     enabled: bool | None,
@@ -123,18 +125,18 @@ def list_suppressions_cmd(
         raise click.Abort() from exc
 
 
-@suppressions.command("get")
+@suppressions.command("show")
 @click.argument("suppression_id", type=int)
 @click.pass_context
-def get_suppression_cmd(ctx: click.Context, suppression_id: int) -> None:
-    """Get one suppression."""
+def show_suppression(ctx: click.Context, suppression_id: int) -> None:
+    """Show a suppression."""
     client = get_client(ctx)
     output_format = get_output_format(ctx)
     try:
         payload = client.get_suppression(suppression_id)
         print_output(payload, output_format, table_renderer=_suppression_detail_table)
     except PoundCakeClientError as exc:
-        print_error(f"Failed to get suppression: {exc}")
+        print_error(f"Failed to show suppression: {exc}")
         raise click.Abort() from exc
 
 
@@ -153,7 +155,7 @@ def get_suppression_cmd(ctx: click.Context, suppression_id: int) -> None:
 @click.option("--matcher-value", default=None)
 @click.option("--matcher-json", multiple=True, help="JSON object matcher payload")
 @click.pass_context
-def create_suppression_cmd(
+def create_suppression(
     ctx: click.Context,
     name: str,
     starts_at: str,
@@ -195,7 +197,7 @@ def create_suppression_cmd(
 @suppressions.command("cancel")
 @click.argument("suppression_id", type=int)
 @click.pass_context
-def cancel_suppression_cmd(ctx: click.Context, suppression_id: int) -> None:
+def cancel_suppression(ctx: click.Context, suppression_id: int) -> None:
     """Cancel a suppression window."""
     client = get_client(ctx)
     output_format = get_output_format(ctx)

@@ -39,25 +39,11 @@ assert_not_contains() {
 echo "Checking PoundCake installer wrapper..."
 [[ -x "${WRAPPER}" ]] || fail "missing ${WRAPPER}"
 assert_contains 'exec "$PROJECT_ROOT/helm/bin/install-poundcake.sh" "$@"' "${WRAPPER}"
-assert_not_contains "install-bakery-helm.sh" "${WRAPPER}"
 
 echo "Checking rendered manifest probe contract..."
 [[ -x "${INSTALLER}" ]] || fail "missing ${INSTALLER}"
-assert_contains '/api/v1/ready' "${INSTALLER}"
-assert_contains '/api/v1/live' "${INSTALLER}"
+assert_contains '/readyz' "${INSTALLER}"
+assert_contains '/livez' "${INSTALLER}"
 assert_not_contains '/api/v1/health.' "${INSTALLER}"
-
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "${TMP_DIR}"' EXIT
-TARGET_OUT="${TMP_DIR}/target.out"
-
-echo "Validating --target rejection message..."
-if "${WRAPPER}" --target bakery >"${TARGET_OUT}" 2>&1; then
-  fail "expected --target to fail"
-fi
-
-assert_contains "install-poundcake-helm.sh no longer supports --target." "${TARGET_OUT}"
-assert_contains "PoundCake now installs only PoundCake." "${TARGET_OUT}"
-assert_contains "Install Bakery from the standalone bakery repo" "${TARGET_OUT}"
 
 echo "[PASS] PoundCake install wrapper checks passed"

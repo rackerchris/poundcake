@@ -6,22 +6,22 @@ tests:
     asserts:
       - isNull:
           path: spec.template.spec.containers[0].command
-        documentIndex: 2
+        documentIndex: 1
       - isNull:
           path: spec.template.spec.containers[0].args
-        documentIndex: 2
+        documentIndex: 1
 
   - it: keeps non-root-safe ui container port defaults
     asserts:
       - equal:
           path: spec.template.spec.containers[0].ports[0].containerPort
           value: 8080
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].securityContext.runAsNonRoot
           value: true
-        documentIndex: 2
+        documentIndex: 1
       - equal:
           path: spec.template.spec.containers[0].securityContext.runAsUser
           value: 1000
-        documentIndex: 2
+        documentIndex: 1

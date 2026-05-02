@@ -14,6 +14,15 @@ IDE support.
 
 from typing import Literal
 
+from shared.types import JSONArray, JSONObject, JSONPrimitive, JSONValue
+
+__all__ = [
+    "JSONArray",
+    "JSONObject",
+    "JSONPrimitive",
+    "JSONValue",
+]
+
 # =============================================================================
 # Processing Status Types
 # =============================================================================
@@ -25,7 +34,7 @@ DishProcessingStatus = Literal[
     "finalizing",
     "complete",
     "failed",
-    "abandoned",
+    "errored",
     "timeout",
     "canceled",
 ]
@@ -34,12 +43,11 @@ DishProcessingStatus = Literal[
 OrderProcessingStatus = Literal[
     "new",
     "processing",
-    "waiting_clear",
-    "escalation",
     "resolving",
-    "waiting_ticket_close",
     "complete",
     "failed",
+    "errored",
+    "timeout",
     "canceled",
 ]
 
@@ -47,7 +55,7 @@ OrderProcessingStatus = Literal[
 DishTerminalStatus = Literal[
     "complete",
     "failed",
-    "abandoned",
+    "errored",
     "timeout",
     "canceled",
 ]
@@ -56,6 +64,8 @@ DishTerminalStatus = Literal[
 OrderTerminalStatus = Literal[
     "complete",
     "failed",
+    "errored",
+    "timeout",
     "canceled",
 ]
 
@@ -69,39 +79,30 @@ AlertStatus = Literal[
 ]
 
 # =============================================================================
-# StackStorm Execution Status Types
+# Order Types
 # =============================================================================
 
-ST2ExecutionStatus = Literal[
-    "requested",
-    "scheduled",
-    "running",
-    "succeeded",
-    "failed",
-    "canceled",
-    "canceling",
-    "paused",
-    "pausing",
-    "resuming",
-    "pending",
-    "timeout",
-    "abandoned",
+OrderType = Literal[
+    "webhook_alert",
+    "scheduled_task",
+    "manual",
 ]
 
-ST2TerminalStatus = Literal[
-    "succeeded",
-    "failed",
-    "canceled",
-    "timeout",
-    "abandoned",
+OrderScope = Literal[
+    "operator",
+    "system",
+    "all",
 ]
 
-ST2FailureStatus = Literal[
-    "failed",
-    "canceled",
-    "timeout",
-    "abandoned",
-]
+WEBHOOK_ALERT_ORDER_TYPE: OrderType = "webhook_alert"
+SCHEDULED_TASK_ORDER_TYPE: OrderType = "scheduled_task"
+MANUAL_ORDER_TYPE: OrderType = "manual"
+
+ALL_ORDER_TYPES: frozenset[OrderType] = frozenset(
+    {WEBHOOK_ALERT_ORDER_TYPE, SCHEDULED_TASK_ORDER_TYPE, MANUAL_ORDER_TYPE}
+)
+OPERATOR_ORDER_TYPES: frozenset[OrderType] = frozenset({WEBHOOK_ALERT_ORDER_TYPE})
+SYSTEM_ORDER_TYPES: frozenset[OrderType] = frozenset({SCHEDULED_TASK_ORDER_TYPE})
 
 # =============================================================================
 # Recipe Ingredient Types
@@ -120,14 +121,12 @@ OnFailureAction = Literal[
 
 RunPhase = Literal[
     "firing",
-    "escalation",
     "resolving",
     "both",
 ]
 
 DishRunPhase = Literal[
     "firing",
-    "escalation",
     "resolving",
 ]
 
@@ -145,6 +144,9 @@ ExecutionPurpose = Literal[
     "remediation",
     "comms",
     "utility",
+    "plugin_health",
+    "suppression_sync",
+    "suppression_lifecycle",
 ]
 
 RemediationOutcome = Literal[
@@ -153,9 +155,6 @@ RemediationOutcome = Literal[
     "failed",
     "none",
 ]
-
-# Backward-compatible alias.
-IngredientKind = ExecutionPurpose
 
 # =============================================================================
 # Sort Order Types
@@ -205,11 +204,53 @@ SuppressionMatcherOperator = Literal[
 # =============================================================================
 
 CanonicalExecutionStatus = Literal[
-    "queued",
+    "pending",
+    "dispatched",
     "running",
     "succeeded",
     "failed",
+    "errored",
+    "timeout",
     "canceled",
+]
+
+PluginHealthStatus = Literal[
+    "unknown",
+    "initializing",
+    "healthy",
+    "degraded",
+    "failed",
+    "disabled",
+]
+
+PluginBootstrapStatus = Literal[
+    "ready",
+    "initializing",
+    "failed",
+]
+
+PluginHealthCheckState = Literal[
+    "idle",
+    "queued",
+    "running",
+]
+
+ScheduledTaskStatus = Literal[
+    "idle",
+    "queued",
+    "running",
+    "disabled",
+]
+
+ScheduledTaskSource = Literal[
+    "core",
+    "plugin_manifest",
+    "registered",
+]
+
+ScheduledTaskType = Literal[
+    "plugin_health_check",
+    "service_execution",
 ]
 
 # =============================================================================

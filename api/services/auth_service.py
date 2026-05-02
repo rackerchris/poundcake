@@ -9,9 +9,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import importlib
-import json
 import re
 import secrets
 import ssl
@@ -20,7 +17,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
 
-from redis.asyncio import Redis
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -29,7 +25,7 @@ from api.core.config import get_settings
 from api.core.http_client import request_with_retry
 from api.core.logging import get_logger
 from api.models.models import AuthPrincipal, AuthRoleBinding
-from api.types import AuthBindingType, AuthPrincipalType, AuthProvider, AuthRole
+from api.types import AuthBindingType, AuthPrincipalType, AuthProvider, AuthRole, JSONObject
 
 logger = get_logger(__name__)
 
@@ -64,11 +60,11 @@ ROLE_PERMISSIONS: dict[AuthRole, list[str]] = {
 
 HUMAN_ROLES: set[AuthRole] = {"reader", "operator", "admin"}
 
-_MEMORY_STATE: dict[str, tuple[dict[str, Any], datetime]] = {}
+_MEMORY_STATE: dict[str, tuple[JSONObject, datetime]] = {}
 _SESSION_STORE: SessionStore | None = None
 _SESSION_STORE_KEY: tuple[Any, ...] | None = None
-_OIDC_DISCOVERY_CACHE: dict[str, dict[str, Any]] = {}
-_OIDC_JWKS_CACHE: dict[str, dict[str, Any]] = {}
+_OIDC_DISCOVERY_CACHE: dict[str, JSONObject] = {}
+_OIDC_JWKS_CACHE: dict[str, JSONObject] = {}
 
 AUTH_PROVIDER_LABELS: dict[str, str] = {
     "local": "Local Superuser",
@@ -150,11 +146,15 @@ class AuthContext:
     principal_id: int | None = None
     session_id: str | None = None
     expires_at: str | None = None
+    service_plugin_id: int | None = None
+    service_type: str | None = None
+    plugin_type: str | None = None
+    credential_scope: str | None = None
 
     def is_human(self) -> bool:
         return self.principal_type == "user"
 
-    def to_session_payload(self) -> dict[str, Any]:
+    def to_session_payload(self) -> JSONObject:
         return asdict(self)
 
 
@@ -199,25 +199,18 @@ class SessionStore:
     """Persist auth sessions and short-lived auth state."""
 
     def __init__(self) -> None:
-        settings = get_settings()
-        self.prefix = settings.auth_redis_prefix
-        self.use_memory = settings.testing or not settings.redis_enabled
-        self._redis: Redis | None = None
-        if not self.use_memory:
-            self._redis = Redis.from_url(
-                settings.redis_url,
-                password=settings.redis_password or None,
-                decode_responses=True,
-            )
+        self.prefix = "poundcake:auth"
 
-    def _redis_key(self, kind: str, key: str) -> str:
+    def _state_key(self, kind: str, key: str) -> str:
         return f"{self.prefix}:{kind}:{key}"
 
     async def create_session(self, context: AuthContext, *, ttl_seconds: int) -> AuthContext:
         context.session_id = secrets.token_urlsafe(32)
         context.expires_at = (utc_now() + timedelta(seconds=ttl_seconds)).isoformat()
+        payload = context.to_session_payload()
+        payload["_created_at"] = utc_now().isoformat()
         await self.set_value(
-            "session", context.session_id, context.to_session_payload(), ttl_seconds
+            "session", context.session_id, payload, ttl_seconds
         )
         return context
 
@@ -261,70 +254,62 @@ class SessionStore:
         await self.delete_value("session", session_id)
 
     async def put_state(
-        self, kind: str, key: str, payload: dict[str, Any], *, ttl_seconds: int
+        self, kind: str, key: str, payload: JSONObject, *, ttl_seconds: int
     ) -> None:
         await self.set_value(kind, key, payload, ttl_seconds)
 
-    async def pop_state(self, kind: str, key: str) -> dict[str, Any] | None:
+    async def pop_state(self, kind: str, key: str) -> JSONObject | None:
         payload = await self.get_value(kind, key)
         await self.delete_value(kind, key)
         if isinstance(payload, dict):
             return payload
         return None
 
-    async def set_value(
-        self, kind: str, key: str, payload: dict[str, Any], ttl_seconds: int
-    ) -> None:
-        if self.use_memory:
-            _MEMORY_STATE[self._redis_key(kind, key)] = (
-                payload,
-                utc_now() + timedelta(seconds=ttl_seconds),
-            )
-            return
-        assert self._redis is not None
-        await self._redis.setex(self._redis_key(kind, key), ttl_seconds, json.dumps(payload))
+    async def set_value(self, kind: str, key: str, payload: JSONObject, ttl_seconds: int) -> None:
+        _MEMORY_STATE[self._state_key(kind, key)] = (
+            payload,
+            utc_now() + timedelta(seconds=ttl_seconds),
+        )
 
-    async def get_value(self, kind: str, key: str) -> dict[str, Any] | None:
-        storage_key = self._redis_key(kind, key)
-        if self.use_memory:
-            entry = _MEMORY_STATE.get(storage_key)
-            if not entry:
-                return None
-            payload, expires_at = entry
-            if expires_at <= utc_now():
-                _MEMORY_STATE.pop(storage_key, None)
-                return None
-            return dict(payload)
-        assert self._redis is not None
-        raw = await self._redis.get(storage_key)
-        if not raw:
+    async def put_if_absent(
+        self,
+        kind: str,
+        key: str,
+        payload: JSONObject,
+        ttl_seconds: int,
+    ) -> bool:
+        storage_key = self._state_key(kind, key)
+        entry = _MEMORY_STATE.get(storage_key)
+        if entry:
+            _, expires_at = entry
+            if expires_at > utc_now():
+                return False
+            _MEMORY_STATE.pop(storage_key, None)
+        _MEMORY_STATE[storage_key] = (
+            payload,
+            utc_now() + timedelta(seconds=ttl_seconds),
+        )
+        return True
+
+    async def get_value(self, kind: str, key: str) -> JSONObject | None:
+        storage_key = self._state_key(kind, key)
+        entry = _MEMORY_STATE.get(storage_key)
+        if not entry:
             return None
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
+        payload, expires_at = entry
+        if expires_at <= utc_now():
+            _MEMORY_STATE.pop(storage_key, None)
             return None
-        return data if isinstance(data, dict) else None
+        return dict(payload)
 
     async def delete_value(self, kind: str, key: str) -> None:
-        storage_key = self._redis_key(kind, key)
-        if self.use_memory:
-            _MEMORY_STATE.pop(storage_key, None)
-            return
-        assert self._redis is not None
-        await self._redis.delete(storage_key)
+        _MEMORY_STATE.pop(self._state_key(kind, key), None)
 
 
 def get_session_store() -> SessionStore:
     """Return the active auth session store."""
     global _SESSION_STORE, _SESSION_STORE_KEY
-    settings = get_settings()
-    key = (
-        settings.testing,
-        settings.redis_enabled,
-        settings.redis_url,
-        settings.redis_password,
-        settings.auth_redis_prefix,
-    )
+    key = ("memory",)
     if _SESSION_STORE is None or _SESSION_STORE_KEY != key:
         _SESSION_STORE = SessionStore()
         _SESSION_STORE_KEY = key
@@ -332,7 +317,7 @@ def get_session_store() -> SessionStore:
 
 
 def get_local_superuser_credentials() -> tuple[str, str] | None:
-    """Load the bootstrap superuser credentials."""
+    """Load the bootstrap superuser credentials from configured secret-backed env."""
     settings = get_settings()
 
     if not settings.auth_enabled or not settings.auth_local_enabled:
@@ -341,36 +326,13 @@ def get_local_superuser_credentials() -> tuple[str, str] | None:
     if settings.auth_username and settings.auth_password:
         return (settings.auth_username, settings.auth_password)
 
-    try:
-        k8s_client_module = importlib.import_module("kubernetes.client")
-        k8s_config_module = importlib.import_module("kubernetes.config")
-
-        try:
-            k8s_config_module.load_incluster_config()
-        except Exception:
-            k8s_config_module.load_kube_config()
-
-        v1 = k8s_client_module.CoreV1Api()
-        secret = v1.read_namespaced_secret(
-            name=settings.auth_secret_name,
-            namespace=settings.auth_secret_namespace,
-        )
-        username = base64.b64decode(secret.data["username"]).decode("utf-8")
-        password = base64.b64decode(secret.data["password"]).decode("utf-8")
-        return (username, password)
-    except Exception as exc:
-        logger.debug("Local superuser secret unavailable", extra={"error": str(exc)})
-
-    if settings.auth_dev_username and settings.auth_dev_password:
-        return (settings.auth_dev_username, settings.auth_dev_password)
-
     return None
 
 
-def get_enabled_provider_metadata() -> list[dict[str, Any]]:
+def get_enabled_provider_metadata() -> list[JSONObject]:
     """Describe enabled auth providers for UI and CLI discovery."""
     settings = get_settings()
-    providers: list[dict[str, Any]] = []
+    providers: list[JSONObject] = []
 
     if get_local_superuser_credentials():
         providers.append(
@@ -689,7 +651,7 @@ def _azure_ad_scope() -> str:
     return " ".join(configured_items)
 
 
-async def _azure_ad_discovery_document() -> dict[str, Any]:
+async def _azure_ad_discovery_document() -> JSONObject:
     authority = _azure_ad_authority_base()
     cached = _OIDC_DISCOVERY_CACHE.get(authority)
     if cached is not None:
@@ -719,7 +681,7 @@ async def _azure_ad_discovery_document() -> dict[str, Any]:
     return dict(data)
 
 
-async def _azure_ad_jwks() -> dict[str, Any]:
+async def _azure_ad_jwks() -> JSONObject:
     discovery = await _azure_ad_discovery_document()
     jwks_uri = str(discovery["jwks_uri"])
     cached = _OIDC_JWKS_CACHE.get(jwks_uri)
@@ -745,7 +707,7 @@ def _normalize_claim_groups(groups_value: Any) -> list[str]:
     return []
 
 
-def _auth0_identity_from_profile(profile: dict[str, Any]) -> AuthIdentity:
+def _auth0_identity_from_profile(profile: JSONObject) -> AuthIdentity:
     settings = get_settings()
     groups = _normalize_claim_groups(profile.get(settings.auth_auth0_groups_claim) or [])
 
@@ -778,7 +740,7 @@ def _auth0_identity_from_profile(profile: dict[str, Any]) -> AuthIdentity:
     )
 
 
-def _azure_ad_groups_from_claims(claims: dict[str, Any]) -> list[str]:
+def _azure_ad_groups_from_claims(claims: JSONObject) -> list[str]:
     settings = get_settings()
     groups_claim = settings.auth_azure_ad_groups_claim
     claim_names = claims.get("_claim_names")
@@ -790,7 +752,7 @@ def _azure_ad_groups_from_claims(claims: dict[str, Any]) -> list[str]:
 
 
 def _azure_ad_identity_from_claims(
-    claims: dict[str, Any],
+    claims: JSONObject,
     *,
     expected_nonce: str | None = None,
 ) -> AuthIdentity:
@@ -967,7 +929,7 @@ async def start_device_authorization(provider: str) -> DeviceAuthorizationStart:
     raise ProviderConfigurationError(f"Provider '{provider}' does not support device login")
 
 
-async def _auth0_fetch_userinfo(access_token: str) -> dict[str, Any]:
+async def _auth0_fetch_userinfo(access_token: str) -> JSONObject:
     response = await request_with_retry(
         "GET",
         f"{_auth0_base_url()}/userinfo",
@@ -1377,19 +1339,34 @@ async def build_login_context(db: AsyncSession, identity: AuthIdentity) -> AuthC
     return build_auth_context(identity, role, principal=principal)
 
 
-def service_token_context() -> AuthContext:
+def service_token_context(
+    *,
+    service_plugin_id: int | None = None,
+    service_type: str | None = None,
+    plugin_type: str | None = None,
+    credential_scope: str | None = None,
+) -> AuthContext:
     """Return the static service principal context."""
+    normalized_service_type = (service_type or "").strip().lower() or None
     return AuthContext(
         provider="service",
-        subject_id="service-token",
-        username="service",
-        display_name="Internal Service",
+        subject_id=normalized_service_type or "service-token",
+        username=normalized_service_type or "service",
+        display_name=(
+            f"Internal Service ({normalized_service_type})"
+            if normalized_service_type
+            else "Internal Service"
+        ),
         groups=[],
         role="service",
         principal_type="service",
         is_superuser=False,
         permissions=permissions_for_role("service"),
         principal_id=None,
+        service_plugin_id=service_plugin_id,
+        service_type=normalized_service_type,
+        plugin_type=(plugin_type or "").strip().lower() or None,
+        credential_scope=(credential_scope or "").strip() or None,
     )
 
 
@@ -1411,6 +1388,21 @@ async def rehydrate_session_context(
         stored.permissions = permissions_for_role("admin", is_superuser=True)
         return (stored, None)
 
+    max_session = get_settings().auth_absolute_max_session
+    created_at_str = (stored.to_session_payload().get("_created_at") if hasattr(stored, "to_session_payload") else None)
+    if not created_at_str:
+        created_at_str = stored.expires_at  # legacy sessions: use expires_at as worst proxy
+    try:
+        created_at = datetime.fromisoformat(str(created_at_str))
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        elapsed = (utc_now() - created_at).total_seconds()
+        if elapsed >= max_session:
+            _MEMORY_STATE.pop(store._state_key("session", session_id), None)
+            return (None, "Session has expired")
+    except (ValueError, TypeError):
+        pass
+
     identity = AuthIdentity(
         provider=stored.provider,
         subject_id=stored.subject_id,
@@ -1430,6 +1422,14 @@ async def rehydrate_session_context(
     refreshed = build_auth_context(identity, role, principal=principal)
     refreshed.session_id = stored.session_id
     refreshed.expires_at = stored.expires_at
+
+    ttl = get_settings().auth_session_timeout
+    refresh_at = utc_now() + timedelta(seconds=ttl)
+    refreshed.expires_at = refresh_at.isoformat()
+    stored_dict = stored.to_session_payload() if hasattr(stored, "to_session_payload") else {}
+    stored_dict["expires_at"] = refresh_at.isoformat()
+    await store.set_value("session", session_id, stored_dict, ttl)
+
     return (refreshed, None)
 
 
@@ -1442,16 +1442,15 @@ def _is_public_path(path: str, method: str) -> bool:
         "/docs",
         "/redoc",
         "/openapi.json",
-        "/api/v1/live",
-        "/api/v1/ready",
-        "/api/v1/health",
+        "/livez",
+        "/readyz",
         "/api/v1/auth/login",
         "/api/v1/auth/providers",
         "/api/v1/auth/oidc/login",
         "/api/v1/auth/oidc/callback",
         "/api/v1/auth/device/start",
         "/api/v1/auth/device/poll",
-        "/api/v1/cook/packs",
+        "/api/v1/webhook",
     }
     return path in public_paths or path.startswith("/static/")
 
@@ -1461,18 +1460,205 @@ def is_request_public(path: str, method: str) -> bool:
     return _is_public_path(path, method.upper())
 
 
+def _path_is(path: str, prefix: str) -> bool:
+    """Return True for an exact route or a descendant route under the prefix."""
+    return path == prefix or path.startswith(f"{prefix}/")
+
+
 def _service_only_path(path: str, method: str) -> bool:
-    if path == "/api/v1/webhook":
+    if _path_is(path, "/api/v1/internal"):
         return True
-    if path == "/api/v1/suppressions/run-lifecycle":
+    if _path_is(path, "/api/v1/orders") and method != "GET":
         return True
-    if path.startswith("/api/v1/orders") and method != "GET":
+    if _path_is(path, "/api/v1/dishes") and method != "GET":
         return True
-    if path.startswith("/api/v1/dishes") and method != "GET":
+    if path in {"/api/v1/orders", "/api/v1/dishes"} and method == "GET":
+        return True
+    if (
+        path.startswith("/api/v1/orders/")
+        and method == "GET"
+        and not _reader_reporting_status_path(path, method)
+        and not path.endswith("/execution-history")
+    ):
         return True
     if path.startswith("/api/v1/cook/") and method != "GET":
         return True
     return False
+
+
+def _timer_runtime_path(path: str, method: str) -> bool:
+    if (
+        path
+        in {
+            "/api/v1/dish-ingredients/in-flight",
+            "/api/v1/dish-ingredients/cancel-requested",
+            "/api/v1/dish-ingredients/advance-ready",
+        }
+        and method == "GET"
+    ):
+        return True
+    if path.startswith("/api/v1/dish-ingredients/") and method == "POST":
+        return (
+            path.endswith("/poll-claim")
+            or path.endswith("/poll-release")
+            or path.endswith("/reconcile")
+        )
+    if path.startswith("/api/v1/dishes/") and path.endswith("/ingredients") and method == "GET":
+        return True
+    if path.startswith("/api/v1/cook/dishes/") and path.endswith("/advance") and method == "POST":
+        return True
+    if path.startswith("/api/v1/expediter/status/") and method == "GET":
+        return True
+    if path.startswith("/api/v1/expediter/cancel/") and method == "POST":
+        return True
+    return False
+
+
+def _expediter_runner_runtime_path(path: str, method: str) -> bool:
+    if path == "/api/v1/dish-ingredients/execution-pending" and method == "GET":
+        return True
+    if path.startswith("/api/v1/dish-ingredients/") and method == "POST":
+        return (
+            path.endswith("/execution-claim")
+            or path.endswith("/execution-release")
+            or path.endswith("/reconcile")
+        )
+    if path.startswith("/api/v1/expediter/execute/") and method == "POST":
+        return True
+    if path.startswith("/api/v1/cook/dishes/") and path.endswith("/advance") and method == "POST":
+        return True
+    return False
+
+
+def _service_allowed_path(service_type: str | None, path: str, method: str) -> bool:
+    """Return True when an internal service identity may call this control-plane route."""
+    normalized = (service_type or "").strip().lower()
+    method = method.upper()
+    if normalized == "prep-chef":
+        return (
+            (path == "/api/v1/orders" and method == "GET")
+            or (path.startswith("/api/v1/cook/orders/") and method == "POST")
+            or (path == "/api/v1/plugins/prep-chef" and method == "GET")
+        )
+    if normalized == "timer":
+        return _timer_runtime_path(path, method) or (
+            path == "/api/v1/plugins/timer" and method == "GET"
+        )
+    if normalized == "expediter-runner":
+        return _expediter_runner_runtime_path(path, method) or (
+            path == "/api/v1/plugins/expediter-runner" and method == "GET"
+        )
+    if normalized == "dishwasher":
+        if path in {"/api/v1/plugins", "/api/v1/plugins/dishwasher"} and method == "GET":
+            return True
+        if path == "/api/v1/internal/service-registry/ingredients/bulk" and method == "POST":
+            return True
+        if _path_is(path, "/api/v1/service-registry") and method == "GET":
+            return True
+        if _path_is(path, "/api/v1/recipes") and method in {"GET", "POST", "PUT", "PATCH"}:
+            return True
+        if path == "/api/v1/communications/policy" and method in {"GET", "PUT"}:
+            return True
+        if path.startswith("/api/v1/scheduled-tasks/") and path.endswith("/run-now"):
+            return False
+        if _path_is(path, "/api/v1/scheduled-tasks") and method in {
+            "GET",
+            "POST",
+            "PATCH",
+        }:
+            return True
+        if path == "/api/v1/orders" and method == "POST":
+            return True
+        return False
+    if normalized == "credential-manager":
+        if path in {"/api/v1/plugins", "/api/v1/plugins/credential-manager"} and method == "GET":
+            return True
+        return False
+    return False
+
+
+def _operator_plugin_runtime_path(path: str, method: str) -> bool:
+    """Return True for operator-owned plugin runtime and non-secret connection tuning."""
+    if not path.startswith("/api/v1/plugins/"):
+        return False
+    if method == "PATCH":
+        return True
+    if path.endswith("/configuration") and method in {"GET", "PUT"}:
+        return True
+    if path.endswith("/test-connection") and method == "POST":
+        return True
+    return False
+
+
+def _admin_plugin_configuration_path(path: str, method: str) -> bool:
+    """Return True for admin-owned plugin adapter secret actions."""
+    if not path.startswith("/api/v1/plugins/"):
+        return False
+    if method == "PUT" and path.endswith("/credentials"):
+        return True
+    return False
+
+
+def _reader_reporting_status_path(path: str, method: str) -> bool:
+    """Return True for redacted reporting/status GET routes."""
+    if method != "GET":
+        return False
+    if path in {
+        "/api/v1/health/status",
+        "/api/v1/orders/status",
+        "/api/v1/recipes/status",
+        "/api/v1/dishes/status",
+        "/api/v1/service-registry/ingredients/status",
+        "/api/v1/scheduled-tasks/status",
+        "/api/v1/suppressions/status",
+        "/api/v1/observability/overview",
+        "/api/v1/observability/activity/status",
+        "/api/v1/communications/activity/status",
+    }:
+        return True
+    if path.startswith("/api/v1/orders/") and (
+        path.endswith("/status") or path.endswith("/timeline")
+    ):
+        return True
+    if path.startswith("/api/v1/recipes/") and (
+        path.endswith("/status") or path.endswith("/ingredient-status")
+    ):
+        return True
+    if path.startswith("/api/v1/dishes/") and path.endswith("/ingredient-status"):
+        return True
+    return False
+
+
+def _admin_execution_history_path(path: str, method: str) -> bool:
+    """Return True for admin-readable runtime evidence without mutation authority."""
+    if method != "GET":
+        return False
+    if path.startswith("/api/v1/dishes/") and (
+        path.endswith("/ingredients") or path.endswith("/ingredient-history")
+    ):
+        return True
+    if path.startswith("/api/v1/orders/") and path.endswith("/execution-history"):
+        return True
+    return False
+
+
+def _operator_desired_state_read_path(path: str, method: str) -> bool:
+    """Return True for operator-readable recipe and ingredient definition detail."""
+    if method != "GET" or _reader_reporting_status_path(path, method):
+        return False
+    return _path_is(path, "/api/v1/recipes") or _path_is(path, "/api/v1/service-registry")
+
+
+def _admin_detail_read_path(path: str, method: str) -> bool:
+    """Return True for desired-state detail reads used by admin editor/configuration surfaces."""
+    if method != "GET" or _reader_reporting_status_path(path, method):
+        return False
+    if path in {
+        "/api/v1/scheduled-tasks",
+        "/api/v1/scheduled-tasks/due",
+    }:
+        return True
+    return path.startswith("/api/v1/scheduled-tasks/")
 
 
 def request_role_requirement(path: str, method: str) -> AuthRole | None:
@@ -1485,7 +1671,7 @@ def request_role_requirement(path: str, method: str) -> AuthRole | None:
     if _service_only_path(path, normalized_method):
         return "service"
 
-    if path.startswith("/api/v1/auth/bindings") or path.startswith("/api/v1/auth/principals"):
+    if _path_is(path, "/api/v1/auth/bindings") or _path_is(path, "/api/v1/auth/principals"):
         return "admin"
 
     if path in {"/api/v1/auth/me", "/api/v1/auth/logout"}:
@@ -1494,22 +1680,52 @@ def request_role_requirement(path: str, method: str) -> AuthRole | None:
     if path == "/api/v1/communications/policy" and normalized_method == "PUT":
         return "admin"
 
-    if path.startswith("/api/v1/ingredients") and normalized_method != "GET":
+    if _operator_plugin_runtime_path(path, normalized_method):
         return "operator"
 
-    if path.startswith("/api/v1/recipes") and normalized_method != "GET":
-        return "operator"
-
-    if path.startswith("/api/v1/prometheus") and normalized_method != "GET":
-        return "operator"
-
-    if path.startswith("/api/v1/repo-sync") and normalized_method == "DELETE":
+    if _admin_plugin_configuration_path(path, normalized_method):
         return "admin"
 
-    if path.startswith("/api/v1/repo-sync") and normalized_method != "GET":
+    if _reader_reporting_status_path(path, normalized_method):
+        return "reader"
+
+    if _admin_execution_history_path(path, normalized_method):
+        return "admin"
+
+    if _timer_runtime_path(path, normalized_method):
+        return "service"
+
+    if _expediter_runner_runtime_path(path, normalized_method):
+        return "service"
+
+    if _operator_desired_state_read_path(path, normalized_method):
         return "operator"
 
-    if path.startswith("/api/v1/suppressions") and normalized_method != "GET":
+    if _admin_detail_read_path(path, normalized_method):
+        if path == "/api/v1/scheduled-tasks/due":
+            return "service"
+        return "admin"
+
+    if (
+        path.startswith("/api/v1/scheduled-tasks/")
+        and path.endswith("/run-now")
+        and normalized_method == "POST"
+    ):
+        return "operator"
+
+    if path.startswith("/api/v1/scheduled-tasks/") and normalized_method == "PATCH":
+        return "operator"
+
+    if _path_is(path, "/api/v1/plugins") and normalized_method != "GET":
+        return "admin"
+
+    if _path_is(path, "/api/v1/service-registry") and normalized_method != "GET":
+        return "admin"
+
+    if _path_is(path, "/api/v1/recipes") and normalized_method != "GET":
+        return "operator"
+
+    if _path_is(path, "/api/v1/suppressions") and normalized_method != "GET":
         return "operator"
 
     if normalized_method == "GET":
@@ -1538,11 +1754,38 @@ def is_authorized_for_role(context: AuthContext, required_role: AuthRole) -> boo
     return False
 
 
+def _require_service_credential_scope(context: AuthContext, expected_scope: str) -> None:
+    """Raise when a service principal does not carry the expected credential scope."""
+    actual_scope = (context.credential_scope or "").strip()
+    if actual_scope != expected_scope:
+        label = context.service_type or context.username or "service"
+        raise AccessDeniedError(f"service credential scope for {label} must be {expected_scope!r}")
+
+
 def ensure_request_authorized(context: AuthContext, path: str, method: str) -> None:
     """Raise when the principal cannot perform the request."""
     required_role = request_role_requirement(path, method)
     if required_role is None:
         return
+    if context.role == "service":
+        normalized_method = method.upper()
+        if context.plugin_type == "internal_plugin":
+            _require_service_credential_scope(context, "poundcake_control_plane")
+        if (
+            context.plugin_type == "internal_plugin"
+            and context.service_type
+            and _service_allowed_path(
+                context.service_type,
+                path,
+                normalized_method,
+            )
+        ):
+            return
+        raise AccessDeniedError(
+            f"service role"
+            f"{f' ({context.service_type})' if context.service_type else ''}"
+            f" cannot access {normalized_method} {path}"
+        )
     if not is_authorized_for_role(context, required_role):
         raise AccessDeniedError(f"{context.role} role cannot access {method.upper()} {path}")
 

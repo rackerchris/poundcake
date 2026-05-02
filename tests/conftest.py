@@ -1,18 +1,13 @@
-#  ___                        _  ____      _
-# |  _ \ ___  _   _ _ __   __| |/ ___|__ _| | _____
-# | |_) / _ \| | | | '_ \ / _` | |   / _` | |/ / _ \
-# |  __/ (_) | |_| | | | | (_| | |__| (_| |   <  __/
-# |_|   \___/ \__,_|_| |_|\__,_|\____\__,_|_|\_\___|
-#
 """Pytest configuration and fixtures."""
 
-import pytest
 import os
+
+import pytest
 
 
 @pytest.fixture(scope="session", autouse=True)
-def setup_test_env():
-    """Set up test environment variables."""
-    os.environ["DATABASE_URL"] = "sqlite:///:memory:"
-    os.environ["ST2_API_URL"] = "http://localhost:9101/v1"
+def setup_test_env() -> None:
+    """Set up a dummy-only contract-test environment."""
     os.environ["TESTING"] = "true"
+    os.environ["POUNDCAKE_ENABLED_PLUGINS"] = "dummy"
+    os.environ["POUNDCAKE_AUTH_ENABLED"] = "false"

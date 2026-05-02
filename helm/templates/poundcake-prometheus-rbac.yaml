@@ -1,4 +1,4 @@
-{{- if and .Values.poundcake.enabled .Values.prometheus.useCrds }}
+{{- if and .Values.poundcake.enabled .Values.servicePluginRbac.prometheusRules.enabled }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -29,8 +29,179 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "poundcake.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+  - kind: ServiceAccount
+    name: poundcake-startup
+    namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ include "poundcake.fullname" . }}-prometheus-rules
+{{- end }}
+{{- if and .Values.poundcake.enabled .Values.servicePluginRbac.podActions.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "poundcake.fullname" . }}-pod-actions
+  labels:
+    {{- include "poundcake.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - pods/log
+    verbs:
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "poundcake.fullname" . }}-pod-actions
+  labels:
+    {{- include "poundcake.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "poundcake.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "poundcake.fullname" . }}-pod-actions
+{{- end }}
+{{- if and .Values.poundcake.enabled .Values.servicePluginRbac.workloadTriage.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "poundcake.fullname" . }}-workload-triage
+  labels:
+    {{- include "poundcake.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - endpoints
+      - events
+      - configmaps
+      - nodes
+      - persistentvolumeclaims
+      - persistentvolumes
+      - pods
+      - pods/log
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - apps
+    resources:
+      - daemonsets
+      - deployments
+      - replicasets
+      - statefulsets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscalers
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - batch
+    resources:
+      - cronjobs
+      - jobs
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - discovery.k8s.io
+    resources:
+      - endpointslices
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - policy
+    resources:
+      - poddisruptionbudgets
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "poundcake.fullname" . }}-workload-triage
+  labels:
+    {{- include "poundcake.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "poundcake.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "poundcake.fullname" . }}-workload-triage
+{{- end }}
+{{- if and .Values.poundcake.enabled .Values.servicePluginRbac.nodeTriage.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "poundcake.fullname" . }}-node-triage
+  labels:
+    {{- include "poundcake.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - events
+      - nodes
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "poundcake.fullname" . }}-node-triage
+  labels:
+    {{- include "poundcake.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "poundcake.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "poundcake.fullname" . }}-node-triage
 {{- end }}

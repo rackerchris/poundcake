@@ -6,21 +6,31 @@
 #
 """Pre-heat service - Creates new orders or increments existing ones."""
 
+import asyncio
+import hashlib
 import inspect
+import random
+from datetime import datetime, timezone
+
+from dateutil import parser as dateutil_parser
 from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import IntegrityError
-from datetime import datetime, timezone
-from dateutil import parser as dateutil_parser
+from sqlalchemy.exc import IntegrityError, OperationalError
+
 from api.models.models import Order
+from api.services.order_types import ensure_raw_data_order_type
+from api.types import WEBHOOK_ALERT_ORDER_TYPE
 from api.core.config import get_settings
 from api.core.logging import get_logger
 from api.core.metrics import record_order_resolved_before_dish_start
 from api.core.statuses import can_transition_to_resolving, is_order_terminal, should_keep_active
-from api.services.suppression_service import find_first_matching_suppression, save_suppressed_event
 
 logger = get_logger(__name__)
 settings = get_settings()
+
+MAX_PRE_HEAT_ATTEMPTS = 3
+RETRYABLE_LOCK_ERROR_CODES = {1205, 1213}
+RETRY_BACKOFF_SECONDS = (0.05, 0.1, 0.2)
 
 
 async def _in_transaction(db: AsyncSession) -> bool:
@@ -31,98 +41,245 @@ async def _in_transaction(db: AsyncSession) -> bool:
     return bool(in_tx)
 
 
-async def pre_heat(payload: dict, db: AsyncSession, req_id: str) -> dict:
-    """
-    Intake Handler: Solely responsible for Order table management.
+def _db_error_code(exc: OperationalError) -> int | None:
+    args = getattr(getattr(exc, "orig", None), "args", ())
+    if not args:
+        return None
+    try:
+        return int(args[0])
+    except (TypeError, ValueError):
+        return None
 
-    Args:
-        payload: Alertmanager webhook payload
-        db: Database session
-        req_id: Request ID for tracing
 
-    Returns:
-        dict: Status and order_id
-    """
-    alerts = payload.get("alerts", [])
+def _is_retryable_lock_error(exc: OperationalError) -> bool:
+    return _db_error_code(exc) in RETRYABLE_LOCK_ERROR_CODES
 
-    if not alerts:
-        logger.warning("No alerts in payload", extra={"req_id": req_id})
-        return {"status": "no_alerts", "results": []}
 
-    results: list[dict] = []
+async def _active_order(db: AsyncSession, fingerprint: str) -> Order | None:
+    result = await db.execute(
+        select(Order).where(Order.fingerprint_when_active == fingerprint).with_for_update()
+    )
+    return result.scalars().first()
 
-    for alert_data in alerts:
-        labels = alert_data.get("labels", {})
-        alert_name = labels.get("alertname", "Unknown")
-        group_name = labels.get("group_name") or alert_name
-        alert_status = alert_data.get("status", "firing")
 
-        # Prefer Alertmanager fingerprint; fallback to derived value
-        fingerprint = (
-            alert_data.get("fingerprint") or f"{alert_name}_{labels.get('instance', 'unknown')}"
+async def _latest_warning_order(db: AsyncSession, fingerprint: str) -> Order | None:
+    result = await db.execute(
+        select(Order)
+        .where(Order.fingerprint == fingerprint, Order.severity == "warning")
+        .order_by(Order.created_at.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    return result.scalars().first()
+
+
+def _correlation_key_from_labels(labels: dict) -> str:
+    pairs = [
+        f"{str(key)}={str(value)}"
+        for key, value in sorted(labels.items(), key=lambda item: str(item[0]))
+        if str(key).strip().lower() not in {"alertname", "severity"}
+    ]
+    return hashlib.sha256("\n".join(pairs).encode("utf-8")).hexdigest()
+
+
+def _parse_alert_time(value: object) -> datetime:
+    if value and isinstance(value, str):
+        try:
+            return dateutil_parser.isoparse(value)
+        except (ValueError, TypeError):
+            return datetime.now(timezone.utc)
+    if isinstance(value, datetime):
+        return value
+    return datetime.now(timezone.utc)
+
+
+def _noop_warning_values(alert_data: dict, labels: dict, group_name: str) -> dict:
+    return {
+        "alert_group_name": group_name,
+        "alert_status": "firing",
+        "processing_status": "complete",
+        "is_active": False,
+        "severity": "warning",
+        "instance": labels.get("instance"),
+        "labels": labels,
+        "annotations": alert_data.get("annotations", {}),
+        "raw_data": ensure_raw_data_order_type(alert_data, WEBHOOK_ALERT_ORDER_TYPE),
+        "remediation_outcome": "none",
+        "clear_timeout_sec": None,
+        "clear_deadline_at": None,
+        "clear_timed_out_at": None,
+        "auto_close_eligible": False,
+        "correlation_key": _correlation_key_from_labels(labels),
+    }
+
+
+def _alert_result(
+    status: str,
+    existing: Order | None,
+    fingerprint: str,
+    alert_name: str,
+    alert_status: str,
+) -> dict:
+    return {
+        "status": status,
+        "order_id": existing.id if existing else None,
+        "fingerprint": fingerprint,
+        "alert_name": alert_name,
+        "alert_status": alert_status,
+    }
+
+
+async def _process_warning_alert(
+    alert_data: dict,
+    db: AsyncSession,
+    req_id: str,
+    *,
+    fingerprint: str,
+    alert_name: str,
+    group_name: str,
+    alert_status: str,
+    labels: dict,
+) -> dict:
+    existing = await _latest_warning_order(db, fingerprint)
+    if alert_status == "resolved":
+        if not existing:
+            return _alert_result("ignored", None, fingerprint, alert_name, alert_status)
+        existing.alert_status = "resolved"
+        existing.ends_at = _parse_alert_time(alert_data.get("endsAt"))
+        existing.processing_status = "complete"
+        existing.remediation_outcome = "none"
+        existing.is_active = False
+        existing.updated_at = datetime.now(timezone.utc)
+        return _alert_result("warning_resolved", existing, fingerprint, alert_name, alert_status)
+
+    if alert_status != "firing":
+        return _alert_result("ignored", existing, fingerprint, alert_name, alert_status)
+
+    if existing:
+        existing.counter += 1
+        existing.alert_status = "firing"
+        existing.processing_status = "complete"
+        existing.remediation_outcome = "none"
+        existing.is_active = False
+        existing.correlation_key = _correlation_key_from_labels(labels)
+        existing.updated_at = datetime.now(timezone.utc)
+        return _alert_result(
+            "warning_counter_incremented", existing, fingerprint, alert_name, alert_status
         )
 
-        logger.info(
-            "Processing order",
-            extra={
-                "req_id": req_id,
-                "alert_name": alert_name,
-                "alert_status": alert_status,
-                "fingerprint": fingerprint,
-            },
-        )
+    new_order = Order(
+        req_id=req_id,
+        fingerprint=fingerprint,
+        counter=1,
+        starts_at=_parse_alert_time(alert_data.get("startsAt")),
+        ends_at=None,
+        **_noop_warning_values(alert_data, labels, group_name),
+    )
+    db.add(new_order)
+    await db.flush()
+    return _alert_result("warning_recorded", new_order, fingerprint, alert_name, alert_status)
 
-        if settings.suppressions_enabled:
-            suppression = await find_first_matching_suppression(
-                db=db,
-                labels=labels,
-                received_at=datetime.now(timezone.utc),
+
+async def _increment_existing_order(
+    db: AsyncSession,
+    existing: Order,
+    *,
+    reopen_resolving: bool,
+) -> None:
+    values = {
+        "counter": Order.counter + 1,
+        "updated_at": datetime.now(timezone.utc),
+    }
+    if reopen_resolving:
+        values.update(
+            {
+                "alert_status": "firing",
+                "processing_status": (
+                    "new"
+                    if (existing.processing_status or "").lower() == "resolving"
+                    else Order.processing_status
+                ),
+                "ends_at": None,
+                "is_active": True,
+            }
+        )
+    await db.execute(update(Order).where(Order.id == existing.id).values(**values))
+
+
+async def _recover_integrity_conflict(
+    db: AsyncSession,
+    req_id: str,
+    fingerprint: str,
+    alert_name: str,
+    alert_status: str,
+) -> dict:
+    await db.rollback()
+    async with db.begin():
+        existing = await _active_order(db, fingerprint)
+        if existing:
+            await _increment_existing_order(db, existing, reopen_resolving=False)
+            logger.info(
+                "Order counter incremented after conflict",
+                extra={"req_id": req_id, "order_id": existing.id},
             )
-            if suppression:
-                await save_suppressed_event(
-                    db=db,
-                    suppression=suppression,
-                    alert_data=alert_data,
-                    req_id=req_id,
-                    received_at=datetime.now(timezone.utc),
-                )
-                await db.commit()
-                logger.info(
-                    "Alert suppressed by active suppression window",
-                    extra={
-                        "req_id": req_id,
-                        "suppression_id": suppression.id,
-                        "fingerprint": fingerprint,
-                        "alert_name": alert_name,
-                    },
-                )
-                results.append(
-                    {
-                        "status": "ignored_suppressed",
-                        "suppression_id": suppression.id,
-                        "order_id": None,
-                        "fingerprint": fingerprint,
-                        "alert_name": alert_name,
-                        "alert_status": alert_status,
-                    }
-                )
-                continue
+            return _alert_result(
+                "counter_incremented", existing, fingerprint, alert_name, alert_status
+            )
 
-        if await _in_transaction(db):
-            await db.rollback()
+        logger.error(
+            "Order conflict without active order",
+            extra={"req_id": req_id, "fingerprint": fingerprint},
+        )
+        return _alert_result("conflict", None, fingerprint, alert_name, alert_status)
 
+
+async def _process_alert(
+    alert_data: dict,
+    db: AsyncSession,
+    req_id: str,
+) -> dict:
+    labels = alert_data.get("labels", {})
+    if not isinstance(labels, dict):
+        labels = {}
+    alert_name = labels.get("alertname", "Unknown")
+    group_name = labels.get("group_name") or alert_name
+    alert_status = str(alert_data.get("status", "firing") or "firing").strip().lower()
+    severity = str(labels.get("severity") or "unknown").strip().lower()
+
+    # Prefer Alertmanager fingerprint; fallback to derived value
+    fingerprint = (
+        alert_data.get("fingerprint") or f"{alert_name}_{labels.get('instance', 'unknown')}"
+    )
+
+    logger.info(
+        "Processing order",
+        extra={
+            "req_id": req_id,
+            "alert_name": alert_name,
+            "alert_status": alert_status,
+            "fingerprint": fingerprint,
+        },
+    )
+
+    if await _in_transaction(db):
+        await db.rollback()
+
+    for attempt in range(1, MAX_PRE_HEAT_ATTEMPTS + 1):
         try:
             async with db.begin():
-                result = await db.execute(
-                    select(Order)
-                    .where(
-                        Order.fingerprint == fingerprint,
-                        Order.is_active.is_(True),
+                if severity == "warning":
+                    return await _process_warning_alert(
+                        alert_data,
+                        db,
+                        req_id,
+                        fingerprint=fingerprint,
+                        alert_name=alert_name,
+                        group_name=group_name,
+                        alert_status=alert_status,
+                        labels=labels,
                     )
-                    .order_by(Order.created_at.desc())
-                    .with_for_update()
-                )
-                existing = result.scalars().first()
+
+                existing = await _active_order(db, fingerprint)
 
                 # Resolved notifications can arrive after the order was already
                 # made inactive by dish completion. Fall back to the latest
@@ -144,15 +301,6 @@ async def pre_heat(payload: dict, db: AsyncSession, req_id: str) -> dict:
                     if not existing:
                         # Create fresh record; status 'new' triggers the Dish flow later
                         # Parse startsAt or use current time as default
-                        starts_at = alert_data.get("startsAt")
-                        if starts_at and isinstance(starts_at, str):
-                            try:
-                                starts_at = dateutil_parser.isoparse(starts_at)
-                            except (ValueError, TypeError):
-                                starts_at = datetime.now(timezone.utc)
-                        elif not starts_at:
-                            starts_at = datetime.now(timezone.utc)
-
                         new_order = Order(
                             req_id=req_id,  # Use request ID from webhook
                             fingerprint=fingerprint,
@@ -162,11 +310,15 @@ async def pre_heat(payload: dict, db: AsyncSession, req_id: str) -> dict:
                             is_active=True,
                             severity=labels.get("severity", "unknown"),
                             instance=labels.get("instance"),
+                            correlation_key=_correlation_key_from_labels(labels),
                             labels=labels,
                             annotations=alert_data.get("annotations", {}),
-                            raw_data=alert_data,
+                            raw_data=ensure_raw_data_order_type(
+                                alert_data,
+                                WEBHOOK_ALERT_ORDER_TYPE,
+                            ),
                             counter=1,
-                            starts_at=starts_at,
+                            starts_at=_parse_alert_time(alert_data.get("startsAt")),
                             remediation_outcome="pending",
                             clear_timeout_sec=None,
                             clear_deadline_at=None,
@@ -185,39 +337,14 @@ async def pre_heat(payload: dict, db: AsyncSession, req_id: str) -> dict:
                                 "group_name": group_name,
                             },
                         )
-                        results.append(
-                            {
-                                "status": "created",
-                                "order_id": new_order.id,
-                                "fingerprint": fingerprint,
-                                "alert_name": alert_name,
-                                "alert_status": alert_status,
-                            }
+                        return _alert_result(
+                            "created", new_order, fingerprint, alert_name, alert_status
                         )
-                        continue
 
-                    # Order already exists; increment counter atomically
-                    await db.execute(
-                        update(Order)
-                        .where(Order.id == existing.id)
-                        .values(
-                            counter=Order.counter + 1,
-                            alert_status="firing",
-                            processing_status=(
-                                "new"
-                                if (existing.processing_status or "").lower()
-                                in {"resolving", "waiting_ticket_close"}
-                                else Order.processing_status
-                            ),
-                            ends_at=None,
-                            is_active=True,
-                            updated_at=datetime.now(timezone.utc),
-                        )
-                    )
-                    reopened_from_resolving = (existing.processing_status or "").lower() in {
-                        "resolving",
-                        "waiting_ticket_close",
-                    }
+                    await _increment_existing_order(db, existing, reopen_resolving=True)
+                    reopened_from_resolving = (
+                        existing.processing_status or ""
+                    ).lower() == "resolving"
 
                     logger.info(
                         "Order counter incremented",
@@ -227,16 +354,9 @@ async def pre_heat(payload: dict, db: AsyncSession, req_id: str) -> dict:
                             "reopened_from_resolving": reopened_from_resolving,
                         },
                     )
-                    results.append(
-                        {
-                            "status": "counter_incremented",
-                            "order_id": existing.id,
-                            "fingerprint": fingerprint,
-                            "alert_name": alert_name,
-                            "alert_status": alert_status,
-                        }
+                    return _alert_result(
+                        "counter_incremented", existing, fingerprint, alert_name, alert_status
                     )
-                    continue
 
                 if alert_status == "resolved" and existing:
                     resolved_before_dish = existing.processing_status == "new"
@@ -274,16 +394,9 @@ async def pre_heat(payload: dict, db: AsyncSession, req_id: str) -> dict:
                         )
 
                     logger.info("Order resolved", extra={"req_id": req_id, "order_id": existing.id})
-                    results.append(
-                        {
-                            "status": "resolved",
-                            "order_id": existing.id,
-                            "fingerprint": fingerprint,
-                            "alert_name": alert_name,
-                            "alert_status": alert_status,
-                        }
+                    return _alert_result(
+                        "resolved", existing, fingerprint, alert_name, alert_status
                     )
-                    continue
 
                 logger.debug(
                     "Order ignored",
@@ -293,64 +406,66 @@ async def pre_heat(payload: dict, db: AsyncSession, req_id: str) -> dict:
                         "existing": existing is not None,
                     },
                 )
-                results.append(
-                    {
-                        "status": "ignored",
-                        "order_id": existing.id if existing else None,
-                        "fingerprint": fingerprint,
-                        "alert_name": alert_name,
-                        "alert_status": alert_status,
-                    }
-                )
+                return _alert_result("ignored", existing, fingerprint, alert_name, alert_status)
         except IntegrityError:
+            return await _recover_integrity_conflict(
+                db, req_id, fingerprint, alert_name, alert_status
+            )
+        except OperationalError as exc:
+            if not _is_retryable_lock_error(exc):
+                raise
             await db.rollback()
-            async with db.begin():
-                result = await db.execute(
-                    select(Order)
-                    .where(
-                        Order.fingerprint == fingerprint,
-                        Order.is_active.is_(True),
-                    )
-                    .order_by(Order.created_at.desc())
-                    .with_for_update()
+            error_code = _db_error_code(exc)
+            if attempt >= MAX_PRE_HEAT_ATTEMPTS:
+                logger.error(
+                    "Pre-heat retryable database lock error exhausted",
+                    extra={
+                        "req_id": req_id,
+                        "fingerprint": fingerprint,
+                        "attempt": attempt,
+                        "max_attempts": MAX_PRE_HEAT_ATTEMPTS,
+                        "db_error_code": error_code,
+                    },
                 )
-                existing = result.scalars().first()
-                if existing:
-                    await db.execute(
-                        update(Order)
-                        .where(Order.id == existing.id)
-                        .values(
-                            counter=Order.counter + 1,
-                            updated_at=datetime.now(timezone.utc),
-                        )
-                    )
-                    logger.info(
-                        "Order counter incremented after conflict",
-                        extra={"req_id": req_id, "order_id": existing.id},
-                    )
-                    results.append(
-                        {
-                            "status": "counter_incremented",
-                            "order_id": existing.id,
-                            "fingerprint": fingerprint,
-                            "alert_name": alert_name,
-                            "alert_status": alert_status,
-                        }
-                    )
-                else:
-                    logger.error(
-                        "Order conflict without active order",
-                        extra={"req_id": req_id, "fingerprint": fingerprint},
-                    )
-                    results.append(
-                        {
-                            "status": "conflict",
-                            "order_id": None,
-                            "fingerprint": fingerprint,
-                            "alert_name": alert_name,
-                            "alert_status": alert_status,
-                        }
-                    )
+                raise
+            logger.warning(
+                "Pre-heat retrying database lock error",
+                extra={
+                    "req_id": req_id,
+                    "fingerprint": fingerprint,
+                    "attempt": attempt,
+                    "max_attempts": MAX_PRE_HEAT_ATTEMPTS,
+                    "db_error_code": error_code,
+                },
+            )
+            backoff = RETRY_BACKOFF_SECONDS[min(attempt - 1, len(RETRY_BACKOFF_SECONDS) - 1)]
+            await asyncio.sleep(backoff + random.uniform(0, 0.025))
+
+    raise RuntimeError("pre_heat retry loop exited unexpectedly")
+
+
+async def pre_heat(payload: dict, db: AsyncSession, req_id: str) -> dict:
+    """
+    Intake Handler: Solely responsible for Order table management.
+
+    Args:
+        payload: Alertmanager webhook payload
+        db: Database session
+        req_id: Request ID for tracing
+
+    Returns:
+        dict: Status and order_id
+    """
+    alerts = payload.get("alerts", [])
+
+    if not alerts:
+        logger.warning("No alerts in payload", extra={"req_id": req_id})
+        return {"status": "no_alerts", "results": []}
+
+    results: list[dict] = []
+
+    for alert_data in alerts:
+        results.append(await _process_alert(alert_data, db, req_id))
 
     if len(results) == 1:
         return {

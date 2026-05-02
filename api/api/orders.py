@@ -6,53 +6,144 @@
 #
 """API routes for Order management."""
 
-from typing import Any, List, Literal
-from datetime import datetime, timezone
+import asyncio
+import random
+from contextlib import asynccontextmanager
+from typing import List, Literal
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, asc, desc
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import selectinload
 
-from api.api.auth import require_auth_if_enabled
-from api.core.config import get_settings
+from api.api.auth import require_reader, require_service
 from api.core.database import get_db
 from api.core.logging import get_logger
-from api.core.statuses import ORDER_TERMINAL_PROCESSING_STATUSES
-from api.models.models import Dish, DishIngredient, Order, Recipe, RecipeIngredient
+from api.core.time import utc_now_db
+from api.models.models import (
+    Dish,
+    DishIngredient,
+    Order,
+    Recipe,
+    RecipeIngredient,
+    ScheduledTask,
+    ServicePlugin,
+)
 from api.schemas.schemas import (
     IncidentTimelineEvent,
     IncidentTimelineResponse,
     OrderCreate,
     OrderDispatchResponse,
     OrderResponse,
+    OrderStatusResponse,
     OrderUpdate,
 )
 from api.schemas.query_params import OrderQueryParams, validate_query_params
-from api.services.bakery_client import get_operation
 from api.services.communications_policy import (
     get_global_policy_recipe_for_dispatch,
     get_recipe_local_routes,
     global_policy_configured,
     policy_has_enabled_routes,
 )
-from api.services.fallback_recipe import ensure_fallback_recipe
-from api.services.incident_reconciliation import reconcile_order
-from api.services.dish_planner import expected_duration_for_phase, seed_dish_ingredients_for_phase
+from api.services.dish_planner import (
+    expected_run_secs_from_recipe_snapshot,
+    seed_dish_ingredients_for_phase,
+)
+from api.services.order_types import (
+    ensure_raw_data_order_type,
+    infer_order_type,
+    order_matches_filters,
+)
+from api.types import (
+    MANUAL_ORDER_TYPE,
+    SCHEDULED_TASK_ORDER_TYPE,
+    OrderScope,
+    OrderType,
+)
 
 router = APIRouter()
 logger = get_logger(__name__)
-GLOBAL_COMMS_INHERIT_PHASES = {"firing", "escalation", "resolving"}
+GLOBAL_COMMS_INHERIT_PHASES = {"firing", "resolving"}
+MAX_COOK_DISPATCH_ATTEMPTS = 3
+RETRYABLE_COOK_DB_ERROR_CODES = {1020, 1205, 1213}
+COOK_DISPATCH_RETRY_BACKOFF_SECONDS = (0.05, 0.1, 0.2)
 
 
-async def require_service_if_auth_enabled(
-    context=Depends(require_auth_if_enabled),
-):
-    if context is None:
-        return context
-    if context is None or getattr(context, "role", None) != "service":
-        raise HTTPException(status_code=403, detail="Service access required")
-    return context
+@asynccontextmanager
+async def _write_transaction(db: AsyncSession):
+    if not db.in_transaction():
+        async with db.begin():
+            yield
+        return
+    try:
+        yield
+    except Exception:
+        await db.rollback()
+        raise
+    else:
+        await db.commit()
+
+
+def _db_error_code(exc: OperationalError) -> int | None:
+    args = getattr(getattr(exc, "orig", None), "args", ())
+    if not args:
+        return None
+    try:
+        return int(args[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_retryable_cook_db_error(exc: OperationalError) -> bool:
+    return _db_error_code(exc) in RETRYABLE_COOK_DB_ERROR_CODES
+
+
+def _order_for_dispatch_query(order_id: int):
+    return select(Order).where(Order.id == order_id).with_for_update()
+
+
+def _active_recipe_query(recipe_name: str):
+    return (
+        select(Recipe)
+        .options(selectinload(Recipe.recipe_ingredients).selectinload(RecipeIngredient.ingredient))
+        .where(Recipe.name == recipe_name, Recipe.enabled.is_(True))
+    )
+
+
+def _active_firing_dish_query(order_id: int):
+    return (
+        select(Dish.id)
+        .where(
+            Dish.order_id == order_id,
+            Dish.run_phase == "firing",
+            Dish.processing_status.in_(("new", "processing", "finalizing")),
+        )
+        .order_by(Dish.created_at.desc())
+        .with_for_update()
+    )
+
+
+def _active_phase_dish_query(order_id: int, run_phase: str):
+    return (
+        select(Dish)
+        .where(
+            Dish.order_id == order_id,
+            Dish.run_phase == run_phase,
+            Dish.processing_status.in_(("new", "processing", "finalizing")),
+        )
+        .order_by(Dish.created_at.desc())
+        .with_for_update()
+    )
+
+
+def _dish_ingredients_for_seed_query(dish_id: int):
+    return (
+        select(DishIngredient)
+        .where(DishIngredient.dish_id == dish_id, DishIngredient.deleted.is_(False))
+        .with_for_update()
+    )
 
 
 def _recipe_has_phase_remediation(recipe: Recipe, *, phase: str) -> bool:
@@ -65,7 +156,7 @@ def _recipe_has_phase_remediation(recipe: Recipe, *, phase: str) -> bool:
             continue
         if phase != "firing" and run_phase != phase:
             continue
-        if str(ingredient.execution_purpose or "").strip().lower() == "remediation":
+        if str(ingredient.ingredient_purpose or "").strip().lower() == "remediation":
             return True
     return False
 
@@ -88,17 +179,73 @@ def _inactive_ingredients(recipe: Recipe) -> list[tuple[int, str]]:
     return sorted(set(inactive))
 
 
+def _serialize_order_status(order: Order) -> OrderStatusResponse:
+    return OrderStatusResponse.model_validate(
+        {
+            "id": order.id,
+            "req_id": order.req_id,
+            "order_type": infer_order_type(raw_data=order.raw_data, labels=order.labels),
+            "alert_status": order.alert_status,
+            "alert_group_name": order.alert_group_name,
+            "processing_status": order.processing_status,
+            "is_active": order.is_active,
+            "remediation_outcome": order.remediation_outcome,
+            "clear_timeout_sec": order.clear_timeout_sec,
+            "clear_deadline_at": order.clear_deadline_at,
+            "clear_timed_out_at": order.clear_timed_out_at,
+            "auto_close_eligible": order.auto_close_eligible,
+            "severity": order.severity,
+            "instance": order.instance,
+            "correlation_key": order.correlation_key,
+            "counter": order.counter,
+            "starts_at": order.starts_at,
+            "ends_at": order.ends_at,
+            "order_lifetime_secs": order.order_lifetime_secs,
+            "communication_route_count": len(getattr(order, "communications", []) or []),
+            "created_at": order.created_at,
+            "updated_at": order.updated_at,
+        }
+    )
+
+
+def _effective_order_scope(
+    *,
+    order_scope: OrderScope,
+    exclude_plugin_health_checks: bool,
+) -> OrderScope:
+    return "operator" if exclude_plugin_health_checks else order_scope
+
+
+def _filter_orders(
+    orders: list[Order],
+    *,
+    order_scope: OrderScope,
+    order_type: OrderType | None,
+) -> list[Order]:
+    return [
+        order
+        for order in orders
+        if order_matches_filters(
+            raw_data=order.raw_data,
+            labels=order.labels,
+            order_scope=order_scope,
+            order_type=order_type,
+        )
+    ]
+
+
 @router.get("/orders", response_model=List[OrderResponse])
 async def fetch_orders(
     request: Request,
     params: OrderQueryParams = Depends(validate_query_params(OrderQueryParams)),
     db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_service),
 ):
     """
     Get orders with optional filtering.
 
     Query Parameters:
-    - processing_status: Filter by processing status (new/pending/processing/waiting_clear/escalation/resolving/waiting_ticket_close/complete/failed/canceled)
+    - processing_status: Filter by processing status (new/processing/resolving/complete/failed/errored/timeout/canceled)
     - alert_status: Filter by alert status (firing/resolved)
     - req_id: Filter by request ID
     - alert_group_name: Filter by alert group name
@@ -117,12 +264,13 @@ async def fetch_orders(
             "alert_status": params.alert_status,
             "filter_req_id": params.req_id,
             "alert_group_name": params.alert_group_name,
+            "exclude_plugin_health_checks": params.exclude_plugin_health_checks,
             "limit": params.limit,
             "offset": params.offset,
         },
     )
 
-    query = select(Order).options(joinedload(Order.communications))
+    query = select(Order)
 
     if params.processing_status:
         query = query.where(Order.processing_status == params.processing_status)
@@ -132,15 +280,21 @@ async def fetch_orders(
         query = query.where(Order.req_id == params.req_id)
     if params.alert_group_name:
         query = query.where(Order.alert_group_name == params.alert_group_name)
-
     if params.processing_status and params.processing_status == "new":
         query = query.order_by(asc(Order.created_at))
     else:
         query = query.order_by(desc(Order.created_at))
 
-    query = query.limit(params.limit).offset(params.offset)
+    query = query.limit(1000)
     result = await db.execute(query)
-    orders = result.unique().scalars().all()
+    orders = _filter_orders(
+        list(result.unique().scalars().all()),
+        order_scope=_effective_order_scope(
+            order_scope=params.order_scope,
+            exclude_plugin_health_checks=params.exclude_plugin_health_checks,
+        ),
+        order_type=params.order_type,
+    )[params.offset : params.offset + params.limit]
 
     logger.debug(
         "Orders fetched successfully",
@@ -150,10 +304,61 @@ async def fetch_orders(
     return orders
 
 
+@router.get("/orders/status", response_model=List[OrderStatusResponse])
+async def fetch_order_statuses(
+    request: Request,
+    params: OrderQueryParams = Depends(validate_query_params(OrderQueryParams)),
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_reader),
+) -> list[OrderStatusResponse]:
+    """Get redacted order status rows for reporting views."""
+    request_id = request.state.req_id
+    query = select(Order)
+
+    if params.processing_status:
+        query = query.where(Order.processing_status == params.processing_status)
+    if params.alert_status:
+        query = query.where(Order.alert_status == params.alert_status)
+    if params.req_id:
+        query = query.where(Order.req_id == params.req_id)
+    if params.alert_group_name:
+        query = query.where(Order.alert_group_name == params.alert_group_name)
+    if params.processing_status and params.processing_status == "new":
+        query = query.order_by(asc(Order.created_at))
+    else:
+        query = query.order_by(desc(Order.created_at))
+
+    query = query.limit(1000)
+    result = await db.execute(query)
+    orders = _filter_orders(
+        list(result.unique().scalars().all()),
+        order_scope=_effective_order_scope(
+            order_scope=params.order_scope,
+            exclude_plugin_health_checks=params.exclude_plugin_health_checks,
+        ),
+        order_type=params.order_type,
+    )[params.offset : params.offset + params.limit]
+    logger.debug(
+        "Order statuses fetched successfully",
+        extra={"req_id": request_id, "count": len(orders)},
+    )
+    return [_serialize_order_status(order) for order in orders]
+
+
 @router.post("/orders", response_model=OrderResponse, status_code=201)
-async def create_order(request: Request, payload: OrderCreate, db: AsyncSession = Depends(get_db)):
+async def create_order(
+    request: Request,
+    payload: OrderCreate,
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_service),
+):
     """Create an order manually (non-Alertmanager ingestion)."""
     req_id = request.state.req_id
+    if payload.processing_status != "new":
+        raise HTTPException(
+            status_code=400,
+            detail="orders must enter the control plane with processing_status='new'",
+        )
 
     logger.info(
         "Creating order",
@@ -168,13 +373,43 @@ async def create_order(request: Request, payload: OrderCreate, db: AsyncSession 
     create_data = payload.model_dump()
     # Generated by DB; ignore user input to avoid writes to computed column.
     create_data.pop("fingerprint_when_active", None)
+    try:
+        create_data["raw_data"] = ensure_raw_data_order_type(
+            create_data.get("raw_data"),
+            MANUAL_ORDER_TYPE,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     order = Order(**create_data)
     db.add(order)
+    await db.flush()
+    raw_data = payload.raw_data if isinstance(payload.raw_data, dict) else {}
+    scheduled_task_id = raw_data.get("scheduled_task_id")
+    now = utc_now_db()
+    if scheduled_task_id is not None:
+        task = await db.get(ScheduledTask, int(scheduled_task_id))
+        if task is not None:
+            task.status = "queued"
+            task.last_order_id = order.id
+            task.last_order_req_id = order.req_id
+            task.updated_at = now
+    task_type = str(raw_data.get("task_type") or "").strip().lower()
+    service_type = str(raw_data.get("service_type") or "").strip().lower()
+    if task_type == "plugin_health_check" and service_type:
+        result = await db.execute(
+            select(ServicePlugin).where(ServicePlugin.service_type == service_type)
+        )
+        plugin_row = result.scalar_one_or_none()
+        if plugin_row is not None:
+            timeout = int(raw_data.get("timeout_seconds") or 60)
+            plugin_row.health_check_state = "queued"
+            plugin_row.health_check_order_id = order.id
+            plugin_row.health_check_started_at = now
+            plugin_row.health_check_grace_until = now + timedelta(seconds=max(timeout, 60))
+            plugin_row.updated_at = now
     await db.commit()
     await db.refresh(order)
-    result = await db.execute(
-        select(Order).options(joinedload(Order.communications)).where(Order.id == order.id)
-    )
+    result = await db.execute(select(Order).where(Order.id == order.id))
     order = result.unique().scalars().first() or order
 
     logger.info(
@@ -185,16 +420,38 @@ async def create_order(request: Request, payload: OrderCreate, db: AsyncSession 
     return order
 
 
+@router.get("/orders/{order_id}/status", response_model=OrderStatusResponse)
+async def get_order_status(
+    request: Request,
+    order_id: int,
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_reader),
+) -> OrderStatusResponse:
+    """Retrieve redacted status for a specific order."""
+    req_id = request.state.req_id
+    logger.debug("Fetching order status by ID", extra={"req_id": req_id, "order_id": order_id})
+
+    result = await db.execute(select(Order).where(Order.id == order_id))
+    order = result.unique().scalars().first()
+    if not order:
+        logger.warning("Order not found", extra={"req_id": req_id, "order_id": order_id})
+        raise HTTPException(status_code=404, detail="Order not found")
+    return _serialize_order_status(order)
+
+
 @router.get("/orders/{order_id}", response_model=OrderResponse)
-async def get_order(request: Request, order_id: int, db: AsyncSession = Depends(get_db)):
+async def get_order(
+    request: Request,
+    order_id: int,
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_service),
+):
     """Retrieve a specific order by ID."""
     req_id = request.state.req_id
 
     logger.debug("Fetching order by ID", extra={"req_id": req_id, "order_id": order_id})
 
-    result = await db.execute(
-        select(Order).options(joinedload(Order.communications)).where(Order.id == order_id)
-    )
+    result = await db.execute(select(Order).where(Order.id == order_id))
     order = result.unique().scalars().first()
 
     if not order:
@@ -206,21 +463,20 @@ async def get_order(request: Request, order_id: int, db: AsyncSession = Depends(
 
 @router.put("/orders/{order_id}", response_model=OrderResponse)
 async def update_order(
-    request: Request, order_id: int, payload: OrderUpdate, db: AsyncSession = Depends(get_db)
+    request: Request,
+    order_id: int,
+    payload: OrderUpdate,
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_service),
 ):
-    """Used by Timer to set status to 'complete' or Chef to 'processing'."""
+    """Update order lifecycle metadata."""
     req_id = request.state.req_id
 
     logger.info("Updating order", extra={"req_id": req_id, "order_id": order_id})
 
     order: Order | None = None
-    async with db.begin():
-        result = await db.execute(
-            select(Order)
-            .options(joinedload(Order.communications))
-            .where(Order.id == order_id)
-            .with_for_update()
-        )
+    async with _write_transaction(db):
+        result = await db.execute(select(Order).where(Order.id == order_id).with_for_update())
         order = result.unique().scalars().first()
         if not order:
             logger.warning(
@@ -233,36 +489,34 @@ async def update_order(
         # Generated by DB; ignore user input to avoid writes to computed column.
         update_data.pop("fingerprint_when_active", None)
 
-        # Check terminal state transitions BEFORE applying updates
-        if update_data.get("processing_status") in ORDER_TERMINAL_PROCESSING_STATUSES:
-            if update_data.get("is_active") is True:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot set is_active=true with terminal processing_status",
-                )
-            # Check if order is already in a different terminal status
-            if (
-                order.processing_status in ORDER_TERMINAL_PROCESSING_STATUSES
-                and order.processing_status != update_data.get("processing_status")
-            ):
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Order already in terminal status {order.processing_status}",
-                )
-            order.is_active = False
+        lifecycle_fields = {
+            "processing_status",
+            "remediation_outcome",
+            "clear_deadline_at",
+            "clear_timed_out_at",
+            "auto_close_eligible",
+            "is_active",
+        }
+        blocked = sorted(lifecycle_fields.intersection(update_data))
+        if blocked:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "order lifecycle fields are owned by Prep-Chef, Cook, and Timer: "
+                    + ", ".join(blocked)
+                ),
+            )
 
         # Apply updates after validation
         for key, value in update_data.items():
             setattr(order, key, value)
 
-        order.updated_at = datetime.now(timezone.utc)
+        order.updated_at = utc_now_db()
 
     if order is None:
         raise HTTPException(status_code=500, detail="Order update failed")
     await db.refresh(order)
-    result = await db.execute(
-        select(Order).options(joinedload(Order.communications)).where(Order.id == order.id)
-    )
+    result = await db.execute(select(Order).where(Order.id == order.id))
     order = result.unique().scalars().first() or order
 
     logger.info(
@@ -278,7 +532,6 @@ async def update_order(
     return order
 
 
-@router.post("/orders/{order_id}/dispatch", response_model=OrderDispatchResponse)
 async def dispatch_order(
     request: Request,
     order_id: int,
@@ -286,67 +539,77 @@ async def dispatch_order(
 ) -> OrderDispatchResponse:
     """Create/seed a phase-scoped dish for a dispatchable order."""
     req_id = request.state.req_id
-    settings = get_settings()
-    now = datetime.now(timezone.utc)
+    for attempt in range(1, MAX_COOK_DISPATCH_ATTEMPTS + 1):
+        try:
+            return await _dispatch_order_once(request=request, order_id=order_id, db=db)
+        except OperationalError as exc:
+            if not _is_retryable_cook_db_error(exc):
+                raise
+            await db.rollback()
+            error_code = _db_error_code(exc)
+            if attempt >= MAX_COOK_DISPATCH_ATTEMPTS:
+                logger.error(
+                    "Cook dispatch retryable database error exhausted",
+                    extra={
+                        "req_id": req_id,
+                        "order_id": order_id,
+                        "attempt": attempt,
+                        "max_attempts": MAX_COOK_DISPATCH_ATTEMPTS,
+                        "db_error_code": error_code,
+                    },
+                )
+                raise
+            logger.warning(
+                "Cook dispatch retrying database error",
+                extra={
+                    "req_id": req_id,
+                    "order_id": order_id,
+                    "attempt": attempt,
+                    "max_attempts": MAX_COOK_DISPATCH_ATTEMPTS,
+                    "db_error_code": error_code,
+                },
+            )
+            backoff = COOK_DISPATCH_RETRY_BACKOFF_SECONDS[
+                min(attempt - 1, len(COOK_DISPATCH_RETRY_BACKOFF_SECONDS) - 1)
+            ]
+            await asyncio.sleep(backoff + random.uniform(0, 0.025))
+    raise RuntimeError("cook dispatch retry loop exited unexpectedly")
+
+
+async def _dispatch_order_once(
+    request: Request,
+    order_id: int,
+    db: AsyncSession,
+) -> OrderDispatchResponse:
+    now = utc_now_db()
 
     response: OrderDispatchResponse | None = None
-    async with db.begin():
+    async with _write_transaction(db):
         global_policy_is_configured = await global_policy_configured(db)
-        result = await db.execute(
-            select(Order)
-            .options(joinedload(Order.communications))
-            .where(Order.id == order_id)
-            .with_for_update()
-        )
+        result = await db.execute(_order_for_dispatch_query(order_id))
         order = result.scalars().first()
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
 
-        run_phase: Literal["firing", "escalation", "resolving"]
+        run_phase: Literal["firing", "resolving"]
         if order.processing_status == "new":
             run_phase = "firing"
-        elif order.processing_status == "escalation":
-            run_phase = "escalation"
         elif order.processing_status == "resolving":
             run_phase = "resolving"
-        elif order.processing_status == "waiting_clear":
-            if order.alert_status == "resolved":
-                order.processing_status = "resolving"
-                run_phase = "resolving"
-            elif (
-                order.clear_deadline_at
-                and order.clear_timed_out_at is None
-                and order.clear_deadline_at <= now
-            ):
-                order.clear_timed_out_at = now
-                order.auto_close_eligible = False
-                order.processing_status = "escalation"
-                run_phase = "escalation"
-            else:
-                response = OrderDispatchResponse(
-                    status="skipped",
-                    order_id=order.id,
-                    reason="Order is waiting for clear and not eligible for escalation",
-                )
-                order.updated_at = now
-                return response
         else:
             raise HTTPException(
                 status_code=409,
                 detail=f"Order is not dispatchable (status={order.processing_status})",
             )
 
+        scheduled_order = (
+            isinstance(order.raw_data, dict)
+            and str(order.raw_data.get("order_type") or "").strip().lower()
+            == SCHEDULED_TASK_ORDER_TYPE
+        )
+
         if run_phase == "resolving" and (order.remediation_outcome or "").lower() == "pending":
-            active_firing_result = await db.execute(
-                select(Dish.id)
-                .where(
-                    Dish.order_id == order.id,
-                    Dish.run_phase == "firing",
-                    Dish.processing_status.in_(("new", "processing", "finalizing")),
-                )
-                .order_by(Dish.created_at.desc())
-                .with_for_update()
-            )
+            active_firing_result = await db.execute(_active_firing_dish_query(order.id))
             if active_firing_result.first() is not None:
                 response = OrderDispatchResponse(
                     status="skipped",
@@ -356,33 +619,11 @@ async def dispatch_order(
                 order.updated_at = now
                 return response
 
-        recipe_result = await db.execute(
-            select(Recipe)
-            .options(joinedload(Recipe.recipe_ingredients).joinedload(RecipeIngredient.ingredient))
-            .where(Recipe.name == order.alert_group_name, Recipe.enabled.is_(True))
-            .with_for_update()
-        )
+        recipe_result = await db.execute(_active_recipe_query(order.alert_group_name))
         recipe = recipe_result.unique().scalars().first()
-        if not recipe:
-            catch_all_name = (settings.catch_all_recipe_name or "").strip()
-            if catch_all_name and (
-                run_phase == "firing" or (order.remediation_outcome or "").lower() == "none"
-            ):
-                await ensure_fallback_recipe(db, req_id=req_id)
-                fallback_result = await db.execute(
-                    select(Recipe)
-                    .options(
-                        joinedload(Recipe.recipe_ingredients).joinedload(
-                            RecipeIngredient.ingredient
-                        )
-                    )
-                    .where(Recipe.name == catch_all_name, Recipe.enabled.is_(True))
-                    .with_for_update()
-                )
-                recipe = fallback_result.unique().scalars().first()
 
         extra_policy_steps: list[RecipeIngredient] = []
-        if recipe:
+        if recipe and not scheduled_order:
             local_routes = get_recipe_local_routes(recipe)
             has_local_policy = policy_has_enabled_routes(local_routes)
             if not has_local_policy and not global_policy_is_configured:
@@ -394,17 +635,13 @@ async def dispatch_order(
                 )
 
         if not recipe:
-            if run_phase == "firing":
-                order.processing_status = "waiting_clear"
-                order.remediation_outcome = "none"
-                order.clear_timeout_sec = None
-                order.clear_deadline_at = None
-                order.clear_timed_out_at = None
-                order.auto_close_eligible = False
-                order.is_active = True
-            else:
-                order.processing_status = "waiting_clear"
-                order.is_active = True
+            order.processing_status = "resolving"
+            order.remediation_outcome = "none"
+            order.clear_timeout_sec = None
+            order.clear_deadline_at = None
+            order.clear_timed_out_at = None
+            order.auto_close_eligible = False
+            order.is_active = True
             order.updated_at = now
             response = OrderDispatchResponse(
                 status="skipped",
@@ -441,21 +678,11 @@ async def dispatch_order(
                     order.clear_timed_out_at = None
                 order.updated_at = now
 
-            dish_result = await db.execute(
-                select(Dish)
-                .where(
-                    Dish.order_id == order.id,
-                    Dish.run_phase == run_phase,
-                    Dish.processing_status.in_(("new", "processing", "finalizing")),
-                )
-                .order_by(Dish.created_at.desc())
-                .with_for_update()
-            )
+            dish_result = await db.execute(_active_phase_dish_query(order.id, run_phase))
             dish = dish_result.scalars().first()
             if dish is None:
-                expected_duration_sec = await expected_duration_for_phase(
-                    db,
-                    recipe_id=recipe.id,
+                expected_run_secs = expected_run_secs_from_recipe_snapshot(
+                    recipe=recipe,
                     phase=run_phase,
                     extra_recipe_ingredients=extra_policy_steps,
                 )
@@ -465,16 +692,12 @@ async def dispatch_order(
                     recipe_id=recipe.id,
                     run_phase=run_phase,
                     processing_status="new",
-                    expected_duration_sec=expected_duration_sec,
+                    expected_run_secs=expected_run_secs,
                 )
                 db.add(dish)
                 await db.flush()
 
-            existing_result = await db.execute(
-                select(DishIngredient)
-                .where(DishIngredient.dish_id == dish.id, DishIngredient.deleted.is_(False))
-                .with_for_update()
-            )
+            existing_result = await db.execute(_dish_ingredients_for_seed_query(dish.id))
             existing_by_recipe_ingredient_id = {
                 row.recipe_ingredient_id: row
                 for row in existing_result.scalars().all()
@@ -513,11 +736,10 @@ async def get_order_timeline(
     request: Request,
     order_id: int,
     db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_reader),
 ) -> IncidentTimelineResponse:
     req_id = request.state.req_id
-    result = await db.execute(
-        select(Order).options(joinedload(Order.communications)).where(Order.id == order_id)
-    )
+    result = await db.execute(select(Order).where(Order.id == order_id))
     order = result.scalars().first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -535,7 +757,6 @@ async def get_order_timeline(
             },
             correlation_ids={
                 "req_id": order.req_id,
-                "fingerprint": order.fingerprint,
             },
         )
     ]
@@ -552,12 +773,10 @@ async def get_order_timeline(
                 status=dish.processing_status,
                 title=f"Dish {dish.id} {dish.processing_status}",
                 details={
-                    "status": dish.execution_status,
-                    "error_message": dish.error_message,
+                    "status": dish.dish_exec_status,
                 },
                 correlation_ids={
                     "dish_id": str(dish.id),
-                    "execution_ref": dish.execution_ref or "",
                 },
             )
         )
@@ -569,81 +788,16 @@ async def get_order_timeline(
         for ingredient in ingredient_result.scalars().all():
             events.append(
                 IncidentTimelineEvent(
-                    timestamp=ingredient.started_at or ingredient.created_at,
+                    timestamp=ingredient.service_exec_start_time or ingredient.created_at,
                     event_type="task",
-                    status=ingredient.execution_status or "unknown",
+                    status=ingredient.service_exec_status or "unknown",
                     title=f"Task {ingredient.task_key or 'unknown'}",
-                    details={
-                        "error_message": ingredient.error_message,
-                    },
+                    details={},
                     correlation_ids={
-                        "execution_ref": ingredient.execution_ref or "",
                         "dish_ingredient_id": str(ingredient.id),
                     },
                 )
             )
-
-    for communication in order.communications:
-        bakery_status = communication.lifecycle_state or "unknown"
-        bakery_details: dict = {
-            "execution_target": communication.execution_target,
-            "destination_target": communication.destination_target,
-            "remote_state": communication.remote_state,
-            "writable": communication.writable,
-            "reopenable": communication.reopenable,
-            "last_error": communication.last_error,
-        }
-        if communication.bakery_operation_id:
-            try:
-                op_payload = await get_operation(communication.bakery_operation_id)
-                bakery_status = op_payload.status or bakery_status
-                bakery_details["operation"] = op_payload.model_dump(mode="json")
-            except Exception:
-                bakery_status = communication.lifecycle_state or "unavailable"
-        events.append(
-            IncidentTimelineEvent(
-                timestamp=communication.updated_at,
-                event_type="bakery",
-                status=bakery_status,
-                title=(
-                    f"Communication route {communication.execution_target}"
-                    f":{communication.destination_target or '-'}"
-                ),
-                details=bakery_details,
-                correlation_ids={
-                    "bakery_ticket_id": communication.bakery_ticket_id or "",
-                    "bakery_operation_id": communication.bakery_operation_id or "",
-                    "execution_target": communication.execution_target,
-                    "destination_target": communication.destination_target or "",
-                    "remote_state": communication.remote_state or "",
-                },
-            )
-        )
-
-    if (order.bakery_ticket_id or order.bakery_operation_id) and not order.communications:
-        bakery_status = "unknown"
-        bakery_details = {}
-        if order.bakery_operation_id:
-            try:
-                op_payload = await get_operation(order.bakery_operation_id)
-                bakery_status = op_payload.status or "unknown"
-                bakery_details = op_payload.model_dump(mode="json")
-            except Exception:
-                bakery_status = "unavailable"
-        events.append(
-            IncidentTimelineEvent(
-                timestamp=order.updated_at,
-                event_type="bakery",
-                status=bakery_status,
-                title="Bakery operation tracked on order",
-                details=bakery_details,
-                correlation_ids={
-                    "bakery_ticket_id": order.bakery_ticket_id or "",
-                    "bakery_operation_id": order.bakery_operation_id or "",
-                    "bakery_ticket_state": order.bakery_ticket_state or "",
-                },
-            )
-        )
 
     events.sort(
         key=lambda item: item.timestamp or datetime(1970, 1, 1, tzinfo=timezone.utc),
@@ -653,17 +807,4 @@ async def get_order_timeline(
         "Built incident timeline",
         extra={"req_id": req_id, "order_id": order_id, "event_count": len(events)},
     )
-    return IncidentTimelineResponse(order=OrderResponse.model_validate(order), events=events)
-
-
-@router.post("/orders/{order_id}/reconcile", response_model=dict[str, Any])
-async def reconcile_order_route(
-    request: Request,
-    order_id: int,
-    _service=Depends(require_service_if_auth_enabled),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """Reconcile one active order against live alert and ticket state."""
-    result = await reconcile_order(db, order_id=order_id, req_id=request.state.req_id)
-    await db.commit()
-    return result
+    return IncidentTimelineResponse(order=_serialize_order_status(order), events=events)

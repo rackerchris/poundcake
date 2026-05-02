@@ -6,21 +6,20 @@
 #
 apiVersion: v2
 name: poundcake
-description: Auto-remediation platform bridging Prometheus Alertmanager with StackStorm and optional Bakery ticket translation
+description: Auto-remediation platform bridging Prometheus Alertmanager with service plugins
 type: application
 # This is the chart version. This version number should be incremented each time you make changes
 # to the chart and its templates, including the chart's dependencies.
-version: 0.2.101
+version: 1.0.0
 
 # This is the version number of the application being deployed. This version number should be
 # incremented each time you make changes to the application.
-appVersion: "2.0.202"
+appVersion: "1.0.0"
 
 maintainers:
   - name: Jake Briggs
 keywords:
   - alertmanager
-  - stackstorm
   - auto-remediation
   - prometheus
   - automation

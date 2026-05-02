@@ -2,6 +2,7 @@ import {
   createContext,
   type FocusEvent,
   type FormEvent,
+  type ReactNode,
   useContext,
   useDeferredValue,
   useEffect,
@@ -53,23 +54,23 @@ import type {
   AuthPrincipalRecord,
   AuthProviderRecord,
   AuthRoleBindingRecord,
-  CommunicationActivityRecord,
   CommunicationPolicyRecord,
   CommunicationRouteRecord,
   DeleteResponse,
-  DishRecord,
+  DishIngredientStatusRecord,
+  DishStatusRecord,
   HealthResponse,
   IncidentTimelineEvent,
   IncidentTimelineResponse,
   IngredientRecord,
-  ObservabilityActivityRecord,
   ObservabilityOverviewResponse,
-  OrderResponse,
-  PrometheusRule,
-  PrometheusRuleListResponse,
+  OrderStatusRecord,
+  PrometheusRuleResourceRecord,
   RepoSyncResponse,
   RecipeRecord,
-  StatsResponse,
+  ScheduledTaskStatusRecord,
+  ServicePluginConfigurationRecord,
+  ServicePluginSummaryRecord,
   SuppressionRecord,
 } from "./contracts";
 import {
@@ -82,36 +83,43 @@ import {
   authRoleBindingRecordSchema,
   authRoleBindingUpdateRequestSchema,
   communicationActivityRecordArraySchema,
+  communicationActivityStatusRecordArraySchema,
   communicationPolicyRecordSchema,
   communicationPolicyUpdateRequestSchema,
   deleteResponseSchema,
-  dishRecordArraySchema,
+  dishIngredientStatusRecordArraySchema,
+  dishStatusRecordArraySchema,
   healthResponseSchema,
   incidentTimelineResponseSchema,
-  ingredientCreateRequestSchema,
   ingredientRecordArraySchema,
   ingredientRecordSchema,
-  ingredientUpdateRequestSchema,
-  observabilityActivityRecordArraySchema,
+  observabilityActivityStatusRecordArraySchema,
   observabilityOverviewResponseSchema,
-  orderResponseArraySchema,
-  orderResponseSchema,
+  orderStatusRecordArraySchema,
+  orderStatusRecordSchema,
   prometheusRuleListResponseSchema,
-  prometheusRuleMutationResponseSchema,
-  prometheusRuleWriteRequestSchema,
   recipeCreateRequestSchema,
   recipeRecordArraySchema,
   recipeRecordSchema,
+  recipeStatusRecordArraySchema,
   recipeUpdateRequestSchema,
   repoSyncResponseSchema,
-  statsResponseSchema,
+  servicePluginConfigurationRecordSchema,
+  servicePluginSummaryRecordArraySchema,
+  scheduledTaskStatusRecordSchema,
+  scheduledTaskStatusRecordArraySchema,
   suppressionCreateRequestSchema,
   suppressionRecordArraySchema,
   suppressionRecordSchema,
+  suppressionStatusRecordArraySchema,
+  type UIOperatorActionRequest,
+  uiOperatorActionRequestSchema,
+  uiOperatorActionResponseSchema,
 } from "./contracts";
 
 const SettingsContext = createContext<AppSettings | null>(null);
 const PrincipalContext = createContext<AuthMeRecord | null>(null);
+const ServicePluginsContext = createContext<ServicePluginSummaryRecord[]>([]);
 const ToastContext = createContext<(tone: "success" | "error", message: string) => void>(
   () => undefined,
 );
@@ -122,24 +130,16 @@ interface ToastMessage {
   message: string;
 }
 
-const ruleSchema = z.object({
-  name: z.string().min(1, "Rule name is required"),
-  group: z.string().min(1, "Group name is required"),
-  file: z.string().min(1, "Rule file or CRD is required"),
-  expr: z.string().min(1, "PromQL expression is required"),
-  duration: z.string().optional(),
-  labels: z.string().optional(),
-  annotations: z.string().optional(),
-});
-
 const workflowStepSchema = z.object({
-  ingredient_id: z.coerce.number().min(1, "Choose an action"),
+  ingredient_id: z.coerce.number().min(1, "Choose an ingredient template"),
   step_order: z.coerce.number().min(1),
   on_success: z.string().min(1),
   run_phase: z.string().min(1),
   run_condition: z.string().min(1),
   parallel_group: z.coerce.number().min(0),
   depth: z.coerce.number().min(0),
+  operation: z.string().optional(),
+  service_payload_values: z.record(z.any()).optional(),
   execution_parameters_override_text: z.string().optional(),
 });
 
@@ -154,50 +154,14 @@ const communicationRouteSchema = z.object({
 });
 
 const workflowSchema = z.object({
-  name: z.string().min(1, "Workflow name is required"),
+  name: z.string().min(1, "Recipe name is required"),
   description: z.string().optional(),
   enabled: z.boolean(),
   clear_timeout_sec: z.string().optional(),
-  recipe_ingredients: z.array(workflowStepSchema).min(1, "Add at least one action"),
+  recipe_ingredients: z.array(workflowStepSchema).min(1, "Add at least one recipe step"),
   communications_mode: z.enum(["inherit", "local"]),
   communications_routes: z.array(communicationRouteSchema),
 });
-
-const actionSchema = z.object({
-  template: z.enum(["ticket", "chat", "remediation", "custom"]),
-  task_key_template: z.string().min(1, "Action name is required"),
-  execution_target: z.string().min(1, "Target is required"),
-  destination_target: z.string().optional(),
-  execution_engine: z.string().min(1, "Execution engine is required"),
-  execution_purpose: z.string().min(1, "Purpose is required"),
-  execution_id: z.string().optional(),
-  is_blocking: z.boolean(),
-  on_failure: z.string().min(1),
-  expected_duration_sec: z.coerce.number().min(1),
-  timeout_duration_sec: z.coerce.number().min(1),
-  retry_count: z.coerce.number().min(0),
-  retry_delay: z.coerce.number().min(0),
-  execution_payload_text: z.string().optional(),
-  execution_parameters_text: z.string().optional(),
-});
-
-const emptyActionFormValues: z.infer<typeof actionSchema> = {
-  template: "remediation",
-  task_key_template: "",
-  execution_target: "",
-  destination_target: "",
-  execution_engine: "stackstorm",
-  execution_purpose: "remediation",
-  execution_id: "",
-  is_blocking: true,
-  on_failure: "stop",
-  expected_duration_sec: 60,
-  timeout_duration_sec: 300,
-  retry_count: 0,
-  retry_delay: 5,
-  execution_payload_text: "",
-  execution_parameters_text: "",
-};
 
 const suppressionSchema = z.object({
   name: z.string().min(1, "Suppression name is required"),
@@ -214,16 +178,6 @@ const suppressionSchema = z.object({
 const communicationsPolicySchema = z.object({
   routes: z.array(communicationRouteSchema),
 });
-
-const communicationTargetOptions = [
-  "rackspace_core",
-  "teams",
-  "discord",
-  "servicenow",
-  "jira",
-  "github",
-  "pagerduty",
-] as const;
 
 function App() {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -274,13 +228,14 @@ function SessionGate() {
   }
 
   const bootstrapQuery = useQuery({
-    queryKey: ["settings", "auth-me"],
+    queryKey: ["settings", "auth-me", "service-plugins"],
     queryFn: async () => {
-      const [settings, principal] = await Promise.all([
+      const [settings, principal, servicePlugins] = await Promise.all([
         apiGet("/api/v1/settings", appSettingsSchema),
         apiGet("/api/v1/auth/me", authMeRecordSchema),
+        apiGet("/api/v1/plugins", servicePluginSummaryRecordArraySchema),
       ]);
-      return { settings, principal };
+      return { settings, principal, servicePlugins };
     },
   });
 
@@ -305,23 +260,29 @@ function SessionGate() {
   return (
     <SettingsContext.Provider value={bootstrapQuery.data.settings}>
       <PrincipalContext.Provider value={bootstrapQuery.data.principal}>
-        <Routes>
-          <Route element={<ShellLayout />}>
-            <Route path="/" element={<Navigate to="/overview" replace />} />
-            <Route path="/overview" element={<OverviewPage />} />
-            <Route path="/incidents" element={<IncidentsPage />} />
-            <Route path="/incidents/:incidentId" element={<IncidentsPage />} />
-            <Route path="/communications" element={<CommunicationsPage />} />
-            <Route path="/suppressions" element={<SuppressionsPage />} />
-            <Route path="/activity" element={<ActivityPage />} />
-            <Route path="/config/alert-rules" element={<AlertRulesPage />} />
-            <Route path="/config/communications" element={<GlobalCommunicationsPage />} />
-            <Route path="/config/workflows" element={<WorkflowsPage />} />
-            <Route path="/config/actions" element={<ActionsPage />} />
-            <Route path="/config/access" element={<AccessPage />} />
-            <Route path="*" element={<Navigate to="/overview" replace />} />
-          </Route>
-        </Routes>
+        <ServicePluginsContext.Provider value={bootstrapQuery.data.servicePlugins}>
+          <Routes>
+            <Route element={<ShellLayout />}>
+              <Route path="/" element={<Navigate to="/overview" replace />} />
+              <Route path="/overview" element={<OverviewPage />} />
+              <Route path="/orders" element={<OrdersPage />} />
+              <Route path="/orders/:orderId" element={<OrdersPage />} />
+              <Route path="/communication-routes" element={<CommunicationRoutesPage />} />
+              <Route path="/suppressions" element={<SuppressionsPage />} />
+              <Route path="/execution-activity" element={<ExecutionActivityPage />} />
+              <Route path="/system-activity" element={<SystemActivityPage />} />
+              <Route path="/config/alerts" element={<AlertRulesPage />} />
+              <Route path="/config/alert-rules" element={<AlertRulesPage />} />
+              <Route path="/config/plugins" element={<PluginsPage />} />
+              <Route path="/config/plugins/:serviceType" element={<PluginsPage />} />
+              <Route path="/config/communication-policy" element={<CommunicationPolicyPage />} />
+              <Route path="/config/recipes" element={<RecipesPage />} />
+              <Route path="/config/ingredient-templates" element={<IngredientTemplatesPage />} />
+              <Route path="/config/access" element={<AccessPage />} />
+              <Route path="*" element={<Navigate to="/overview" replace />} />
+            </Route>
+          </Routes>
+        </ServicePluginsContext.Provider>
       </PrincipalContext.Provider>
     </SettingsContext.Provider>
   );
@@ -448,17 +409,17 @@ function LoginPage() {
     <div className="login-screen">
       <div className="login-layout">
         <section className="login-hero-panel">
-          <div className="eyebrow">Mission Control</div>
-          <h1>See incidents, communications, ticket state, and automation health in one place.</h1>
+          <div className="eyebrow">PoundCake</div>
+          <h1>See orders, communication routes, ticket state, and plugin health in one place.</h1>
           <p>
-            PoundCake&apos;s monitoring console is built for fast triage. Sign in to drill into live incidents,
+            PoundCake&apos;s monitoring console is built for fast triage. Sign in to drill into live orders,
             verify whether tickets were created, and confirm Teams or Discord updates were delivered.
           </p>
 
           <div className="login-highlight-grid">
             <div className="hint-card">
-              <strong>Incident drilldowns</strong>
-              <p>Open a single incident and follow its timeline, communication routes, and latest automation outcome.</p>
+              <strong>Order drilldowns</strong>
+              <p>Open a single order and follow its timeline, communication routes, and latest dish outcome.</p>
             </div>
             <div className="hint-card">
               <strong>Communication visibility</strong>
@@ -466,7 +427,7 @@ function LoginPage() {
             </div>
             <div className="hint-card">
               <strong>Clear configuration tools</strong>
-              <p>Edit alert rules, workflows, and actions with inline help that explains each field in plain language.</p>
+              <p>Edit alert rules, recipes, and ingredient templates with inline help that explains each field in plain language.</p>
             </div>
           </div>
         </section>
@@ -583,6 +544,7 @@ function LoginPage() {
 function ShellLayout() {
   const settings = useSettings();
   const principal = usePrincipal();
+  const servicePlugins = useServicePlugins();
   const location = useLocation();
 
   async function handleLogout() {
@@ -594,6 +556,16 @@ function ShellLayout() {
   }
 
   const routeName = getRouteName(location.pathname);
+  const externalPlugins = servicePlugins.filter((plugin) => plugin.plugin_type === "external_plugin");
+  const enabledPlugins = externalPlugins.filter((plugin) => plugin.enabled);
+  const pluginHealthSummary = summarizePluginHealth(enabledPlugins);
+  const pluginHealthStatus = pluginHealthSummary.notReady ? "degraded" : "active";
+  const pluginHealthDetail = pluginHealthSummary.initializing
+    ? `, ${pluginHealthSummary.initializing} initializing`
+    : "";
+  const pluginHealthLabel = enabledPlugins.length
+    ? `Plugins: ${pluginHealthSummary.ready}/${enabledPlugins.length} ready${pluginHealthDetail}`
+    : "Plugins: none";
 
   return (
     <div className="shell">
@@ -601,10 +573,10 @@ function ShellLayout() {
         <div className="brand-card">
           <div className="eyebrow">PoundCake</div>
           <h1>Monitoring Console</h1>
-          <p>One place to triage incidents, track communications, and manage response logic.</p>
+          <p>One place to triage orders, track communication routes, and manage recipe logic.</p>
           <div className="version-chip">v{settings.version}</div>
           <div className="login-note">
-            {principal.display_name || principal.username} • {principal.is_superuser ? "superuser" : principal.role}
+            {principal.display_name || principal.username} • role: {rbacRoleLabel(principal)}
           </div>
         </div>
 
@@ -613,20 +585,22 @@ function ShellLayout() {
             title="Operations"
             items={[
               { to: "/overview", label: "Overview" },
-              { to: "/incidents", label: "Incidents" },
-              { to: "/communications", label: "Communications" },
+              { to: "/orders", label: "Orders" },
+              { to: "/communication-routes", label: "Communication Routes" },
               { to: "/suppressions", label: "Suppressions" },
-              { to: "/activity", label: "Activity" },
+              { to: "/execution-activity", label: "Work Execution Activity" },
+              { to: "/system-activity", label: "System Activity" },
             ]}
           />
           <NavGroup
             title="Configuration"
             items={[
-              { to: "/config/alert-rules", label: "Alert Rules" },
-              { to: "/config/communications", label: "Global Communications" },
-              { to: "/config/workflows", label: "Workflows" },
-              { to: "/config/actions", label: "Actions" },
-              ...(canManageAccess(principal) ? [{ to: "/config/access", label: "Access" }] : []),
+              { to: "/config/alerts", label: "Alerts" },
+              { to: "/config/plugins", label: "Plugins" },
+              { to: "/config/communication-policy", label: "Communication Policy" },
+              { to: "/config/recipes", label: "Recipes" },
+              { to: "/config/ingredient-templates", label: "Ingredient Templates" },
+              ...(canManageAccess(principal) ? [{ to: "/config/access", label: "RBAC" }] : []),
             ]}
           />
         </nav>
@@ -641,15 +615,15 @@ function ShellLayout() {
       <div className="content-shell">
         <header className="topbar">
           <div>
-            <div className="eyebrow">Mission Control</div>
+            <div className="eyebrow">PoundCake</div>
             <h2>{routeName}</h2>
           </div>
           <div className="topbar-meta">
-            <StatusBadge status={settings.prometheus_use_crds ? "active" : "degraded"}>
-              {settings.prometheus_use_crds ? "CRD-backed rules" : "API-backed rules"}
+            <StatusBadge status={pluginHealthStatus}>
+              {pluginHealthLabel}
             </StatusBadge>
             <StatusBadge status={settings.git_enabled ? "active" : "new"}>
-              {settings.git_enabled ? `Git: ${settings.git_provider}` : "Git disabled"}
+              {settings.git_enabled ? "GitHub sync enabled" : "GitHub sync disabled"}
             </StatusBadge>
           </div>
         </header>
@@ -663,39 +637,44 @@ function ShellLayout() {
 }
 
 function OverviewPage() {
+  const principal = usePrincipal();
+  const servicePlugins = useServicePlugins();
   const dataQuery = useQuery({
     queryKey: ["overview-dashboard"],
     refetchInterval: 15_000,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
     queryFn: async () => {
-      const [health, stats, overview, activity, incidents, communications, suppressions] =
+      const [health, overview, activity, incidents, dishes, communications, suppressions] =
         await Promise.all([
-          apiGet("/api/v1/health", healthResponseSchema),
-          apiGet("/api/v1/stats", statsResponseSchema),
+          apiGet("/api/v1/health/status", healthResponseSchema),
           apiGet("/api/v1/observability/overview", observabilityOverviewResponseSchema),
-          apiGet("/api/v1/observability/activity?limit=10", observabilityActivityRecordArraySchema),
-          apiGet("/api/v1/orders?limit=8", orderResponseArraySchema),
-          apiGet("/api/v1/communications/activity?limit=8", communicationActivityRecordArraySchema),
-          apiGet("/api/v1/suppressions?limit=8", suppressionRecordArraySchema),
+          apiGet("/api/v1/observability/activity/status?limit=10&order_scope=operator", observabilityActivityStatusRecordArraySchema),
+          apiGet("/api/v1/orders/status?limit=8&order_scope=operator", orderStatusRecordArraySchema),
+          apiGet("/api/v1/dishes/status?limit=100&order_scope=operator", dishStatusRecordArraySchema),
+          apiGet("/api/v1/communications/activity/status?limit=8", communicationActivityStatusRecordArraySchema),
+          apiGet("/api/v1/suppressions/status?limit=8", suppressionStatusRecordArraySchema),
         ]);
-      return { health, stats, overview, activity, incidents, communications, suppressions };
+      return { health, overview, activity, incidents, dishes, communications, suppressions };
     },
   });
 
   if (dataQuery.isLoading) {
-    return <PageLoading message="Loading overview signal, incident flow, and recent activity." />;
+    return <PageLoading message="Loading overview signal, order flow, and recent work execution activity." />;
   }
 
   if (dataQuery.isError || !dataQuery.data) {
     return <PageError message={getErrorMessage(dataQuery.error)} />;
   }
 
-  const { health, stats, overview, activity, incidents, communications, suppressions } = dataQuery.data;
-  const activeIncidents = incidents.filter((item) => item.is_active).slice(0, 5);
+  const { health, overview, activity, incidents, dishes, communications, suppressions } = dataQuery.data;
+  const activeOrders = incidents.filter((item) => item.is_active).slice(0, 5);
   const failedCommunications = communications.filter(
     (item) => statusTone(item.remote_state || item.lifecycle_state) === "bad",
   );
+  const externalPlugins = servicePlugins.filter((plugin) => plugin.plugin_type === "external_plugin");
+  const enabledPlugins = externalPlugins.filter((plugin) => plugin.enabled);
+  const pluginHealthSummary = summarizePluginHealth(enabledPlugins);
 
   return (
     <div className="page-stack">
@@ -704,39 +683,47 @@ function OverviewPage() {
           <div className="eyebrow">Operations overview</div>
           <h3>What needs attention right now</h3>
           <p>
-            Use this workspace to jump from system health to active incidents, outbound communications,
-            and recent automation activity without losing context.
+            Use this workspace to jump from system health to active orders, outbound communication routes,
+            and recent dish work execution activity. Your current RBAC role controls which actions are available.
           </p>
         </div>
         <div className="hero-strip">
+          <MetricPill label="Your RBAC role" value={rbacRoleLabel(principal)} />
+          <MetricPill label="Open orders" value={String(activeOrders.length)} />
+          <MetricPill label="Failed dishes" value={String(overview.failures.dishes_failed)} />
           <MetricPill label="Platform" value={health.status} />
-          <MetricPill label="Open incidents" value={String(activeIncidents.length)} />
-          <MetricPill label="Failed automations" value={String(overview.failures.dishes_failed)} />
-          <MetricPill label="Active suppressions" value={String(overview.suppressions.active)} />
         </div>
       </section>
 
       <div className="status-grid">
-        <MetricCard title="Alerts tracked" value={String(stats.total_alerts)} tone={health.status}>
-          Recent alerts: {stats.recent_alerts}
-        </MetricCard>
-        <MetricCard title="Communication health" value={String(communications.length)} tone={failedCommunications.length ? "failed" : "healthy"}>
-          Failed routes: {failedCommunications.length}
-        </MetricCard>
-        <MetricCard title="Automation runs" value={String(stats.total_executions)} tone={overview.failures.orders_failed ? "warning" : "healthy"}>
-          Order failures: {overview.failures.orders_failed}
-        </MetricCard>
-        <MetricCard title="Workflows" value={String(stats.total_recipes)} tone="active">
-          Summary failures: {overview.bakery.summary_failures}
-        </MetricCard>
+        <Link className="metric-card-link" to="/config/alerts">
+          <MetricCard title="Alerts" value="Pending" tone="unknown">
+            Prometheus CRD integration
+          </MetricCard>
+        </Link>
+        <Link className="metric-card-link" to="/communication-routes">
+          <MetricCard title="Communication Routes" value={String(communications.length)} tone={failedCommunications.length ? "failed" : "healthy"}>
+            Failed routes: {failedCommunications.length}
+          </MetricCard>
+        </Link>
+        <Link className="metric-card-link" to="/execution-activity">
+          <MetricCard title="Dish Executions" value={String(dishes.length)} tone={overview.failures.orders_failed ? "warning" : "healthy"}>
+            Order failures: {overview.failures.orders_failed}
+          </MetricCard>
+        </Link>
+        <Link className="metric-card-link" to="/config/plugins">
+          <MetricCard title="Plugins" value={String(enabledPlugins.length)} tone={pluginHealthSummary.notReady ? "warning" : "healthy"}>
+            Not ready plugins: {pluginHealthSummary.notReady}
+          </MetricCard>
+        </Link>
       </div>
 
       <div className="overview-grid">
-        <Panel title="Active incidents" subtitle="Click any incident to open its full drilldown.">
+        <Panel title="Active Orders" subtitle="Click any order to open its full drilldown.">
           <div className="list-stack">
-            {activeIncidents.length ? (
-              activeIncidents.map((incident) => (
-                <Link className="feed-row" to={`/incidents/${incident.id}`} key={incident.id}>
+            {activeOrders.length ? (
+              activeOrders.map((incident) => (
+                <Link className="feed-row" to={`/orders/${incident.id}`} key={incident.id}>
                   <div>
                     <strong>{incident.alert_group_name}</strong>
                     <p>{incident.instance || "No instance"} • {incident.severity || "unknown severity"}</p>
@@ -745,12 +732,12 @@ function OverviewPage() {
                 </Link>
               ))
             ) : (
-              <EmptyState message="No active incidents right now." />
+              <EmptyState message="No active orders right now." />
             )}
           </div>
         </Panel>
 
-        <Panel title="Recent activity" subtitle="The feed combines incidents, communications, suppressions, and workflow runs.">
+        <Panel title="Recent Work Execution Activity" subtitle="The feed combines orders, communication routes, suppressions, and dish work executions.">
           <div className="list-stack">
             {activity.map((item) => (
               <Link className="feed-row" key={`${item.type}-${item.target_id}`} to={item.link_hint || "/overview"}>
@@ -770,15 +757,15 @@ function OverviewPage() {
           </div>
         </Panel>
 
-        <Panel title="Communication watch" subtitle="Track ticketable routes and chat notifications in one feed.">
+        <Panel title="Communication Routes" subtitle="Track ticketable routes and chat notifications in one feed.">
           <div className="list-stack">
             {communications.slice(0, 6).map((item) => (
-              <Link className="feed-row" key={item.communication_id} to={item.reference_type === "incident" ? `/incidents/${item.reference_id}` : "/communications"}>
+              <Link className="feed-row" key={item.communication_id} to={item.reference_type === "incident" ? `/orders/${item.reference_id}` : "/communication-routes"}>
                 <div>
                   <strong>{item.reference_name || item.reference_id}</strong>
                   <p>
                     {titleize(item.channel)} • {item.destination || "No destination"} •{" "}
-                    {item.ticket_id || item.provider_reference_id || "Pending reference"}
+                    {titleize(item.remote_state || item.lifecycle_state || "pending")}
                   </p>
                 </div>
                 <div className="feed-meta">
@@ -821,8 +808,1063 @@ function OverviewPage() {
   );
 }
 
-function IncidentsPage() {
-  const { incidentId } = useParams();
+function PluginsPage() {
+  const { serviceType } = useParams();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const notify = useToast();
+  const principal = usePrincipal();
+  const servicePlugins = useServicePlugins();
+  const selectedPlugin =
+    servicePlugins.find((plugin) => plugin.service_type === serviceType) ||
+    servicePlugins.find((plugin) => plugin.enabled) ||
+    servicePlugins[0];
+  const [enabledInput, setEnabledInput] = useState(false);
+  const [intervalInput, setIntervalInput] = useState("");
+  const [healthIntervalInput, setHealthIntervalInput] = useState("");
+  const [queryLimitInput, setQueryLimitInput] = useState("");
+  const [operatorConfigInput, setOperatorConfigInput] = useState<Record<string, string | boolean>>({});
+  const [operatorCredentialKeyIdInput, setOperatorCredentialKeyIdInput] = useState("default");
+  const [operatorCredentialInput, setOperatorCredentialInput] = useState("");
+  const [operatorCredentialInputs, setOperatorCredentialInputs] = useState<Record<string, string>>({});
+  const [operatorCredentialTouched, setOperatorCredentialTouched] = useState(false);
+  const [operatorCredentialField, setOperatorCredentialField] = useState("token");
+  const [scheduledTaskInputs, setScheduledTaskInputs] = useState<
+    Record<number, { enabled: boolean; interval: string }>
+  >({});
+  const canManageAdapterConfiguration = hasRole(principal, "operator");
+  const canManageAdapterCredentials = hasRole(principal, "admin");
+
+  const scheduledTasksQuery = useQuery({
+    queryKey: ["scheduled-tasks", selectedPlugin?.service_type],
+    enabled: Boolean(selectedPlugin?.service_type),
+    queryFn: () =>
+      apiGet(
+        `/api/v1/scheduled-tasks/status?service_type=${encodeURIComponent(selectedPlugin?.service_type || "")}`,
+        scheduledTaskStatusRecordArraySchema,
+      ),
+  });
+
+  const operatorConfigQuery = useQuery({
+    queryKey: ["plugin-configuration", selectedPlugin?.service_type],
+    enabled: selectedPlugin?.plugin_type === "external_plugin" && canManageAdapterConfiguration,
+    queryFn: () =>
+      apiGet(
+        `/api/v1/plugins/${encodeURIComponent(selectedPlugin?.service_type || "")}/configuration`,
+        servicePluginConfigurationRecordSchema,
+      ),
+  });
+
+  useEffect(() => {
+    if (!serviceType && selectedPlugin) {
+      startTransition(() => {
+        navigate(`/config/plugins/${encodeURIComponent(selectedPlugin.service_type)}`, { replace: true });
+      });
+    }
+  }, [navigate, selectedPlugin, serviceType]);
+
+  useEffect(() => {
+    setEnabledInput(Boolean(selectedPlugin?.enabled));
+    setIntervalInput(
+      selectedPlugin?.run_interval_seconds ? String(selectedPlugin.run_interval_seconds) : "",
+    );
+  }, [selectedPlugin?.enabled, selectedPlugin?.run_interval_seconds, selectedPlugin?.service_type]);
+
+  useEffect(() => {
+    setQueryLimitInput(selectedPlugin?.query_limit ? String(selectedPlugin.query_limit) : "");
+  }, [selectedPlugin?.query_limit, selectedPlugin?.service_type]);
+
+  useEffect(() => {
+    setHealthIntervalInput(
+      selectedPlugin?.health_check_interval_seconds
+        ? String(selectedPlugin.health_check_interval_seconds)
+        : "",
+    );
+  }, [selectedPlugin?.health_check_interval_seconds, selectedPlugin?.service_type]);
+
+  useEffect(() => {
+    if (selectedPlugin?.plugin_type !== "external_plugin") {
+      return;
+    }
+    setOperatorConfigInput(normalizeUiConfig(operatorConfigQuery.data?.config || {}));
+    setOperatorCredentialKeyIdInput(operatorConfigQuery.data?.credential_key_id || "default");
+    setOperatorCredentialField(defaultCredentialField(operatorConfigQuery.data?.credential_type));
+    setOperatorCredentialInput("");
+    setOperatorCredentialInputs({});
+    setOperatorCredentialTouched(false);
+  }, [
+    selectedPlugin?.plugin_type,
+    selectedPlugin?.service_type,
+    operatorConfigQuery.data?.config,
+    operatorConfigQuery.data?.credential_key_id,
+    operatorConfigQuery.data?.credential_type,
+  ]);
+
+  useEffect(() => {
+    const nextInputs: Record<number, { enabled: boolean; interval: string }> = {};
+    for (const task of scheduledTasksQuery.data || []) {
+      nextInputs[task.id] = {
+        enabled: task.is_enabled,
+        interval: String(task.run_interval_seconds),
+      };
+    }
+    setScheduledTaskInputs(nextInputs);
+  }, [scheduledTasksQuery.data, selectedPlugin?.service_type]);
+
+  const updatePluginMutation = useMutation({
+    mutationFn: async (values: {
+      plugin?: {
+        enabled?: boolean;
+        run_interval_seconds?: number;
+        query_limit?: number;
+        health_check_interval_seconds?: number;
+      };
+      scheduledTasks?: Array<{
+        id: number;
+        is_enabled?: boolean;
+        run_interval_seconds?: number;
+      }>;
+    }) => {
+      if (!selectedPlugin) {
+        throw new Error("No plugin selected");
+      }
+      if (values.plugin && Object.keys(values.plugin).length) {
+        await apiPatch(
+          `/api/v1/plugins/${encodeURIComponent(selectedPlugin.service_type)}`,
+          z.unknown(),
+          values.plugin,
+        );
+      }
+      await Promise.all(
+        (values.scheduledTasks || []).map((task) =>
+          apiPatch(`/api/v1/scheduled-tasks/${task.id}`, z.unknown(), {
+            ...(task.is_enabled === undefined ? {} : { is_enabled: task.is_enabled }),
+            ...(task.run_interval_seconds === undefined
+              ? {}
+              : { run_interval_seconds: task.run_interval_seconds }),
+          }),
+        ),
+      );
+    },
+    onSuccess: async () => {
+      notify("success", "Plugin configuration updated.");
+      await queryClient.invalidateQueries({ queryKey: ["settings", "auth-me", "service-plugins"] });
+      await queryClient.invalidateQueries({ queryKey: ["scheduled-tasks"] });
+    },
+    onError: (error) => notify("error", getErrorMessage(error)),
+  });
+
+  const saveOperatorPluginConfigMutation = useMutation({
+    mutationFn: async (): Promise<ServicePluginConfigurationRecord> => {
+      if (!selectedPlugin) {
+        throw new Error("No plugin selected");
+      }
+      const serviceType = selectedPlugin.service_type;
+      const credentialPayload = buildCredentialPayload(
+        editableOperatorCredentialRequirements,
+        operatorConfigQuery.data?.credential_type,
+        operatorCredentialField,
+        operatorCredentialInput,
+        operatorCredentialInputs,
+      );
+      const response = await apiPut(
+        `/api/v1/plugins/${encodeURIComponent(serviceType)}/configuration`,
+        servicePluginConfigurationRecordSchema,
+        {
+          config: serializeUiConfig(operatorConfigInput, operatorConfigQuery.data?.config_schema),
+        },
+      );
+      if (credentialPayload) {
+        return apiPut(
+          `/api/v1/plugins/${encodeURIComponent(serviceType)}/credentials`,
+          servicePluginConfigurationRecordSchema,
+          {
+            credential_type: operatorConfigQuery.data?.credential_type,
+            credential_key_id: operatorCredentialKeyIdInput.trim() || "default",
+            credential_payload: credentialPayload,
+            rotate_credential: true,
+          },
+        );
+      }
+      return response;
+    },
+    onSuccess: async (response) => {
+      queryClient.setQueryData(
+        ["plugin-configuration", response.service_type],
+        response,
+      );
+      setOperatorConfigInput(normalizeUiConfig(response.config || {}));
+      setOperatorCredentialKeyIdInput(response.credential_key_id || "default");
+      setOperatorCredentialField(defaultCredentialField(response.credential_type));
+      setOperatorCredentialInput("");
+      setOperatorCredentialInputs({});
+      setOperatorCredentialTouched(false);
+      await queryClient.invalidateQueries({ queryKey: ["plugin-configuration"] });
+      await queryClient.invalidateQueries({ queryKey: ["settings", "auth-me", "service-plugins"] });
+      notify("success", "Plugin connection configuration saved.");
+    },
+    onError: (error) => notify("error", getErrorMessage(error)),
+  });
+
+  const runScheduledTaskNowMutation = useMutation({
+    mutationFn: async (task: ScheduledTaskStatusRecord) =>
+      apiPost(
+        `/api/v1/scheduled-tasks/${task.id}/run-now`,
+        scheduledTaskStatusRecordSchema,
+      ),
+    onSuccess: async (task) => {
+      notify("success", `${scheduledTaskRunActionLabel(task)} requested.`);
+      await queryClient.invalidateQueries({ queryKey: ["scheduled-tasks"] });
+      await queryClient.invalidateQueries({ queryKey: ["settings", "auth-me", "service-plugins"] });
+    },
+    onError: (error) => notify("error", getErrorMessage(error)),
+  });
+
+  const internalPlugins = servicePlugins.filter((plugin) => plugin.plugin_type === "internal_plugin");
+  const externalPlugins = servicePlugins.filter((plugin) => plugin.plugin_type === "external_plugin");
+  const enabledCount = servicePlugins.filter((plugin) => plugin.enabled).length;
+  const internalCount = internalPlugins.length;
+  const pluginHealthSummary = summarizePluginHealth(externalPlugins.filter((plugin) => plugin.enabled));
+  const selectedScheduledTasks = scheduledTasksQuery.data || [];
+  const selectedPluginIsExternal = selectedPlugin?.plugin_type === "external_plugin";
+  const canUpdatePluginConfig = hasRole(principal, "operator");
+  const canManageScheduledTasks = hasRole(principal, "operator");
+  const selectedPluginSupportsQueryLimit =
+    selectedPlugin?.service_type === "prep-chef" || selectedPlugin?.service_type === "timer";
+  const selectedWorkerState = selectedPlugin?.enabled ? "enabled" : "paused";
+  const currentIntervalInput = selectedPlugin?.run_interval_seconds
+    ? String(selectedPlugin.run_interval_seconds)
+    : "";
+  const currentQueryLimitInput = selectedPlugin?.query_limit ? String(selectedPlugin.query_limit) : "";
+  const currentHealthIntervalInput = selectedPlugin?.health_check_interval_seconds
+    ? String(selectedPlugin.health_check_interval_seconds)
+    : "";
+  const parsedInterval = Number.parseInt(intervalInput, 10);
+  const parsedQueryLimit = Number.parseInt(queryLimitInput, 10);
+  const parsedHealthInterval = Number.parseInt(healthIntervalInput, 10);
+  const intervalChanged = Boolean(selectedPlugin?.config_editable) && intervalInput.trim() !== currentIntervalInput;
+  const queryLimitChanged =
+    Boolean(selectedPluginSupportsQueryLimit) &&
+    queryLimitInput.trim() !== currentQueryLimitInput;
+  const healthIntervalChanged =
+    Boolean(selectedPluginIsExternal) &&
+    healthIntervalInput.trim() !== currentHealthIntervalInput;
+  const operatorConfig = operatorConfigQuery.data?.config || {};
+  const editableOperatorCredentialRequirements = editableCredentialRequirements(
+    operatorConfigQuery.data?.credential_requirements,
+  );
+  const canEditAdapterCredentials = Boolean(
+    canManageAdapterCredentials && editableOperatorCredentialRequirements.length,
+  );
+  const credentialDirty = Boolean(
+    operatorCredentialTouched &&
+      (credentialInputHasNewValue(operatorCredentialInput) ||
+        Object.values(operatorCredentialInputs).some((value) => credentialInputHasNewValue(value))),
+  );
+  const operatorConfigDirty = Boolean(
+    selectedPluginIsExternal &&
+      comparableOperatorConfig(
+        serializeUiConfig(operatorConfigInput, operatorConfigQuery.data?.config_schema),
+        operatorConfigQuery.data?.config_schema,
+      ) !==
+        comparableOperatorConfig(operatorConfig, operatorConfigQuery.data?.config_schema),
+  );
+  const savedCredentialKeyId = operatorConfigQuery.data?.credential_key_id || "default";
+  const requestedCredentialKeyId = operatorCredentialKeyIdInput.trim() || "default";
+  const operatorCredentialDirty = Boolean(
+    selectedPluginIsExternal &&
+      canEditAdapterCredentials &&
+      (requestedCredentialKeyId !== savedCredentialKeyId || credentialDirty),
+  );
+  const enabledChanged =
+    Boolean(selectedPlugin?.config_editable || selectedPluginIsExternal) &&
+    enabledInput !== Boolean(selectedPlugin?.enabled);
+  const pluginConfigDirty = Boolean(
+    enabledChanged || intervalChanged || queryLimitChanged || healthIntervalChanged,
+  );
+  const scheduledTaskConfigDirty = selectedScheduledTasks.some((task) => {
+    const input = scheduledTaskInputs[task.id];
+    return Boolean(
+      input &&
+        (input.enabled !== task.is_enabled || input.interval.trim() !== String(task.run_interval_seconds)),
+    );
+  });
+  const canSavePluginPage = Boolean(
+    (pluginConfigDirty && canUpdatePluginConfig) ||
+      (scheduledTaskConfigDirty && canManageScheduledTasks),
+  );
+  const canSaveOperatorPluginConfig = Boolean(
+    selectedPluginIsExternal &&
+      canManageAdapterConfiguration &&
+      (operatorConfigDirty || operatorCredentialDirty),
+  );
+  const operatorCredentialRequired = hasRequiredCredentialRequirement(
+    editableOperatorCredentialRequirements,
+  );
+  const canUseSavedAdapterState = Boolean(
+    !selectedPluginIsExternal ||
+      (!operatorCredentialRequired || operatorConfigQuery.data?.credential_configured) &&
+        !operatorConfigDirty &&
+        !operatorCredentialDirty &&
+        !saveOperatorPluginConfigMutation.isPending,
+  );
+
+  const savePluginConfig = () => {
+    if (!selectedPlugin) {
+      return;
+    }
+    const payload: {
+      enabled?: boolean;
+      run_interval_seconds?: number;
+      query_limit?: number;
+      health_check_interval_seconds?: number;
+    } = {};
+
+    if (selectedPlugin.config_editable || selectedPluginIsExternal) {
+      if (enabledChanged) {
+        payload.enabled = enabledInput;
+      }
+    }
+
+    if (selectedPlugin.config_editable) {
+      if (!Number.isFinite(parsedInterval) || parsedInterval < 1) {
+        notify("error", "Run interval must be at least 1 second.");
+        return;
+      }
+      if (intervalChanged) {
+        payload.run_interval_seconds = parsedInterval;
+      }
+      if (selectedPluginSupportsQueryLimit) {
+        if (!Number.isFinite(parsedQueryLimit) || parsedQueryLimit < 1) {
+          notify("error", "Query limit must be at least 1.");
+          return;
+        }
+        if (queryLimitChanged) {
+          payload.query_limit = parsedQueryLimit;
+        }
+      }
+    }
+
+    if (selectedPluginIsExternal) {
+      if (!Number.isFinite(parsedHealthInterval) || parsedHealthInterval < 1) {
+        notify("error", "Health check interval must be at least 1 second.");
+        return;
+      }
+      if (healthIntervalChanged) {
+        payload.health_check_interval_seconds = parsedHealthInterval;
+      }
+    }
+
+    const scheduledTaskUpdates: Array<{
+      id: number;
+      is_enabled?: boolean;
+      run_interval_seconds?: number;
+    }> = [];
+    for (const task of selectedScheduledTasks) {
+      const input = scheduledTaskInputs[task.id];
+      if (!input) {
+        continue;
+      }
+      const taskPayload: {
+        id: number;
+        is_enabled?: boolean;
+        run_interval_seconds?: number;
+      } = { id: task.id };
+      if (input.enabled !== task.is_enabled) {
+        taskPayload.is_enabled = input.enabled;
+      }
+      if (input.interval.trim() !== String(task.run_interval_seconds)) {
+        const parsedTaskInterval = Number.parseInt(input.interval, 10);
+        if (!Number.isFinite(parsedTaskInterval) || parsedTaskInterval < 1) {
+          notify("error", `Scheduled task ${task.task_key} interval must be at least 1 second.`);
+          return;
+        }
+        taskPayload.run_interval_seconds = parsedTaskInterval;
+      }
+      if (Object.keys(taskPayload).length > 1) {
+        scheduledTaskUpdates.push(taskPayload);
+      }
+    }
+
+    if (scheduledTaskUpdates.length && !canManageScheduledTasks) {
+      notify("error", "Only operators can update scheduled task frequencies.");
+      return;
+    }
+
+    if (!Object.keys(payload).length && !scheduledTaskUpdates.length) {
+      notify("success", "No plugin changes to save.");
+      return;
+    }
+    updatePluginMutation.mutate({
+      plugin: Object.keys(payload).length ? payload : undefined,
+      scheduledTasks: scheduledTaskUpdates,
+    });
+  };
+  const pluginGroups = [
+    { title: "Internal plugins", plugins: internalPlugins },
+    { title: "External plugins", plugins: externalPlugins },
+  ];
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        title="Plugins"
+        description="Inspect enabled service plugins, health state, credentials, ingredient templates, and shared helper capability contracts."
+      />
+
+      <div className="status-grid">
+        <MetricCard title="Registered" value={String(servicePlugins.length)} tone={servicePlugins.length ? "healthy" : "unknown"}>
+          Plugins in catalog
+        </MetricCard>
+        <MetricCard title="Enabled" value={String(enabledCount)} tone={enabledCount ? "healthy" : "unknown"}>
+          Active service plugins
+        </MetricCard>
+        <MetricCard title="Internal" value={String(internalCount)} tone={internalCount ? "healthy" : "unknown"}>
+          PoundCake workers
+        </MetricCard>
+        <MetricCard title="Not ready" value={String(pluginHealthSummary.notReady)} tone={pluginHealthSummary.notReady ? "warning" : "healthy"}>
+          Initializing or unhealthy
+        </MetricCard>
+      </div>
+
+      <div className="master-detail">
+        <Panel title="Plugin catalog" subtitle={`${servicePlugins.length} plugin(s) registered.`}>
+          <div className="list-stack incident-list">
+            {servicePlugins.length ? (
+              pluginGroups.map((group) => group.plugins.length ? (
+                <section className="plugin-catalog-section" key={group.title}>
+                  <div className="plugin-catalog-heading">{group.title}</div>
+                  <div className="list-stack">
+                    {group.plugins.map((plugin) => (
+                      <button
+                        className={`incident-row ${selectedPlugin?.service_type === plugin.service_type ? "active" : ""}`}
+                        key={plugin.service_type}
+                        type="button"
+                        onClick={() => startTransition(() => navigate(`/config/plugins/${encodeURIComponent(plugin.service_type)}`))}
+                      >
+                        <div>
+                          <strong>{titleize(plugin.service_type)}</strong>
+                          <p>
+                            {plugin.plugin_type === "internal_plugin" ? "internal" : "external"} • {formatPluginTier(plugin.plugin_tier)} •{" "}
+                            {plugin.ingredient_template_count} ingredient template(s) • {plugin.recipe_template_count} recipe template(s)
+                          </p>
+                        </div>
+                        <div className="feed-meta">
+                          {plugin.plugin_type === "external_plugin" ? (
+                            <StatusBadge status={plugin.health_status}>{plugin.health_status}</StatusBadge>
+                          ) : null}
+                          <span>{plugin.enabled ? "enabled" : "disabled"}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ) : null)
+            ) : (
+              <EmptyState message="No service plugins are registered." />
+            )}
+          </div>
+        </Panel>
+
+        <Panel title="Plugin details" subtitle="Runtime metadata and helper capability visibility.">
+          {selectedPlugin ? (
+            <div className="detail-stack">
+              <section className="detail-hero">
+                <div>
+                  <div className="eyebrow">Service plugin</div>
+                  <h3>{titleize(selectedPlugin.service_type)}</h3>
+                  <p>{selectedPlugin.plugin_log_key || selectedPlugin.service_type}</p>
+                </div>
+                <div className="hero-strip">
+                  {selectedPluginIsExternal ? (
+                    <>
+                      <MetricPill label="Health" value={selectedPlugin.health_status} />
+                      <MetricPill label="Credentials" value={selectedPlugin.credential_status} />
+                      <MetricPill
+                        label="Health interval"
+                        value={selectedPlugin.health_check_interval_seconds ? `${selectedPlugin.health_check_interval_seconds}s` : "-"}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <MetricPill label="State" value={selectedWorkerState} />
+                      <MetricPill label="Run interval" value={selectedPlugin.run_interval_seconds ? `${selectedPlugin.run_interval_seconds}s` : "-"} />
+                      {selectedPluginSupportsQueryLimit ? (
+                        <MetricPill label="Limit" value={selectedPlugin.query_limit ? String(selectedPlugin.query_limit) : "-"} />
+                      ) : null}
+                    </>
+                  )}
+                  <MetricPill label="Type" value={selectedPlugin.plugin_type === "internal_plugin" ? "internal" : "external"} />
+                  <MetricPill label="Ingredients" value={String(selectedPlugin.ingredient_template_count)} />
+                </div>
+              </section>
+
+              {selectedPlugin.config_editable || selectedPluginIsExternal || selectedScheduledTasks.length ? (
+                <section className="plugin-config-panel">
+                  <div className="panel-head">
+                    <div>
+                      <h4>Plugin controls</h4>
+                      <p>Adjust worker cadence and plugin-owned scheduled task frequencies for the selected registered plugin.</p>
+                    </div>
+                    <button
+                      className="primary-button"
+                      disabled={updatePluginMutation.isPending || !canSavePluginPage}
+                      type="button"
+                      onClick={savePluginConfig}
+                    >
+                      {updatePluginMutation.isPending ? "Saving..." : "Save changes"}
+                    </button>
+                  </div>
+                  <div className="plugin-config-grid">
+                    {selectedPlugin.config_editable ? (
+                      <>
+                        <FormField label="Worker state" help="Paused internal plugins stop their worker loop but remain registered.">
+                          <label className="toggle-row plugin-toggle-field">
+                            <input
+                              checked={enabledInput}
+                              disabled={updatePluginMutation.isPending || !canUpdatePluginConfig}
+                              type="checkbox"
+                              onChange={(event) => setEnabledInput(event.target.checked)}
+                            />
+                            <span>{enabledInput ? "Enabled" : "Paused"}</span>
+                          </label>
+                        </FormField>
+                        <FormField label="Run interval seconds" help="How often this internal worker wakes up to inspect its queue.">
+                          <input
+                            disabled={updatePluginMutation.isPending || !canUpdatePluginConfig}
+                            min={1}
+                            type="number"
+                            value={intervalInput}
+                            onChange={(event) => setIntervalInput(event.target.value)}
+                          />
+                        </FormField>
+                      </>
+                    ) : null}
+                    {selectedPluginIsExternal ? (
+                      <FormField label="Adapter state" help="Disabled adapters keep queued work cached until the adapter is enabled or the execution times out.">
+                        <label className="toggle-row plugin-toggle-field">
+                          <input
+                            checked={enabledInput}
+                            disabled={updatePluginMutation.isPending || !canUpdatePluginConfig}
+                            type="checkbox"
+                            onChange={(event) => setEnabledInput(event.target.checked)}
+                          />
+                          <span>{enabledInput ? "Enabled" : "Disabled"}</span>
+                        </label>
+                      </FormField>
+                    ) : null}
+                    {selectedPluginSupportsQueryLimit ? (
+                      <FormField label="Query limit">
+                        <input
+                          disabled={updatePluginMutation.isPending || !canUpdatePluginConfig}
+                          min={1}
+                          type="number"
+                          value={queryLimitInput}
+                          onChange={(event) => setQueryLimitInput(event.target.value)}
+                        />
+                      </FormField>
+                    ) : null}
+                    {selectedPluginIsExternal ? (
+                      <FormField label="Health check interval seconds" help="How often Dishwasher injects this plugin's health check as an order.">
+                        <input
+                          disabled={updatePluginMutation.isPending || !canUpdatePluginConfig}
+                          min={1}
+                          type="number"
+                          value={healthIntervalInput}
+                          onChange={(event) => setHealthIntervalInput(event.target.value)}
+                        />
+                      </FormField>
+                    ) : null}
+                  </div>
+                  {selectedScheduledTasks.length ? (
+                    <div className="scheduled-task-controls">
+                      <div className="section-heading compact">
+                        <div>
+                          <h4>Scheduled tasks</h4>
+                          <p>Dishwasher uses these intervals to inject plugin-owned recurring work as orders.</p>
+                        </div>
+                        <StatusBadge status={canManageScheduledTasks ? "healthy" : "unknown"}>
+                          {canManageScheduledTasks ? "operator editable" : "operator only"}
+                        </StatusBadge>
+                      </div>
+                      <div className="scheduled-task-list">
+                        {selectedScheduledTasks.map((task) => {
+                          const taskInput = scheduledTaskInputs[task.id] || {
+                            enabled: task.is_enabled,
+                            interval: String(task.run_interval_seconds),
+                          };
+                          const taskConfigDirty = Boolean(
+                            taskInput.enabled !== task.is_enabled ||
+                              taskInput.interval.trim() !== String(task.run_interval_seconds),
+                          );
+                          const canRunTaskNow = Boolean(
+                            canManageScheduledTasks &&
+                              canUseSavedAdapterState &&
+                              (!selectedPluginIsExternal || selectedPlugin.enabled) &&
+                              isOperatorRunnableScheduledTask(task) &&
+                              !taskConfigDirty &&
+                              !updatePluginMutation.isPending &&
+                              !runScheduledTaskNowMutation.isPending,
+                          );
+                          const blockedRunMessage = scheduledTaskRunBlockedMessage({
+                            adapterConfigDirty: operatorConfigDirty,
+                            canUseSavedAdapterState,
+                            pluginEnabled: !selectedPluginIsExternal || Boolean(selectedPlugin.enabled),
+                            task,
+                            taskConfigDirty,
+                          });
+                          const runTaskTitle = blockedRunMessage || task.run_now_description;
+                          return (
+                            <div className="scheduled-task-row" key={task.id}>
+                              <div className="scheduled-task-main">
+                                <strong>{task.task_key}</strong>
+                                <p>
+                                  {task.task_type} • {task.service_exec || "plugin task"} • {scheduledTaskStateLabel(task)}
+                                </p>
+                              </div>
+                              <label className="toggle-row scheduled-task-toggle">
+                                <input
+                                  checked={taskInput.enabled}
+                                  disabled={updatePluginMutation.isPending || !canManageScheduledTasks}
+                                  type="checkbox"
+                                  onChange={(event) =>
+                                    setScheduledTaskInputs((current) => ({
+                                      ...current,
+                                      [task.id]: {
+                                        ...taskInput,
+                                        enabled: event.target.checked,
+                                      },
+                                    }))
+                                  }
+                                />
+                                <span>{taskInput.enabled ? "Enabled" : "Paused"}</span>
+                              </label>
+                              <FormField label="Interval seconds">
+                                <input
+                                  disabled={updatePluginMutation.isPending || !canManageScheduledTasks}
+                                  min={1}
+                                  type="number"
+                                  value={taskInput.interval}
+                                  onChange={(event) =>
+                                    setScheduledTaskInputs((current) => ({
+                                      ...current,
+                                      [task.id]: {
+                                        ...taskInput,
+                                        interval: event.target.value,
+                                      },
+                                    }))
+                                  }
+                                />
+                              </FormField>
+                              <button
+                                className="ghost-button"
+                                disabled={
+                                  !canRunTaskNow
+                                }
+                                title={runTaskTitle}
+                                type="button"
+                                onClick={() => {
+                                  if (!canRunTaskNow) {
+                                    notify("error", blockedRunMessage || `${scheduledTaskRunActionLabel(task)} is not ready to run.`);
+                                    return;
+                                  }
+                                  runScheduledTaskNowMutation.mutate(task);
+                                }}
+                              >
+                                {scheduledTaskRunActionLabel(task)}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : scheduledTasksQuery.isLoading ? (
+                    <div className="helper-card">
+                      <strong>Loading scheduled tasks</strong>
+                      <p>Checking for plugin-owned scheduled work.</p>
+                    </div>
+                  ) : null}
+                  <div className="plugin-config-footer">
+                    {selectedPluginIsExternal ? (
+                      <StatusBadge status={selectedPlugin.health_check_enabled === false ? "disabled" : selectedPlugin.health_status}>
+                        {selectedPlugin.health_check_enabled === false ? "health disabled" : `health ${selectedPlugin.health_status}`}
+                      </StatusBadge>
+                    ) : null}
+                    {!canUpdatePluginConfig && !canManageScheduledTasks ? (
+                      <p>Your role can inspect plugin controls but cannot change them.</p>
+                    ) : !pluginConfigDirty && !scheduledTaskConfigDirty ? (
+                      <p>No unsaved plugin control changes.</p>
+                    ) : (
+                      <p>Unsaved plugin control changes.</p>
+                    )}
+                  </div>
+                </section>
+              ) : null}
+
+              {selectedPluginIsExternal ? (
+                <section className="plugin-config-panel">
+                  <div className="panel-head">
+                    <div>
+                      <h4>Adapter connection</h4>
+                      <p>Operator-owned connection settings and the admin-owned Bakery bootstrap credential.</p>
+                    </div>
+                    <StatusBadge
+                      status={
+                        canManageAdapterCredentials
+                          ? operatorConfigQuery.data?.credential_configured
+                            ? "healthy"
+                            : "unknown"
+                          : "unknown"
+                      }
+                    >
+                      {canManageAdapterCredentials
+                        ? operatorConfigQuery.data?.credential_configured
+                          ? "bootstrap credential ready"
+                          : "bootstrap credential missing"
+                        : "operator config"}
+                    </StatusBadge>
+                  </div>
+                  {canManageAdapterConfiguration ? (
+                    <>
+                      <div className="plugin-config-grid">
+                        {operatorConfigFields(operatorConfigQuery.data?.config_schema, operatorConfigInput).map((field) => (
+                          <FormField label={field.label} key={field.name}>
+                            {field.type === "boolean" ? (
+                              <label className="toggle-row plugin-toggle-field">
+                                <input
+                                  checked={Boolean(operatorConfigInput[field.name])}
+                                  disabled={saveOperatorPluginConfigMutation.isPending}
+                                  type="checkbox"
+                                  onChange={(event) =>
+                                    setOperatorConfigInput((current) => ({
+                                      ...current,
+                                      [field.name]: event.target.checked,
+                                    }))
+                                  }
+                                />
+                                <span>{operatorConfigInput[field.name] ? "Enabled" : "Disabled"}</span>
+                              </label>
+                            ) : (
+                              <input
+                                disabled={saveOperatorPluginConfigMutation.isPending}
+                                type={
+                                  field.name.includes("url")
+                                    ? "url"
+                                    : field.type === "number" || field.type === "integer"
+                                      ? "number"
+                                      : "text"
+                                }
+                                value={String(operatorConfigInput[field.name] ?? "")}
+                                onChange={(event) =>
+                                  setOperatorConfigInput((current) => ({
+                                    ...current,
+                                    [field.name]: event.target.value,
+                                  }))
+                                }
+                              />
+                            )}
+                          </FormField>
+                        ))}
+                        {canEditAdapterCredentials ? (
+                          <>
+                            <FormField
+                              label={credentialSlotLabel(operatorConfigQuery.data?.credential_type)}
+                              help={credentialSlotHelp(operatorConfigQuery.data?.credential_type)}
+                            >
+                              <input
+                                autoComplete="off"
+                                disabled={saveOperatorPluginConfigMutation.isPending}
+                                name={`credential-key-id-${operatorConfigQuery.data?.credential_type || "adapter"}`}
+                                value={operatorCredentialKeyIdInput}
+                                onChange={(event) => {
+                                  setOperatorCredentialTouched(true);
+                                  setOperatorCredentialKeyIdInput(event.target.value);
+                                }}
+                              />
+                            </FormField>
+                            {credentialPayloadFields(
+                              editableOperatorCredentialRequirements,
+                              operatorConfigQuery.data?.credential_type,
+                            ).length === 1 ? (
+                              <>
+                                <FormField label="Credential field">
+                                  <select
+                                    disabled={saveOperatorPluginConfigMutation.isPending}
+                                    name={`credential-field-${operatorConfigQuery.data?.credential_type || "adapter"}`}
+                                    value={operatorCredentialField}
+                                    onChange={(event) => {
+                                      setOperatorCredentialTouched(true);
+                                      setOperatorCredentialField(event.target.value);
+                                    }}
+                                  >
+                                    {credentialFieldOptions(operatorConfigQuery.data?.credential_type).map((option) => (
+                                      <option value={option.value} key={option.value}>{option.label}</option>
+                                    ))}
+                                  </select>
+                                </FormField>
+                                <FormField label={credentialValueLabel(operatorConfigQuery.data?.credential_type)}>
+                                  <input
+                                    autoComplete="new-password"
+                                    disabled={
+                                      saveOperatorPluginConfigMutation.isPending ||
+                                      !operatorConfigQuery.data?.credential_type
+                                    }
+                                    name={`credential-value-${operatorConfigQuery.data?.credential_type || "adapter"}`}
+                                    placeholder={operatorConfigQuery.data?.credential_configured ? "Leave blank to keep existing" : ""}
+                                    type="password"
+                                    value={operatorCredentialInput}
+                                    onFocus={() => setOperatorCredentialTouched(true)}
+                                    onChange={(event) => setOperatorCredentialInput(event.target.value)}
+                                  />
+                                </FormField>
+                              </>
+                            ) : (
+                              credentialPayloadFields(
+                                editableOperatorCredentialRequirements,
+                                operatorConfigQuery.data?.credential_type,
+                              ).map((field) => (
+                                <FormField label={field.label} help={field.help} key={field.name}>
+                                  <input
+                                    autoComplete="new-password"
+                                    disabled={saveOperatorPluginConfigMutation.isPending}
+                                    name={`credential-${operatorConfigQuery.data?.credential_type || "adapter"}-${field.name}`}
+                                    placeholder={operatorConfigQuery.data?.credential_configured ? "Leave blank to keep existing" : ""}
+                                    type="password"
+                                    value={operatorCredentialInputs[field.name] || ""}
+                                    onFocus={() => setOperatorCredentialTouched(true)}
+                                    onChange={(event) =>
+                                      setOperatorCredentialInputs((current) => ({
+                                        ...current,
+                                        [field.name]: event.target.value,
+                                      }))
+                                    }
+                                  />
+                                </FormField>
+                              ))
+                            )}
+                          </>
+                        ) : null}
+                      </div>
+                      <div className="plugin-action-row">
+                        <button
+                          className="primary-button"
+                          disabled={!canSaveOperatorPluginConfig || saveOperatorPluginConfigMutation.isPending}
+                          type="button"
+                          onClick={() => saveOperatorPluginConfigMutation.mutate()}
+                        >
+                          {saveOperatorPluginConfigMutation.isPending ? "Saving..." : "Save"}
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
+                  <div className="plugin-config-footer">
+                    <p>
+                      {canManageAdapterConfiguration
+                        ? operatorConfigDirty || operatorCredentialDirty
+                          ? "Unsaved adapter connection changes."
+                          : "No unsaved adapter connection changes."
+                        : "Only operators can view and change adapter connection settings."}
+                    </p>
+                  </div>
+                </section>
+              ) : null}
+
+              <div className="kv-grid">
+                <KeyValue label="Service type" value={selectedPlugin.service_type} />
+                <KeyValue label="Short ID" value={selectedPlugin.plugin_short_id || "-"} />
+                <KeyValue label="Type" value={selectedPlugin.plugin_type} />
+                <KeyValue label="Tier" value={formatPluginTier(selectedPlugin.plugin_tier)} />
+                <KeyValue label="Enabled" value={String(selectedPlugin.enabled)} />
+                <KeyValue label="Run interval" value={selectedPlugin.run_interval_seconds ? `${selectedPlugin.run_interval_seconds} seconds` : "-"} />
+                {selectedPluginSupportsQueryLimit ? (
+                  <KeyValue label="Query limit" value={selectedPlugin.query_limit ? String(selectedPlugin.query_limit) : "-"} />
+                ) : null}
+                {selectedPluginIsExternal ? (
+                  <>
+                    <KeyValue label="Latency" value={selectedPlugin.health_latency_ms === null || selectedPlugin.health_latency_ms === undefined ? "-" : `${selectedPlugin.health_latency_ms} ms`} />
+                    <KeyValue label="Consecutive failures" value={String(selectedPlugin.consecutive_failures)} />
+                    <KeyValue label="Health order" value={selectedPlugin.health_check_order_id ? `#${selectedPlugin.health_check_order_id}` : "-"} />
+                    <KeyValue label="Health task" value={selectedPlugin.health_check_task_id ? `#${selectedPlugin.health_check_task_id}` : "-"} />
+                    <KeyValue label="Health interval" value={selectedPlugin.health_check_interval_seconds ? `${selectedPlugin.health_check_interval_seconds} seconds` : "-"} />
+                    <KeyValue label="Health state" value={selectedPlugin.health_check_state || "idle"} />
+                    <KeyValue label="Last health check" value={formatLongDate(selectedPlugin.last_health_check_at)} />
+                    <KeyValue label="Last healthy check" value={formatLongDate(selectedPlugin.last_success_at)} />
+                    <KeyValue label="Next health check" value={formatLongDate(selectedPlugin.next_health_check_at)} />
+                    <KeyValue label="Last credential bootstrap" value={formatLongDate(selectedPlugin.last_credential_bootstrap_at)} />
+                    <KeyValue label="Last credential rotation" value={formatLongDate(selectedPlugin.last_credential_rotation_at)} />
+                    <KeyValue label="Helper available" value={String(selectedPlugin.helper_available)} />
+                  </>
+                ) : (
+                  <>
+                    <KeyValue label="State" value={selectedWorkerState} />
+                    <KeyValue label="Ingredients" value={String(selectedPlugin.ingredient_template_count)} />
+                    <KeyValue label="Recipes" value={String(selectedPlugin.recipe_template_count)} />
+                  </>
+                )}
+              </div>
+
+              <DetailList>
+                <DetailRow label="Status message" value={selectedPlugin.status_message || "-"} />
+                {selectedPluginIsExternal ? (
+                  <>
+                    <DetailRow label="Health message" value={selectedPlugin.health_message || "-"} />
+                    <DetailRow label="Health error" value={selectedPlugin.health_error_code || "-"} />
+                    <DetailRow label="Credential error" value={selectedPlugin.credential_error || "-"} />
+                  </>
+                ) : null}
+              </DetailList>
+
+              {selectedPluginIsExternal ? (
+                <div className="grid-two">
+                  <HelperCapabilityPanel
+                    title="Provided helpers"
+                    emptyMessage="This plugin does not expose shared helper capabilities."
+                    capabilities={selectedPlugin.helper_capabilities}
+                  />
+                  <HelperRequirementPanel
+                    required={selectedPlugin.required_helper_capabilities}
+                    missing={selectedPlugin.missing_helper_capabilities}
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <EmptyState message="Select a plugin to inspect its registration details." />
+          )}
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function HelperCapabilityPanel({
+  title,
+  capabilities,
+  emptyMessage,
+}: {
+  title: string;
+  capabilities: string[];
+  emptyMessage: string;
+}) {
+  return (
+    <div className="helper-card">
+      <strong>{title}</strong>
+      {capabilities.length ? (
+        <div className="chip-list">
+          {capabilities.map((capability) => (
+            <span className="mini-chip" key={capability}>{capability}</span>
+          ))}
+        </div>
+      ) : (
+        <p>{emptyMessage}</p>
+      )}
+    </div>
+  );
+}
+
+function HelperRequirementPanel({
+  required,
+  missing,
+}: {
+  required: Record<string, string[]>;
+  missing: Record<string, string[]>;
+}) {
+  const providerNames = Array.from(new Set([...Object.keys(required), ...Object.keys(missing)])).sort();
+
+  return (
+    <div className="helper-card">
+      <strong>Required helpers</strong>
+      {providerNames.length ? (
+        <div className="helper-requirement-list">
+          {providerNames.map((provider) => (
+            <div className="helper-requirement-row" key={provider}>
+              <div>
+                <span>{titleize(provider)}</span>
+                <div className="chip-list">
+                  {(required[provider] || []).map((capability) => (
+                    <span className="mini-chip" key={`${provider}-${capability}`}>{capability}</span>
+                  ))}
+                </div>
+              </div>
+              {(missing[provider] || []).length ? (
+                <StatusBadge status="unhealthy">missing {(missing[provider] || []).length}</StatusBadge>
+              ) : (
+                <StatusBadge status="healthy">satisfied</StatusBadge>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p>No helper dependencies declared.</p>
+      )}
+    </div>
+  );
+}
+
+function summarizeDishIngredients(
+  ingredients: Array<Pick<DishIngredientStatusRecord, "service_exec_status" | "service_exec_run_time">>,
+) {
+  const statuses = ingredients.map((ingredient) => ingredient.service_exec_status).filter(Boolean);
+  const terminalRank = ["errored", "failed", "timeout", "canceled", "running", "dispatched", "pending", "succeeded"];
+  const status =
+    terminalRank.find((candidate) => statuses.includes(candidate)) ||
+    statuses[0] ||
+    "";
+  const runTime = ingredients.reduce<number | null>((total, ingredient) => {
+    if (ingredient.service_exec_run_time === null || ingredient.service_exec_run_time === undefined) {
+      return total;
+    }
+    return (total || 0) + ingredient.service_exec_run_time;
+  }, null);
+  return {
+    status,
+    runTime,
+  };
+}
+
+function displayDishStatus(
+  dish: DishStatusRecord,
+  ingredientSummary?: ReturnType<typeof summarizeDishIngredients>,
+): string {
+  return (
+    dish.dish_exec_status ||
+    ingredientSummary?.status ||
+    (dish.processing_status === "complete" ? "succeeded" : dish.processing_status) ||
+    "pending"
+  );
+}
+
+function displayDishDuration(
+  dish: DishStatusRecord,
+  ingredientSummary?: ReturnType<typeof summarizeDishIngredients>,
+): string {
+  const duration =
+    dish.work_execution_time_secs ??
+    ingredientSummary?.runTime ??
+    dish.run_time_secs ??
+    elapsedSeconds(dish.started_at, dish.completed_at);
+  return duration === null ? "Pending" : `${duration}s`;
+}
+
+function displayDishWallTime(dish: DishStatusRecord): string {
+  const duration = dish.run_time_secs ?? elapsedSeconds(dish.started_at, dish.completed_at);
+  return duration === null ? "Pending" : `${duration}s`;
+}
+
+function elapsedSeconds(start?: string | null, end?: string | null): number | null {
+  if (!start || !end) {
+    return null;
+  }
+  const startTime = new Date(start).getTime();
+  const endTime = new Date(end).getTime();
+  if (Number.isNaN(startTime) || Number.isNaN(endTime) || endTime < startTime) {
+    return null;
+  }
+  return Math.max(0, Math.round((endTime - startTime) / 1000));
+}
+
+function OrdersPage() {
+  const { orderId } = useParams();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [statusFilter, setStatusFilter] = useState("");
@@ -831,10 +1873,13 @@ function IncidentsPage() {
 
   const incidentsQuery = useQuery({
     queryKey: ["incidents"],
-    queryFn: () => apiGet("/api/v1/orders?limit=100", orderResponseArraySchema),
+    queryFn: () => apiGet(
+      "/api/v1/orders/status?limit=100&order_scope=operator",
+      orderStatusRecordArraySchema,
+    ),
   });
 
-  const selectedId = incidentId ? Number(incidentId) : null;
+  const selectedId = orderId ? Number(orderId) : null;
   const selectedFromRoute = selectedId && incidentsQuery.data
     ? incidentsQuery.data.find((item) => item.id === selectedId)
     : undefined;
@@ -842,7 +1887,7 @@ function IncidentsPage() {
   const selectedIncidentQuery = useQuery({
     queryKey: ["incident", selectedId],
     enabled: Boolean(selectedId) && Boolean(incidentsQuery.data) && !selectedFromRoute,
-    queryFn: () => apiGet(`/api/v1/orders/${selectedId}`, orderResponseSchema),
+    queryFn: () => apiGet(`/api/v1/orders/${selectedId}/status`, orderStatusRecordSchema),
   });
 
   const incidentRows = incidentsQuery.data || [];
@@ -876,13 +1921,13 @@ function IncidentsPage() {
   useEffect(() => {
     if (!selectedId && activeSelection) {
       startTransition(() => {
-        navigate(`/incidents/${activeSelection.id}`, { replace: true });
+        navigate(`/orders/${activeSelection.id}`, { replace: true });
       });
     }
   }, [activeSelection, navigate, selectedId]);
 
   if (incidentsQuery.isLoading) {
-    return <PageLoading message="Loading incidents and current workflow state." />;
+    return <PageLoading message="Loading orders and current dish state." />;
   }
 
   if (incidentsQuery.isError || !incidentsQuery.data) {
@@ -892,8 +1937,8 @@ function IncidentsPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        title="Incidents"
-        description="Track live alert incidents, drill into workflow progress, and see every communication route tied to the incident."
+        title="Orders"
+        description="Track webhook orders created from alerts, then drill into dish execution and communication routes."
       />
 
       <div className="toolbar">
@@ -919,7 +1964,7 @@ function IncidentsPage() {
       </div>
 
       <div className="master-detail">
-        <Panel title="Incident queue" subtitle={`${filtered.length} incidents in view.`}>
+        <Panel title="Order Queue" subtitle={`${filtered.length} orders in view.`}>
           <div className="list-stack incident-list">
             {filtered.length ? (
               filtered.map((incident) => (
@@ -927,13 +1972,13 @@ function IncidentsPage() {
                   className={`incident-row ${timelineTargetId === incident.id ? "active" : ""}`}
                   key={incident.id}
                   type="button"
-                  onClick={() => startTransition(() => navigate(`/incidents/${incident.id}`))}
+                  onClick={() => startTransition(() => navigate(`/orders/${incident.id}`))}
                 >
                   <div>
                     <strong>{incident.alert_group_name}</strong>
                     <p>
                       {incident.instance || "No instance"} • {incident.severity || "unknown severity"} •{" "}
-                      {incident.communications.length} route(s)
+                      {incident.communication_route_count} route(s)
                     </p>
                   </div>
                   <div className="feed-meta">
@@ -943,21 +1988,21 @@ function IncidentsPage() {
                 </button>
               ))
             ) : (
-              <EmptyState message="No incidents match the current filters." />
+              <EmptyState message="No orders match the current filters." />
             )}
           </div>
         </Panel>
 
-        <Panel title="Incident drilldown" subtitle="Status, ticketing, chat routes, and full timeline in one place.">
+        <Panel title="Order Drilldown" subtitle="Status, ticketing, chat routes, and full timeline in one place.">
           {!timelineTargetId ? (
-            <EmptyState message="Select an incident to inspect its current state." />
+            <EmptyState message="Select an order to inspect its current state." />
           ) : timelineQuery.isLoading || selectedIncidentQuery.isLoading ? (
-            <EmptyState message="Select an incident to inspect its current state." />
+            <EmptyState message="Select an order to inspect its current state." />
           ) : timelineQuery.isError || selectedIncidentQuery.isError || !timelineQuery.data ? (
             <PageError message={getErrorMessage(timelineQuery.error || selectedIncidentQuery.error)} compact />
           ) : (
             <IncidentDetail
-              data={timelineQuery.data}
+              data={timelineQuery.data as IncidentTimelineResponse}
               highlightedCommunicationId={searchParams.get("communication") || undefined}
               highlightedDishId={searchParams.get("dish") || undefined}
             />
@@ -983,72 +2028,39 @@ function IncidentDetail({
     <div className="detail-stack">
       <section className="detail-hero">
         <div>
-          <div className="eyebrow">Incident #{order.id}</div>
+          <div className="eyebrow">Order #{order.id}</div>
           <h3>{order.alert_group_name}</h3>
           <p>
             {order.instance || "No instance"} • {order.severity || "unknown severity"} • started{" "}
             {formatLongDate(order.starts_at)}
           </p>
         </div>
-        <div className="hero-strip">
-          <MetricPill label="Lifecycle" value={order.processing_status} />
-          <MetricPill label="Alert state" value={order.alert_status} />
-          <MetricPill label="Workflow" value={order.remediation_outcome} />
-          <MetricPill label="Routes" value={String(order.communications.length)} />
+        <div className="drilldown-status-list">
+          <StatusListItem label="Lifecycle" value={order.processing_status} />
+          <StatusListItem label="Alert state" value={order.alert_status} />
+          <StatusListItem label="Lifetime" value={order.order_lifetime_secs === null || order.order_lifetime_secs === undefined ? "Running" : `${order.order_lifetime_secs}s`} />
+          <StatusListItem label="Recipe outcome" value={order.remediation_outcome} />
+          <StatusListItem label="Routes" value={String(order.communication_route_count)} />
         </div>
       </section>
 
       <div className="kv-grid">
         <KeyValue label="Request ID" value={order.req_id} />
         <KeyValue label="Counter" value={String(order.counter)} />
+        <KeyValue label="Order lifetime" value={order.order_lifetime_secs === null || order.order_lifetime_secs === undefined ? "Running" : `${order.order_lifetime_secs}s`} />
         <KeyValue label="Auto-close eligible" value={String(order.auto_close_eligible)} />
         <KeyValue label="Clear deadline" value={formatLongDate(order.clear_deadline_at)} />
       </div>
 
       <section>
         <div className="section-heading">
-          <h4>Communication routes</h4>
-          <p>Ticketing and chat delivery status for this incident.</p>
-        </div>
-        <div className="route-grid">
-          {order.communications.length ? (
-            order.communications.map((route) => (
-              <div
-                className={`route-card ${
-                  highlightedCommunicationId === String(route.id) ? "highlighted" : ""
-                }`}
-                key={route.id}
-              >
-                <div className="route-card-head">
-                  <strong>{titleize(route.execution_target)}</strong>
-                  <StatusBadge status={route.remote_state || route.lifecycle_state}>
-                    {route.remote_state || route.lifecycle_state}
-                  </StatusBadge>
-                </div>
-                <KeyValue label="Destination" value={route.destination_target || route.execution_target} />
-                <KeyValue label="Reference" value={route.bakery_ticket_id || "-"} />
-                <KeyValue label="Operation ID" value={route.bakery_operation_id || "-"} />
-                <KeyValue label="Writable" value={String(route.writable)} />
-                <KeyValue label="Reopenable" value={String(route.reopenable)} />
-                <KeyValue label="Last update" value={formatLongDate(route.updated_at)} />
-                <KeyValue label="Last error" value={route.last_error || "-"} />
-              </div>
-            ))
-          ) : (
-            <EmptyState message="No communication routes are tracked for this incident yet." />
-          )}
-        </div>
-      </section>
-
-      <section>
-        <div className="section-heading">
           <h4>Timeline</h4>
-          <p>Workflow tasks, communication updates, and order state transitions in chronological order.</p>
+          <p>Dish steps, communication updates, and order state transitions in chronological order.</p>
         </div>
         {highlightedDishId ? (
           <div className="helper-card">
-            <strong>Selected workflow run</strong>
-            <p>Timeline events related to workflow run #{highlightedDishId} are highlighted below.</p>
+            <strong>Selected dish execution</strong>
+            <p>Timeline events related to dish #{highlightedDishId} are highlighted below.</p>
           </div>
         ) : null}
         <div className="timeline">
@@ -1081,7 +2093,7 @@ function IncidentDetail({
   );
 }
 
-function CommunicationsPage() {
+function CommunicationRoutesPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [channelFilter, setChannelFilter] = useState("");
@@ -1130,7 +2142,7 @@ function CommunicationsPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        title="Communications"
+        title="Communication Routes"
         description="Unified outbound history for ticketing and chat channels, with ticket numbers, provider references, and latest delivery state."
       />
       <div className="toolbar">
@@ -1158,7 +2170,7 @@ function CommunicationsPage() {
         </label>
         <label className="toolbar-search">
           Search
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Destination, ticket number, incident" />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Destination, ticket number, order" />
         </label>
       </div>
 
@@ -1193,20 +2205,20 @@ function CommunicationsPage() {
         <Panel title="Selected route" subtitle="Current status, provider references, and last known error.">
           {selected ? (
             <div className="detail-stack">
-              <div className="kv-grid">
-                <KeyValue label="Reference type" value={selected.reference_type} />
-                <KeyValue label="Channel" value={titleize(selected.channel)} />
-                <KeyValue label="Destination" value={selected.destination || "-"} />
-                <KeyValue label="Ticket number" value={selected.ticket_id || "-"} />
-                <KeyValue label="Provider reference" value={selected.provider_reference_id || "-"} />
-                <KeyValue label="Operation ID" value={selected.operation_id || "-"} />
-                <KeyValue label="Lifecycle state" value={selected.lifecycle_state || "-"} />
-                <KeyValue label="Remote state" value={selected.remote_state || "-"} />
-                <KeyValue label="Writable" value={selected.writable === null || selected.writable === undefined ? "-" : String(selected.writable)} />
-                <KeyValue label="Reopenable" value={selected.reopenable === null || selected.reopenable === undefined ? "-" : String(selected.reopenable)} />
-                <KeyValue label="Last update" value={formatLongDate(selected.updated_at)} />
-                <KeyValue label="Last error" value={selected.last_error || "-"} />
-              </div>
+              <DetailList>
+                <DetailRow label="Reference type" value={selected.reference_type} />
+                <DetailRow label="Channel" value={titleize(selected.channel)} />
+                <DetailRow label="Destination" value={selected.destination || "-"} />
+                <DetailRow label="Ticket number" value={selected.ticket_id || "-"} />
+                <DetailRow label="Provider reference" value={selected.provider_reference_id || "-"} />
+                <DetailRow label="Operation ID" value={selected.operation_id || "-"} />
+                <DetailRow label="Lifecycle state" value={selected.lifecycle_state || "-"} />
+                <DetailRow label="Remote state" value={selected.remote_state || "-"} />
+                <DetailRow label="Writable" value={selected.writable === null || selected.writable === undefined ? "-" : String(selected.writable)} />
+                <DetailRow label="Reopenable" value={selected.reopenable === null || selected.reopenable === undefined ? "-" : String(selected.reopenable)} />
+                <DetailRow label="Last update" value={formatLongDate(selected.updated_at)} />
+                <DetailRow label="Last error" value={selected.last_error || "-"} />
+              </DetailList>
             </div>
           ) : (
             <EmptyState message="Select a communication record to inspect it." />
@@ -1228,6 +2240,10 @@ function SuppressionsPage() {
     queryKey: ["suppressions"],
     queryFn: () => apiGet("/api/v1/suppressions?limit=100", suppressionRecordArraySchema),
   });
+  const recipesQuery = useQuery({
+    queryKey: ["suppression-recipes"],
+    queryFn: () => apiGet("/api/v1/recipes/status?limit=500", recipeStatusRecordArraySchema),
+  });
 
   const form = useForm<z.infer<typeof suppressionSchema>>({
     resolver: zodResolver(suppressionSchema),
@@ -1243,6 +2259,12 @@ function SuppressionsPage() {
       matcher_value: "",
     },
   });
+  const matcherKey = form.watch("matcher_key");
+  const matcherOperator = form.watch("matcher_operator");
+  const recipeNameOptions = (recipesQuery.data || [])
+    .map((recipe) => recipe.name)
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right));
 
   const createMutation = useMutation({
     mutationFn: async (values: z.infer<typeof suppressionSchema>) => {
@@ -1270,7 +2292,17 @@ function SuppressionsPage() {
     },
     onSuccess: async () => {
       notify("success", "Suppression created.");
-      form.reset();
+      form.reset({
+        name: "",
+        reason: "",
+        starts_at: "",
+        ends_at: "",
+        scope: "matchers",
+        summary_ticket_enabled: true,
+        matcher_key: "alertname",
+        matcher_operator: "eq",
+        matcher_value: "",
+      });
       await queryClient.invalidateQueries({ queryKey: ["suppressions"] });
     },
     onError: (error) => notify("error", getErrorMessage(error)),
@@ -1345,7 +2377,15 @@ function SuppressionsPage() {
             </div>
             <div className="grid-three">
               <FormField label="Matcher key" help="The alert label to match, such as alertname or cluster.">
-                <input {...form.register("matcher_key")} />
+                <input {...form.register("matcher_key")} list="suppression-matcher-key-options" />
+                <datalist id="suppression-matcher-key-options">
+                  <option value="alertname" />
+                  <option value="recipe.name" />
+                  <option value="cluster" />
+                  <option value="namespace" />
+                  <option value="instance" />
+                  <option value="severity" />
+                </datalist>
               </FormField>
               <FormField label="Operator" help="eq matches exact values; regex allows pattern matching.">
                 <select {...form.register("matcher_operator")}>
@@ -1357,9 +2397,13 @@ function SuppressionsPage() {
                   <option value="not_exists">not_exists</option>
                 </select>
               </FormField>
-              <FormField label="Matcher value" help="Leave value blank for exists and not_exists operators.">
-                <input {...form.register("matcher_value")} />
-              </FormField>
+              <SuppressionMatcherValueField
+                form={form}
+                matcherKey={matcherKey}
+                matcherOperator={matcherOperator}
+                recipeNames={recipeNameOptions}
+                recipesLoading={recipesQuery.isLoading}
+              />
             </div>
             <div className="form-actions">
               <button className="primary-button" disabled={createMutation.isPending} type="submit">
@@ -1405,21 +2449,112 @@ function SuppressionsPage() {
   );
 }
 
-function ActivityPage() {
+function SuppressionMatcherValueField({
+  form,
+  matcherKey,
+  matcherOperator,
+  recipeNames,
+  recipesLoading,
+}: {
+  form: ReturnType<typeof useForm<z.infer<typeof suppressionSchema>>>;
+  matcherKey?: string;
+  matcherOperator?: string;
+  recipeNames: string[];
+  recipesLoading: boolean;
+}) {
+  const usesRecipeName = matcherKey === "recipe.name";
+  const valueNotUsed = matcherOperator === "exists" || matcherOperator === "not_exists";
+  const exactRecipeMatch = usesRecipeName && (matcherOperator === "eq" || matcherOperator === "neq");
+
+  useEffect(() => {
+    if (exactRecipeMatch && recipeNames.length === 1 && !form.getValues("matcher_value")) {
+      form.setValue("matcher_value", recipeNames[0]);
+    }
+  }, [exactRecipeMatch, form, recipeNames]);
+
+  if (valueNotUsed) {
+    return (
+      <FormField label="Matcher value" help="Value is ignored for exists and not_exists operators.">
+        <input disabled value="" />
+      </FormField>
+    );
+  }
+
+  if (exactRecipeMatch) {
+    return (
+      <FormField label="Matcher value" help="Choose the recipe name this suppression should target.">
+        <select {...form.register("matcher_value")} disabled={recipesLoading || !recipeNames.length}>
+          <option value="">{recipesLoading ? "Loading recipes..." : "Choose a recipe"}</option>
+          {recipeNames.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </FormField>
+    );
+  }
+
+  if (usesRecipeName) {
+    return (
+      <FormField label="Matcher value" help="Use a recipe name or pattern. Known recipes are available as autocomplete suggestions.">
+        <input {...form.register("matcher_value")} list="suppression-recipe-name-options" />
+        <datalist id="suppression-recipe-name-options">
+          {recipeNames.map((name) => (
+            <option key={name} value={name} />
+          ))}
+        </datalist>
+      </FormField>
+    );
+  }
+
+  return (
+    <FormField label="Matcher value" help="Leave value blank for exists and not_exists operators.">
+      <input {...form.register("matcher_value")} />
+    </FormField>
+  );
+}
+
+function dishIngredientStatusDetails(ingredient: DishIngredientStatusRecord): Record<string, unknown> {
+  const details: Record<string, unknown> = {
+    role: ingredient.execution_role,
+    operation: ingredient.operation,
+    result: ingredient.result_status,
+    message: ingredient.result_message,
+    summary: ingredient.result_summary,
+  };
+  return Object.fromEntries(
+    Object.entries(details).filter(([, value]) => {
+      if (value === undefined || value === null || value === "") {
+        return false;
+      }
+      if (typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0) {
+        return false;
+      }
+      return true;
+    }),
+  );
+}
+
+function hasDishIngredientStatusDetails(ingredient: DishIngredientStatusRecord): boolean {
+  return Object.keys(dishIngredientStatusDetails(ingredient)).length > 0;
+}
+
+function ExecutionActivityPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [statusFilter, setStatusFilter] = useState("");
   const [phaseFilter, setPhaseFilter] = useState("");
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
   const query = useQuery({
-    queryKey: ["activity-dishes"],
-    queryFn: () => apiGet("/api/v1/dishes?limit=100", dishRecordArraySchema),
+    queryKey: ["activity-dishes", "operator"],
+    queryFn: () => apiGet("/api/v1/dishes/status?limit=100&order_scope=operator", dishStatusRecordArraySchema),
   });
 
   const selectedDishId = searchParams.get("dish");
   const activityRows = query.data || [];
   const rows = activityRows.filter((item) => {
-    if (statusFilter && statusFilter !== (item.execution_status || item.processing_status || "")) {
+    if (statusFilter && statusFilter !== (item.dish_exec_status || item.processing_status || "")) {
       return false;
     }
     if (phaseFilter && phaseFilter !== item.run_phase) {
@@ -1429,11 +2564,10 @@ function ActivityPage() {
       return true;
     }
     const haystack = [
-      item.recipe?.name,
-      item.execution_ref,
-      item.error_message,
+      item.recipe_name,
+      item.dish_exec_status,
       item.run_phase,
-      item.order_id ? `incident ${item.order_id}` : "",
+      item.order_id ? `order ${item.order_id}` : "",
     ]
       .filter(Boolean)
       .join(" ")
@@ -1443,6 +2577,19 @@ function ActivityPage() {
 
   const selected =
     (selectedDishId ? activityRows.find((item) => String(item.id) === selectedDishId) : undefined) || rows[0];
+  const selectedIngredientsQuery = useQuery({
+    queryKey: ["activity-dish-ingredients", selected?.id],
+    enabled: Boolean(selected?.id),
+    queryFn: () =>
+      apiGet(
+        `/api/v1/dishes/${selected?.id}/ingredient-status`,
+        dishIngredientStatusRecordArraySchema,
+      ),
+  });
+  const selectedIngredientRows = selectedIngredientsQuery.data || [];
+  const selectedIngredientSummary = summarizeDishIngredients(selectedIngredientRows);
+  const selectedStatus = selected ? displayDishStatus(selected, selectedIngredientSummary) : "";
+  const selectedDuration = selected ? displayDishDuration(selected, selectedIngredientSummary) : "Pending";
 
   useEffect(() => {
     if (!selectedDishId && rows[0]) {
@@ -1459,7 +2606,7 @@ function ActivityPage() {
   }
 
   if (query.isLoading) {
-    return <PageLoading message="Loading workflow activity and execution history." />;
+    return <PageLoading message="Loading dish work execution activity." />;
   }
 
   if (query.isError || !query.data) {
@@ -1469,8 +2616,8 @@ function ActivityPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        title="Activity"
-        description="Workflow execution history across incidents, with quick links back to the originating incident when one exists."
+        title="Work Execution Activity"
+        description="Dish work execution history across orders, with quick links back to the originating order when one exists."
       />
       <div className="toolbar">
         <label>
@@ -1488,7 +2635,7 @@ function ActivityPage() {
           Status
           <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
             <option value="">All</option>
-            {Array.from(new Set(query.data.map((item) => item.execution_status || item.processing_status || "unknown"))).sort().map((status) => (
+            {Array.from(new Set(query.data.map((item) => item.dish_exec_status || item.processing_status || "unknown"))).sort().map((status) => (
               <option key={status} value={status}>
                 {titleize(status)}
               </option>
@@ -1500,13 +2647,13 @@ function ActivityPage() {
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Workflow, execution ref, incident, error"
+            placeholder="Recipe, phase, status, order"
           />
         </label>
       </div>
 
       <div className="master-detail">
-        <Panel title="Workflow runs" subtitle={`${rows.length} activity records in view.`}>
+        <Panel title="Dish Work Executions" subtitle={`${rows.length} activity records in view.`}>
           <div className="list-stack incident-list">
             {rows.length ? (
               rows.map((item) => (
@@ -1517,86 +2664,136 @@ function ActivityPage() {
                   onClick={() => selectDish(item.id)}
                 >
                   <div>
-                    <strong>{item.recipe?.name || `Workflow #${item.recipe_id}`}</strong>
+                    <strong>{item.recipe_name || `Recipe #${item.recipe_id}`}</strong>
                     <p>
-                      {titleize(item.run_phase)} • {item.execution_ref || "Execution pending"} •{" "}
-                      {item.order_id ? `Incident #${item.order_id}` : "No incident linked"}
+                      {titleize(item.run_phase)} • {item.dish_exec_status || item.processing_status || "Work execution pending"} •{" "}
+                      {item.order_id ? `Order #${item.order_id}` : "No order linked"}
                     </p>
                   </div>
                   <div className="feed-meta">
-                    <StatusBadge status={item.execution_status || item.processing_status}>
-                      {item.execution_status || item.processing_status}
+                    <StatusBadge status={displayDishStatus(item)}>
+                      {displayDishStatus(item)}
                     </StatusBadge>
                     <span>{formatDate(item.updated_at)}</span>
                   </div>
                 </button>
               ))
             ) : (
-              <EmptyState message="No workflow runs match the current filters." />
+              <EmptyState message="No dish executions match the current filters." />
             )}
           </div>
         </Panel>
 
-        <Panel title="Activity drilldown" subtitle="Execution details, incident linkage, and the latest workflow outcome.">
+        <Panel title="Work Execution Drilldown" subtitle="Dish details, order linkage, and the latest work execution outcome.">
           {selected ? (
             <div className="detail-stack">
               <section className="detail-hero">
                 <div>
-                  <div className="eyebrow">Workflow run #{selected.id}</div>
-                  <h3>{selected.recipe?.name || `Workflow #${selected.recipe_id}`}</h3>
+                  <div className="eyebrow">Dish #{selected.id}</div>
+                  <h3>{selected.recipe_name || `Recipe #${selected.recipe_id}`}</h3>
                   <p>
-                    {titleize(selected.run_phase)} phase • retry attempt {selected.retry_attempt} • updated{" "}
+                    {titleize(selected.run_phase)} phase • updated{" "}
                     {formatLongDate(selected.updated_at)}
                   </p>
                 </div>
-                <div className="hero-strip">
-                  <MetricPill label="Processing" value={selected.processing_status} />
-                  <MetricPill label="Execution" value={selected.execution_status || "pending"} />
-                  <MetricPill label="Duration" value={selected.actual_duration_sec ? `${selected.actual_duration_sec}s` : "Pending"} />
-                  <MetricPill label="Incident" value={selected.order_id ? `#${selected.order_id}` : "Unlinked"} />
+                <div className="drilldown-status-list">
+                  <StatusListItem label="Processing" value={selected.processing_status} />
+                  <StatusListItem label="Work execution" value={selectedStatus} />
+                  <StatusListItem label="Work time" value={selectedDuration} />
+                  <StatusListItem label="Order" value={selected.order_id ? `#${selected.order_id}` : "Unlinked"} />
                 </div>
               </section>
 
               <div className="form-actions">
                 {selected.order_id ? (
-                  <Link className="primary-button" to={`/incidents/${selected.order_id}?dish=${selected.id}`}>
-                    Open incident drilldown
+                  <Link className="primary-button" to={`/orders/${selected.order_id}?dish=${selected.id}`}>
+                    Open order drilldown
                   </Link>
                 ) : null}
               </div>
 
               <div className="kv-grid">
-                <KeyValue label="Workflow" value={selected.recipe?.name || `Workflow #${selected.recipe_id}`} />
-                <KeyValue label="Incident" value={selected.order_id ? `Incident #${selected.order_id}` : "-"} />
+                <KeyValue label="Recipe" value={selected.recipe_name || `Recipe #${selected.recipe_id}`} />
+                <KeyValue label="Order" value={selected.order_id ? `Order #${selected.order_id}` : "-"} />
                 <KeyValue label="Phase" value={titleize(selected.run_phase)} />
-                <KeyValue label="Execution ref" value={selected.execution_ref || "-"} />
                 <KeyValue label="Processing status" value={selected.processing_status} />
-                <KeyValue label="Execution status" value={selected.execution_status || "-"} />
-                <KeyValue label="Expected duration" value={selected.expected_duration_sec ? `${selected.expected_duration_sec}s` : "-"} />
-                <KeyValue label="Actual duration" value={selected.actual_duration_sec ? `${selected.actual_duration_sec}s` : "-"} />
+                <KeyValue label="Work execution status" value={selectedStatus || "-"} />
+                <KeyValue label="Expected work time" value={selected.expected_run_secs ? `${selected.expected_run_secs}s` : "-"} />
+                <KeyValue label="Work execution time" value={selectedDuration} />
+                <KeyValue label="Wall time" value={displayDishWallTime(selected)} />
                 <KeyValue label="Started" value={formatLongDate(selected.started_at)} />
                 <KeyValue label="Completed" value={formatLongDate(selected.completed_at)} />
                 <KeyValue label="Created" value={formatLongDate(selected.created_at)} />
                 <KeyValue label="Updated" value={formatLongDate(selected.updated_at)} />
               </div>
 
-              {selected.error_message ? (
+              {selectedIngredientsQuery.isLoading ? (
                 <div className="helper-card">
-                  <strong>Latest error</strong>
-                  <p>{selected.error_message}</p>
+                  <strong>Loading dish-step outcomes</strong>
+                  <p>Fetching dish-step work execution details for this dish.</p>
                 </div>
               ) : (
                 <div className="helper-card">
-                  <strong>Latest outcome</strong>
+                  <strong>Sanitized execution status</strong>
                   <p>
-                    This run is currently {selected.execution_status || selected.processing_status}. Use the incident drilldown
-                    to see communications and the rest of the lifecycle around this workflow run.
+                    Reader-safe dish-step status includes phase, operation, result, and adapter-provided summaries after control-plane sanitization.
                   </p>
                 </div>
               )}
+              {selectedIngredientRows.length ? (
+                <section>
+                  <div className="section-heading">
+                    <h4>Dish Steps</h4>
+                    <p>
+                      Step-level work execution state and sanitized evidence reported by Cook, Expediter, and adapter reconciliation.
+                    </p>
+                  </div>
+                  {selected.work_execution_groups?.length ? (
+                    <div className="compact-metric-row">
+                      {selected.work_execution_groups.map((group) => (
+                        <MetricPill
+                          key={`${group.depth}-${group.parallel_group}`}
+                          label={`Depth ${group.depth} / group ${group.parallel_group}`}
+                          value={`${group.total_seconds}s across ${group.rows}`}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="list-stack">
+                    {selectedIngredientRows.map((ingredient) => (
+                      <div
+                        className="feed-row"
+                        key={ingredient.id}
+                      >
+                        <div className="execution-history-head">
+                          <div>
+                            <strong>
+                              {ingredient.execution_role ? `${titleize(ingredient.execution_role)}: ` : ""}
+                              {ingredient.task_key || `${ingredient.service_type}:${ingredient.service_exec}`}
+                            </strong>
+                            <p>
+                              {ingredient.service_type || "unknown"} • {ingredient.service_exec || "unknown"} • attempt{" "}
+                              {ingredient.attempt}
+                            </p>
+                          </div>
+                          <div className="feed-meta">
+                            <StatusBadge status={ingredient.service_exec_status}>{ingredient.service_exec_status}</StatusBadge>
+                            <span>{ingredient.service_exec_run_time === null || ingredient.service_exec_run_time === undefined ? "Pending" : `${ingredient.service_exec_run_time}s`}</span>
+                          </div>
+                        </div>
+                        {hasDishIngredientStatusDetails(ingredient) ? (
+                          <pre className="json-block">
+                            {compactJson(dishIngredientStatusDetails(ingredient))}
+                          </pre>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
             </div>
           ) : (
-            <EmptyState message="Select a workflow run to inspect its details." />
+            <EmptyState message="Select a dish execution to inspect its details." />
           )}
         </Panel>
       </div>
@@ -1604,406 +2801,359 @@ function ActivityPage() {
   );
 }
 
-function AlertRulesPage() {
-  const notify = useToast();
-  const principal = usePrincipal();
-  const settings = useSettings();
-  const queryClient = useQueryClient();
-  const [editingRule, setEditingRule] = useState<PrometheusRule | null>(null);
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [importRecoveryPending, setImportRecoveryPending] = useState(false);
-  const importRecoveryTokenRef = useRef(0);
-  const canEdit = canManageAlertRules(principal);
-  const canClear = canManageRepoSyncClear(principal);
-  const emptyRuleFormValues: z.infer<typeof ruleSchema> = {
-    name: "",
-    group: "",
-    file: "",
-    expr: "",
-    duration: "",
-    labels: "",
-    annotations: "",
-  };
-
-  const rulesQuery = useQuery({
-    queryKey: ["prometheus-rules"],
-    queryFn: () => apiGet("/api/v1/prometheus/rules", prometheusRuleListResponseSchema),
-  });
-
-  const refreshRules = async () => {
-    await queryClient.invalidateQueries({ queryKey: ["prometheus-rules"] });
-    await queryClient.refetchQueries({ queryKey: ["prometheus-rules"], exact: true, type: "active" });
-  };
-
-  const recoverRulesAfterGatewayTimeout = async (baselineRuleCount: number) => {
-    const token = importRecoveryTokenRef.current + 1;
-    importRecoveryTokenRef.current = token;
-    setImportRecoveryPending(true);
-    try {
-      const retryDelays = [3000, 8000, 15000];
-      for (const [attemptIndex, delayMs] of retryDelays.entries()) {
-        await wait(delayMs);
-        if (importRecoveryTokenRef.current !== token) {
-          return;
-        }
-        try {
-          await refreshRules();
-          const refreshedRules =
-            queryClient.getQueryData<PrometheusRuleListResponse>(["prometheus-rules"])?.rules.length ?? 0;
-          if (refreshedRules !== baselineRuleCount || attemptIndex === retryDelays.length - 1) {
-            notify("success", `Alert inventory refreshed. ${refreshedRules} rules loaded.`);
-            return;
-          }
-        } catch {
-          continue;
-        }
-      }
-    } finally {
-      if (importRecoveryTokenRef.current === token) {
-        setImportRecoveryPending(false);
-      }
-    }
-  };
-
-  const form = useForm<z.infer<typeof ruleSchema>>({
-    resolver: zodResolver(ruleSchema),
-    defaultValues: emptyRuleFormValues,
-  });
-
-  const resetRuleForm = () => form.reset(emptyRuleFormValues);
-
-  const openCreateRuleDialog = () => {
-    setEditingRule(null);
-    resetRuleForm();
-    setEditorOpen(true);
-  };
-
-  const openEditRuleDialog = (rule: PrometheusRule) => {
-    setEditingRule(rule);
-    setEditorOpen(true);
-  };
-
-  const closeRuleDialog = () => {
-    setEditorOpen(false);
-    setEditingRule(null);
-    resetRuleForm();
-  };
-
-  useEffect(() => {
-    if (!editingRule) {
-      return;
-    }
-    form.reset({
-      name: editingRule.name,
-      group: editingRule.group,
-      file: editingRule.crd || editingRule.file || "",
-      expr: editingRule.query,
-      duration: editingRule.duration || "",
-      labels: editingRule.labels ? compactJson(editingRule.labels) : "",
-      annotations: editingRule.annotations ? compactJson(editingRule.annotations) : "",
-    });
-  }, [editingRule, form]);
-
-  const editingRuleSource = editingRule?.file || editingRule?.crd || "";
-
-  const saveMutation = useMutation({
-    mutationFn: async (values: z.infer<typeof ruleSchema>) => {
-      const body = prometheusRuleWriteRequestSchema.parse({
-        alert: values.name,
-        expr: values.expr,
-        for: values.duration || undefined,
-        labels: parseJsonObject(values.labels, "Labels"),
-        annotations: parseJsonObject(values.annotations, "Annotations"),
-      });
-      const createInsteadOfUpdate =
-        !editingRule ||
-        values.name !== editingRule.name ||
-        values.group !== editingRule.group ||
-        values.file !== editingRuleSource;
-      if (!createInsteadOfUpdate) {
-        return {
-          created: false,
-          result: await apiPut(
-            `/api/v1/prometheus/rules/${encodeURIComponent(values.name)}?group_name=${encodeURIComponent(values.group)}&file_name=${encodeURIComponent(values.file)}`,
-            prometheusRuleMutationResponseSchema,
-            body,
-          ),
-        };
-      }
-      return {
-        created: true,
-        result: await apiPost(
-          `/api/v1/prometheus/rules?rule_name=${encodeURIComponent(values.name)}&group_name=${encodeURIComponent(values.group)}&file_name=${encodeURIComponent(values.file)}`,
-          prometheusRuleMutationResponseSchema,
-          body,
-        ),
-      };
-    },
-    onSuccess: async ({ created }) => {
-      notify("success", created ? "Alert rule created." : "Alert rule updated.");
-      closeRuleDialog();
-      await refreshRules();
-    },
-    onError: (error) => notify("error", getErrorMessage(error)),
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: (rule: PrometheusRule) =>
-      apiDelete(
-        `/api/v1/prometheus/rules/${encodeURIComponent(rule.name)}?group_name=${encodeURIComponent(rule.group)}&file_name=${encodeURIComponent(rule.crd || rule.file || "")}`,
-        prometheusRuleMutationResponseSchema,
-      ),
-    onSuccess: async () => {
-      notify("success", "Alert rule deleted.");
-      closeRuleDialog();
-      await refreshRules();
-    },
-    onError: (error) => notify("error", getErrorMessage(error)),
-  });
-
-  const exportMutation = useMutation({
-    mutationFn: () => apiPost("/api/v1/repo-sync/alert-rules/export", repoSyncResponseSchema),
-    onSuccess: (result) => notify("success", formatRepoSyncMessage(result)),
-    onError: (error) => notify("error", getErrorMessage(error)),
-  });
-
-  const importMutation = useMutation({
-    mutationFn: () => apiPost("/api/v1/repo-sync/alert-rules/import", repoSyncResponseSchema),
-    onSuccess: async (result) => {
-      notify("success", formatRepoSyncMessage(result));
-      closeRuleDialog();
-      importRecoveryTokenRef.current += 1;
-      setImportRecoveryPending(false);
-      await refreshRules();
-    },
-    onError: (error) => {
-      if (isGatewayTimeoutError(error)) {
-        notify(
-          "error",
-          "Import request timed out at the gateway. Refreshing alert inventory in the background.",
-        );
-        closeRuleDialog();
-        void recoverRulesAfterGatewayTimeout(rulesQuery.data?.rules.length ?? 0);
-        return;
-      }
-      notify("error", getErrorMessage(error));
+function SystemActivityPage() {
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+  const query = useQuery({
+    queryKey: ["system-activity"],
+    queryFn: async () => {
+      const [tasks, orders, dishes] = await Promise.all([
+        apiGet("/api/v1/scheduled-tasks/status", scheduledTaskStatusRecordArraySchema),
+        apiGet("/api/v1/orders/status?limit=100&order_scope=system", orderStatusRecordArraySchema),
+        apiGet("/api/v1/dishes/status?limit=100&order_scope=system", dishStatusRecordArraySchema),
+      ]);
+      return { tasks, orders, dishes };
     },
   });
 
-  const clearMutation = useMutation({
-    mutationFn: () => apiDelete("/api/v1/repo-sync/alert-rules", repoSyncResponseSchema),
-    onSuccess: async (result) => {
-      notify("success", formatRepoSyncMessage(result));
-      closeRuleDialog();
-      await refreshRules();
-    },
-    onError: (error) => notify("error", getErrorMessage(error)),
-  });
-
-  if (rulesQuery.isLoading) {
-    return <PageLoading message="Loading alert rules and editing controls." />;
+  if (query.isLoading) {
+    return <PageLoading message="Loading system activity." />;
   }
 
-  if (rulesQuery.isError || !rulesQuery.data) {
-    return <PageError message={getErrorMessage(rulesQuery.error)} />;
+  if (query.isError || !query.data) {
+    return <PageError message={getErrorMessage(query.error)} />;
   }
 
-  const ruleStateCounts = rulesQuery.data.rules.reduce<Record<string, number>>((counts, rule) => {
-    const state = (rule.state || "unknown").toLowerCase();
-    counts[state] = (counts[state] || 0) + 1;
-    return counts;
-  }, {});
-  const totalRuleCount = rulesQuery.data.rules.length;
-  const firingRuleCount = ruleStateCounts.firing || 0;
-  const pendingRuleCount = ruleStateCounts.pending || 0;
-  const unknownRuleCount = ruleStateCounts.unknown || 0;
-  const showRuntimeStatus = !settings.prometheus_use_crds;
+  const { tasks, orders, dishes } = query.data;
+  const normalizedSearch = deferredSearch.trim().toLowerCase();
+  const visibleOrders = orders.filter((order) => {
+    if (!normalizedSearch) return true;
+    return [
+      order.alert_group_name,
+      order.req_id,
+      order.order_type,
+      order.processing_status,
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedSearch);
+  });
+  const visibleDishes = dishes.filter((dish) => {
+    if (!normalizedSearch) return true;
+    return [
+      dish.recipe_name,
+      dish.order_type,
+      dish.processing_status,
+      dish.dish_exec_status,
+      dish.order_id ? `order ${dish.order_id}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedSearch);
+  });
+  const visibleTasks = tasks.filter((task) => {
+    if (!normalizedSearch) return true;
+    return [
+      task.task_key,
+      task.task_type,
+      task.service_type,
+      task.service_exec,
+      task.status,
+      task.last_status,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedSearch);
+  });
 
   return (
     <div className="page-stack">
       <PageHeader
-        title="Alert Rules"
-        description="Create, update, and retire alert definitions with monitoring-first labels and inline PromQL help."
+        title="System Activity"
+        description="Internal scheduled work, plugin health checks, sync jobs, and their execution history."
       />
-      <AlertRuleRepoSyncPanel
-        canClear={canClear}
-        canEdit={canEdit}
-        canImport={settings.prometheus_use_crds}
-        isPending={exportMutation.isPending || importMutation.isPending || clearMutation.isPending || importRecoveryPending}
-        onClear={() => clearMutation.mutate()}
-        onExport={() => exportMutation.mutate()}
-        onImport={() => importMutation.mutate()}
-        settings={settings}
-      />
-      {importRecoveryPending ? (
-        <div className="helper-card">
-          <strong>Background refresh in progress</strong>
-          <p>The import request timed out at the gateway, but PoundCake is polling the alert inventory and will update this page automatically.</p>
-        </div>
-      ) : null}
-      {showRuntimeStatus ? (
-        <div className="status-grid">
-          <MetricCard title="Firing now" value={String(firingRuleCount)} tone={firingRuleCount ? "failed" : "healthy"}>
-            Runtime state reported by Prometheus when available.
-          </MetricCard>
-          <MetricCard title="Pending" value={String(pendingRuleCount)} tone={pendingRuleCount ? "warning" : "healthy"}>
-            Rules waiting for their configured `for` duration.
-          </MetricCard>
-          <MetricCard title="Unknown state" value={String(unknownRuleCount)} tone={unknownRuleCount ? "warning" : "healthy"}>
-            Rules without live state are counted here.
-          </MetricCard>
-        </div>
-      ) : null}
-      <Panel
-        title="Alert inventory"
-        subtitle={`Source: ${rulesQuery.data.source}. ${totalRuleCount} rules loaded. Select a rule to edit or remove it.`}
-        actions={
-          <button className="primary-button" disabled={!canEdit} type="button" onClick={openCreateRuleDialog}>
-            Create rule
-          </button>
-        }
-      >
-        {!canEdit ? (
-          <div className="helper-card">
-            <strong>Read-only access</strong>
-            <p>Your role can inspect alert rules but cannot create, update, or delete them.</p>
-          </div>
-        ) : null}
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Group</th>
-                <th>For</th>
-                <th>Source</th>
-                {showRuntimeStatus ? <th>Status</th> : null}
-                <th>Query</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {rulesQuery.data.rules.map((rule) => (
-                <tr key={`${rule.group}-${rule.name}`}>
-                  <td>{rule.name}</td>
-                  <td>{rule.group}</td>
-                  <td>{rule.duration || "-"}</td>
-                  <td>{rule.file || rule.crd || "-"}</td>
-                  {showRuntimeStatus ? (
-                    <td>
-                      <StatusBadge status={rule.state || "unknown"}>{rule.state || "unknown"}</StatusBadge>
-                    </td>
-                  ) : null}
-                  <td className="query-cell">{rule.query}</td>
-                  <td className="action-cell">
-                    <button className="ghost-button" disabled={!canEdit} type="button" onClick={() => openEditRuleDialog(rule)}>
-                      Edit
-                    </button>
-                    <button
-                      className="danger-button"
-                      disabled={!canEdit}
-                      type="button"
-                      onClick={() => {
-                        if (window.confirm(`Delete alert rule "${rule.name}"?`)) {
-                          deleteMutation.mutate(rule);
-                        }
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
-      {editorOpen ? (
-        <div aria-modal="true" className="dialog-backdrop" role="dialog">
-          <div className="dialog-card dialog-card-wide">
-            <div className="panel-head">
-              <div>
-                <h4>{editingRule ? `Edit ${editingRule.name}` : "Create alert rule"}</h4>
-                <p>Prometheus details stay available, but the workflow is written for operators.</p>
-              </div>
-            </div>
-            {!canEdit ? (
-              <div className="helper-card">
-                <strong>Read-only access</strong>
-                <p>Your role can inspect alert rules but cannot create, update, or delete them.</p>
-              </div>
-            ) : null}
-            <form className="form-stack" onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}>
-              <fieldset disabled={!canEdit}>
-                <div className="grid-two">
-                  <FormField label="Rule name" help="Human-readable alert identifier shown to operators.">
-                    <input
-                      {...form.register("name")}
-                      autoFocus
-                      placeholder="NodeFilesystemAlmostOutOfSpace"
-                    />
-                    <FieldError message={form.formState.errors.name?.message} />
-                  </FormField>
-                  <FormField label="Rule group" help="Prometheus group name used for storage and organization.">
-                    <input {...form.register("group")} placeholder="node-filesystem" />
-                    <FieldError message={form.formState.errors.group?.message} />
-                  </FormField>
-                </div>
-                <div className="grid-two">
-                  <FormField
-                    label={settings.git_enabled ? "Repo path / CRD" : "Rule file / CRD"}
-                    help={
-                      settings.git_enabled
-                        ? "Use a repo-relative alert-rule path such as kubernetes/kube-api-down.yaml. Existing rules keep updating their current repo file."
-                        : "Backing PrometheusRule CRD or file name."
-                    }
-                  >
-                    <input
-                      {...form.register("file")}
-                      placeholder={settings.git_enabled ? "kubernetes/kube-api-down.yaml" : "kubernetes-resources"}
-                    />
-                    <FieldError message={form.formState.errors.file?.message} />
-                  </FormField>
-                  <FormField label="For duration" help="How long the expression must be true before the alert fires.">
-                    <input {...form.register("duration")} placeholder="5m" />
-                  </FormField>
-                </div>
-                <FormField label="Expression" help="PromQL expression that drives the alert condition.">
-                  <textarea {...form.register("expr")} rows={5} placeholder='node_filesystem_avail_bytes{fstype!="tmpfs"} < 10737418240' />
-                  <FieldError message={form.formState.errors.expr?.message} />
-                </FormField>
-                <FormField label="Labels (JSON)" help="Use labels for routing, grouping, and severity.">
-                  <textarea {...form.register("labels")} rows={4} placeholder='{"severity":"critical","team":"platform"}' />
-                </FormField>
-                <FormField label="Annotations (JSON)" help="Annotations become the operator-facing description and runbook context.">
-                  <textarea {...form.register("annotations")} rows={4} placeholder='{"summary":"Disk is filling up","runbook":"https://..."}' />
-                </FormField>
-                {editingRule ? (
-                  <div className="helper-card">
-                    <strong>Update behavior</strong>
+      <div className="toolbar">
+        <label className="toolbar-search">
+          Search
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Task, plugin, recipe, request id"
+          />
+        </label>
+      </div>
+
+      <div className="dashboard-grid">
+        <MetricCard title="Scheduled Tasks" value={String(visibleTasks.length)} tone="neutral" />
+        <MetricCard title="System Orders" value={String(visibleOrders.length)} tone="neutral" />
+        <MetricCard title="System Executions" value={String(visibleDishes.length)} tone="neutral" />
+      </div>
+
+      <div className="content-grid two-column">
+        <Panel title="Scheduled Tasks" subtitle={`${visibleTasks.length} task definitions in view.`}>
+          <div className="list-stack">
+            {visibleTasks.length ? (
+              visibleTasks.map((task) => (
+                <div className="feed-row" key={task.id}>
+                  <div>
+                    <strong>{task.task_key}</strong>
                     <p>
-                      Changing the rule name, group, or source path creates a new rule. Saving with the same identity updates the existing repo-backed rule in place.
+                      {titleize(task.task_type)} • {task.service_type || "core"} • every{" "}
+                      {task.run_interval_seconds}s
                     </p>
                   </div>
-                ) : null}
-                <div className="form-actions">
-                  <button className="ghost-button" type="button" onClick={closeRuleDialog}>
-                    Cancel
-                  </button>
-                  <button className="primary-button" disabled={saveMutation.isPending} type="submit">
-                    {saveMutation.isPending ? "Saving..." : editingRule ? "Save rule" : "Create rule"}
-                  </button>
+                  <div className="feed-meta">
+                    <StatusBadge status={task.status}>{task.status}</StatusBadge>
+                    <span>{task.next_run_at ? formatDate(task.next_run_at) : "Not scheduled"}</span>
+                  </div>
                 </div>
-              </fieldset>
-            </form>
+              ))
+            ) : (
+              <EmptyState message="No scheduled tasks match the current search." />
+            )}
           </div>
+        </Panel>
+
+        <Panel title="System Orders" subtitle={`${visibleOrders.length} internal orders in view.`}>
+          <div className="list-stack">
+            {visibleOrders.length ? (
+              visibleOrders.map((order) => (
+                <div className="feed-row" key={order.id}>
+                  <div>
+                    <strong>{order.alert_group_name}</strong>
+                    <p>
+                      {titleize(order.order_type)} • request {order.req_id}
+                    </p>
+                  </div>
+                  <div className="feed-meta">
+                    <StatusBadge status={order.processing_status}>{order.processing_status}</StatusBadge>
+                    <Link className="ghost-button" to={`/orders/${order.id}`}>
+                      Open order
+                    </Link>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <EmptyState message="No system orders match the current search." />
+            )}
+          </div>
+        </Panel>
+      </div>
+
+      <Panel title="System Work Executions" subtitle={`${visibleDishes.length} execution records in view.`}>
+        <div className="list-stack">
+          {visibleDishes.length ? (
+            visibleDishes.map((dish) => (
+              <div className="feed-row" key={dish.id}>
+                <div>
+                  <strong>{dish.recipe_name || `Recipe #${dish.recipe_id}`}</strong>
+                  <p>
+                    {titleize(dish.run_phase)} • {dish.order_id ? `Order #${dish.order_id}` : "No order linked"} •{" "}
+                    {titleize(dish.order_type)}
+                  </p>
+                </div>
+                <div className="feed-meta">
+                  <StatusBadge status={displayDishStatus(dish)}>
+                    {displayDishStatus(dish)}
+                  </StatusBadge>
+                  <Link
+                    className="ghost-button"
+                    to={dish.order_id ? `/orders/${dish.order_id}?dish=${dish.id}` : `/execution-activity?dish=${dish.id}`}
+                  >
+                    Open execution
+                  </Link>
+                </div>
+              </div>
+            ))
+          ) : (
+            <EmptyState message="No system executions match the current search." />
+          )}
         </div>
-      ) : null}
+      </Panel>
     </div>
   );
 }
 
-function GlobalCommunicationsPage() {
+function AlertRulesPage() {
+  const settings = useSettings();
+  const servicePlugins = useServicePlugins();
+  const k8sPlugin = servicePlugins.find((plugin) => plugin.service_type === "k8s");
+  const [namespace, setNamespace] = useState(settings.prometheus_crd_namespace || "monitoring");
+  const [search, setSearch] = useState("");
+  const [selectedName, setSelectedName] = useState("");
+
+  const query = useQuery({
+    queryKey: ["prometheus-rules", namespace],
+    queryFn: () =>
+      apiGet(
+        `/api/v1/plugins/k8s/prometheus-rules?namespace=${encodeURIComponent(namespace)}`,
+        prometheusRuleListResponseSchema,
+      ),
+    enabled: Boolean(k8sPlugin && namespace.trim()),
+  });
+
+  if (!k8sPlugin) {
+    return <PageError message="The Kubernetes service plugin is not registered." />;
+  }
+
+  const response = query.data;
+  const rows = (response?.items || []).filter((item) => {
+    const haystack = [
+      item.name,
+      item.namespace,
+      ...item.groups.map((group) => group.name),
+      ...item.groups.flatMap((group) => group.alert_names),
+      ...item.groups.flatMap((group) => group.recording_names),
+    ].join(" ").toLowerCase();
+    return haystack.includes(search.trim().toLowerCase());
+  });
+  const selected = rows.find((item) => item.name === selectedName) || rows[0] || response?.items[0];
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        title="Alerts"
+        description="Inspect PrometheusRule CRDs through the registered Kubernetes service plugin."
+      />
+
+      <div className="toolbar">
+        <label>
+          Namespace
+          <input value={namespace} onChange={(event) => setNamespace(event.target.value)} />
+        </label>
+        <label className="toolbar-search">
+          Search
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Rule, group, alert, record"
+          />
+        </label>
+        <button type="button" onClick={() => query.refetch()} disabled={query.isFetching}>
+          {query.isFetching ? "Refreshing..." : "Refresh"}
+        </button>
+      </div>
+
+      {query.isError ? <PageError message={getErrorMessage(query.error)} /> : null}
+
+      <div className="metric-grid">
+        <MetricCard title="Resources" value={String(response?.resource_count || 0)} tone={k8sPlugin.health_status}>
+          PrometheusRule CRDs
+        </MetricCard>
+        <MetricCard title="Groups" value={String(response?.group_count || 0)} tone="healthy">
+          Rule groups
+        </MetricCard>
+        <MetricCard title="Alerts" value={String(response?.alert_count || 0)} tone="healthy">
+          Alerting rules
+        </MetricCard>
+        <MetricCard title="Records" value={String(response?.recording_count || 0)} tone="unknown">
+          Recording rules
+        </MetricCard>
+      </div>
+
+      <div className="master-detail">
+        <Panel
+          title="PrometheusRule resources"
+          subtitle={response ? `${rows.length} of ${response.resource_count} resource(s) in ${response.namespace}.` : "Loading resources."}
+        >
+          {query.isLoading ? (
+            <PageLoading message="Loading PrometheusRule resources." />
+          ) : rows.length ? (
+            <div className="list-stack incident-list">
+              {rows.map((item) => (
+                <button
+                  className={`incident-row ${selected?.name === item.name ? "active" : ""}`}
+                  key={`${item.namespace}/${item.name}`}
+                  type="button"
+                  onClick={() => setSelectedName(item.name)}
+                >
+                  <div>
+                    <strong>{item.name}</strong>
+                    <p>
+                      {item.namespace} • {item.group_count} group(s) • {item.rule_count} rule(s)
+                    </p>
+                  </div>
+                  <div className="feed-meta">
+                    <StatusBadge status={item.alert_count ? "healthy" : "unknown"}>{item.alert_count} alerts</StatusBadge>
+                    <span>{item.recording_count} records</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <EmptyState message="No PrometheusRule resources match the current namespace and search." />
+          )}
+        </Panel>
+
+        <Panel title="Resource detail" subtitle="Groups, rule names, labels, and raw CRD payload.">
+          {selected ? <PrometheusRuleDetail item={selected} /> : <EmptyState message="Select a PrometheusRule resource." />}
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function PrometheusRuleDetail({ item }: { item: PrometheusRuleResourceRecord }) {
+  return (
+    <div className="detail-stack">
+      <section className="detail-hero">
+        <div>
+          <div className="eyebrow">{item.namespace}</div>
+          <h3>{item.name}</h3>
+          <p>
+            {item.group_count} group(s) • {item.rule_count} rule(s)
+          </p>
+        </div>
+        <div className="hero-strip">
+          <MetricPill label="Alerts" value={String(item.alert_count)} />
+          <MetricPill label="Records" value={String(item.recording_count)} />
+          <MetricPill label="Labels" value={String(Object.keys(item.labels || {}).length)} />
+        </div>
+      </section>
+
+      <section className="detail-section">
+        <h4>Rule groups</h4>
+        <div className="list-stack">
+          {item.groups.length ? (
+            item.groups.map((group) => (
+              <div className="preview-card" key={group.name}>
+                <div className="feed-row">
+                  <div>
+                    <strong>{group.name}</strong>
+                    <p>
+                      {group.rule_count} rule(s) • {group.alert_count} alert(s) • {group.recording_count} record(s)
+                    </p>
+                  </div>
+                </div>
+                <div className="chip-list">
+                  {[...group.alert_names, ...group.recording_names].slice(0, 24).map((name) => (
+                    <span className="mini-chip" key={`${group.name}-${name}`}>{name}</span>
+                  ))}
+                </div>
+              </div>
+            ))
+          ) : (
+            <EmptyState message="This resource does not contain rule groups." />
+          )}
+        </div>
+      </section>
+
+      <section className="detail-section">
+        <h4>Labels</h4>
+        <pre className="json-block">{compactJson(item.labels)}</pre>
+      </section>
+
+      <section className="detail-section">
+        <h4>Raw CRD</h4>
+        <pre className="json-block">{compactJson(item.raw)}</pre>
+      </section>
+    </div>
+  );
+}
+
+function CommunicationPolicyPage() {
   const notify = useToast();
   const principal = usePrincipal();
   const queryClient = useQueryClient();
@@ -2045,6 +3195,17 @@ function GlobalCommunicationsPage() {
 
   const saveMutation = useMutation({
     mutationFn: async (values: z.infer<typeof communicationsPolicySchema>) => {
+      const actionDetails = {
+        route_count: values.routes.length,
+        enabled_route_count: values.routes.filter((route) => route.enabled).length,
+        service_types: Array.from(new Set(values.routes.map((route) => route.execution_target))).sort(),
+      };
+      logOperatorAction({
+        surface: "configuration.global_communications",
+        action: "save_global_policy",
+        status: "attempt",
+        details: actionDetails,
+      });
       const request = communicationPolicyUpdateRequestSchema.parse({
         routes: values.routes.map((route, index) => ({
           id: route.id || undefined,
@@ -2058,19 +3219,41 @@ function GlobalCommunicationsPage() {
       });
       return apiPut("/api/v1/communications/policy", communicationPolicyRecordSchema, request);
     },
-    onSuccess: async () => {
-      notify("success", "Global communications policy updated.");
+    onSuccess: async (policy, values) => {
+      logOperatorAction({
+        surface: "configuration.global_communications",
+        action: "save_global_policy",
+        status: "success",
+        details: {
+          route_count: policy.routes.length,
+          enabled_route_count: policy.routes.filter((route) => route.enabled).length,
+          requested_route_count: values.routes.length,
+        },
+      });
+      notify("success", "Communication policy updated.");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["communications-policy"] }),
         queryClient.invalidateQueries({ queryKey: ["settings"] }),
         queryClient.invalidateQueries({ queryKey: ["workflows"] }),
       ]);
     },
-    onError: (error) => notify("error", getErrorMessage(error)),
+    onError: (error, values) => {
+      logOperatorAction({
+        surface: "configuration.global_communications",
+        action: "save_global_policy",
+        status: "failure",
+        details: {
+          route_count: values.routes.length,
+          enabled_route_count: values.routes.filter((route) => route.enabled).length,
+          error: getErrorMessage(error),
+        },
+      });
+      notify("error", getErrorMessage(error));
+    },
   });
 
   if (policyQuery.isLoading) {
-    return <PageLoading message="Loading global communications policy." />;
+    return <PageLoading message="Loading communication policy." />;
   }
 
   if (policyQuery.isError || !policyQuery.data) {
@@ -2079,22 +3262,27 @@ function GlobalCommunicationsPage() {
 
   const watchedRoutes = form.watch("routes");
   const enabledCount = watchedRoutes.filter((route) => route.enabled).length;
+  const communicationTargetOptions = communicationTargetsFromPolicy(
+    policyQuery.data,
+    watchedRoutes,
+  );
+  const defaultCommunicationTarget = communicationTargetOptions[0] || "";
 
   return (
     <div className="page-stack">
       <PageHeader
-        title="Global Communications"
-        description="Define the default communication routes inherited by workflows that do not supply a workflow-specific override."
+        title="Communication Policy"
+        description="Define the communication routes inherited by recipes that do not supply a recipe-specific override."
       />
       <div className="editor-grid">
         <Panel
           title="Default route set"
-          subtitle="This policy is optional. If it is empty, enabled workflows must define workflow-specific communications."
+          subtitle="This policy is optional. If it is empty, enabled recipes must define recipe-specific communication routes."
         >
           {!canEdit ? (
             <div className="helper-card">
               <strong>Read-only access</strong>
-              <p>Your role can review the global policy but only admins can change it.</p>
+              <p>Your role can review the communication policy but only admins can change it.</p>
             </div>
           ) : null}
           <form className="form-stack" onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}>
@@ -2106,9 +3294,9 @@ function GlobalCommunicationsPage() {
               </div>
               <button
                 className="ghost-button"
-                disabled={!canEdit}
+                disabled={!canEdit || !defaultCommunicationTarget}
                 type="button"
-                onClick={() => routes.append({ ...emptyCommunicationRoute(), position: routes.fields.length + 1 })}
+                onClick={() => routes.append({ ...emptyCommunicationRoute(defaultCommunicationTarget), position: routes.fields.length + 1 })}
               >
                 Add route
               </button>
@@ -2133,7 +3321,7 @@ function GlobalCommunicationsPage() {
                       </div>
                     </div>
                     <div className="grid-two">
-                      <FormField label="Route label" help="Give the route a plain-language name that operators will recognize in workflow and communications views.">
+                      <FormField label="Route label" help="Give the route a plain-language name that operators will recognize in recipe and communication views.">
                         <input {...form.register(`routes.${index}.label` as const)} placeholder="Primary on-call route" />
                         <FieldError message={form.formState.errors.routes?.[index]?.label?.message} />
                       </FormField>
@@ -2143,9 +3331,12 @@ function GlobalCommunicationsPage() {
                             onChange: () => form.setValue(`routes.${index}.provider_config` as any, {}),
                           })}
                         >
+                          {!communicationTargetOptions.length ? (
+                            <option value="">No communication providers advertised</option>
+                          ) : null}
                           {communicationTargetOptions.map((target) => (
                             <option key={target} value={target}>
-                              {target}
+                              {titleize(target)}
                             </option>
                           ))}
                         </select>
@@ -2170,7 +3361,7 @@ function GlobalCommunicationsPage() {
                   </div>
                 ))
               ) : (
-                <EmptyState message="No global routes are configured. Enabled workflows will need workflow-specific communications." />
+                <EmptyState message="No communication routes are configured. Enabled recipes will need recipe-specific communication routes." />
               )}
             </div>
 
@@ -2179,13 +3370,13 @@ function GlobalCommunicationsPage() {
               <p>
                 {enabledCount
                   ? `${enabledCount} enabled route(s) will open on escalation, open then close after successful auto-remediation clears, and post clear notifications after escalation clears.`
-                  : "This global policy is empty. Enabled workflows must define workflow-specific communications to be valid."}
+                  : "This communication policy is empty. Enabled recipes must define recipe-specific communication routes to be valid."}
               </p>
             </div>
 
             <div className="form-actions">
               <button className="primary-button" disabled={saveMutation.isPending} type="submit">
-                {saveMutation.isPending ? "Saving..." : "Save global policy"}
+                {saveMutation.isPending ? "Saving..." : "Save communication policy"}
               </button>
             </div>
             </fieldset>
@@ -2193,15 +3384,15 @@ function GlobalCommunicationsPage() {
         </Panel>
 
         <HelpRail
-          title="Global comms help"
+          title="Communication policy help"
           items={[
             {
-              label: "Optional by design",
-              description: "If you leave the global policy empty, each enabled workflow must define its own local communications override.",
+              label: "Policy-provided providers",
+              description: "Provider choices come from enabled service plugin communication routes advertised through the communication policy endpoint.",
             },
             {
               label: "Fixed lifecycle",
-              description: "Global and local policies share the same runtime lifecycle: open on escalation, open plus close after successful resolve, and notify only after escalation clears.",
+              description: "Inherited and recipe-specific policies share the same runtime lifecycle: open on escalation, open plus close after successful resolve, and notify only after escalation clears.",
             },
             {
               label: "Any route type",
@@ -2211,7 +3402,7 @@ function GlobalCommunicationsPage() {
         />
       </div>
 
-      <Panel title="Lifecycle summary" subtitle="What PoundCake does with the effective communications policy at runtime.">
+      <Panel title="Lifecycle summary" subtitle="What PoundCake does with the effective communication policy at runtime.">
         <div className="kv-grid">
           {Object.entries(policyQuery.data.lifecycle_summary).map(([key, value]) => (
             <KeyValue key={key} label={titleize(key.replace(/_/g, " "))} value={value} />
@@ -2222,7 +3413,7 @@ function GlobalCommunicationsPage() {
   );
 }
 
-function WorkflowsPage() {
+function RecipesPage() {
   const notify = useToast();
   const principal = usePrincipal();
   const settings = useSettings();
@@ -2239,7 +3430,7 @@ function WorkflowsPage() {
   });
   const actionsQuery = useQuery({
     queryKey: ["actions"],
-    queryFn: () => apiGet("/api/v1/ingredients/?limit=500", ingredientRecordArraySchema),
+    queryFn: () => apiGet("/api/v1/service-registry/ingredients?limit=500", ingredientRecordArraySchema),
   });
   const policyQuery = useQuery({
     queryKey: ["communications-policy"],
@@ -2264,6 +3455,8 @@ function WorkflowsPage() {
           run_condition: "always",
           parallel_group: 0,
           depth: 0,
+          operation: "",
+          service_payload_values: {},
           execution_parameters_override_text: "",
         },
       ],
@@ -2343,6 +3536,11 @@ function WorkflowsPage() {
             }))
           : [],
       recipe_ingredients: editingWorkflow.recipe_ingredients.map((step) => ({
+        ...workflowStepFormDefaults(
+          actionsQuery.data?.find((action) => action.id === step.ingredient_id),
+          step.service_exec_parameters_override || step.execution_parameters_override || null,
+          step.service_payload || null,
+        ),
         ingredient_id: step.ingredient_id,
         step_order: step.step_order,
         on_success: step.on_success,
@@ -2355,7 +3553,7 @@ function WorkflowsPage() {
           : "",
       })),
     });
-  }, [editingWorkflow, form]);
+  }, [actionsQuery.data, editingWorkflow, form]);
 
   useEffect(() => {
     if (editingWorkflow || settings.global_communications_configured) {
@@ -2369,10 +3567,10 @@ function WorkflowsPage() {
   const saveMutation = useMutation({
     mutationFn: async (values: z.infer<typeof workflowSchema>) => {
       if (values.enabled && values.communications_mode === "inherit" && !settings.global_communications_configured) {
-        throw new Error("Configure a global communications policy or switch this workflow to workflow-specific communications.");
+        throw new Error("Configure a communication policy or switch this recipe to recipe-specific communication routes.");
       }
       if (values.enabled && values.communications_mode === "local" && !values.communications_routes.some((route) => route.enabled)) {
-        throw new Error("Enabled workflows need at least one enabled workflow-specific communication route.");
+        throw new Error("Enabled recipes need at least one enabled recipe-specific communication route.");
       }
       const payload = {
         name: values.name,
@@ -2400,9 +3598,14 @@ function WorkflowsPage() {
           on_success: step.on_success,
           parallel_group: step.parallel_group,
           depth: step.depth,
-          execution_parameters_override: parseOptionalJson(
-            step.execution_parameters_override_text,
-            "Step override JSON",
+          service_payload: buildServicePayloadForStep(
+            step,
+            actionsQuery.data?.find((action) => action.id === Number(step.ingredient_id)),
+          ),
+          service_exec_parameters_override: buildExecutionParametersForStep(
+            step,
+            actionsQuery.data?.find((action) => action.id === Number(step.ingredient_id)),
+            parseOptionalJson(step.execution_parameters_override_text, "Step override JSON") || null,
           ),
           run_phase: step.run_phase,
           run_condition: step.run_condition,
@@ -2418,7 +3621,7 @@ function WorkflowsPage() {
       return apiPost("/api/v1/recipes/", recipeRecordSchema, recipeCreateRequestSchema.parse(payload));
     },
     onSuccess: async () => {
-      notify("success", editingWorkflow ? "Workflow updated." : "Workflow created.");
+      notify("success", editingWorkflow ? "Recipe updated." : "Recipe created.");
       closeWorkflowDialog();
       await Promise.all([
         refreshWorkflows(),
@@ -2431,7 +3634,7 @@ function WorkflowsPage() {
   const deleteMutation = useMutation({
     mutationFn: (workflowId: number) => apiDelete(`/api/v1/recipes/${workflowId}`, deleteResponseSchema),
     onSuccess: async () => {
-      notify("success", "Workflow deleted.");
+      notify("success", "Recipe deleted.");
       closeWorkflowDialog();
       await refreshWorkflows();
     },
@@ -2468,7 +3671,7 @@ function WorkflowsPage() {
   });
 
   if (recipesQuery.isLoading || actionsQuery.isLoading || policyQuery.isLoading) {
-    return <PageLoading message="Loading workflows, actions, and builder controls." />;
+    return <PageLoading message="Loading recipes, ingredient templates, and builder controls." />;
   }
 
   if (recipesQuery.isError || actionsQuery.isError || policyQuery.isError || !recipesQuery.data || !actionsQuery.data || !policyQuery.data) {
@@ -2479,6 +3682,11 @@ function WorkflowsPage() {
   const watchedSteps = form.watch("recipe_ingredients");
   const watchedCommunicationMode = form.watch("communications_mode");
   const watchedCommunicationRoutes = form.watch("communications_routes");
+  const communicationTargetOptions = communicationTargetsFromPolicy(
+    policyQuery.data,
+    watchedCommunicationRoutes,
+  );
+  const defaultCommunicationTarget = communicationTargetOptions[0] || "";
   const workflowPreview = buildWorkflowPreview(
     watchedSteps,
     availableActions,
@@ -2490,8 +3698,8 @@ function WorkflowsPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        title="Workflows"
-        description="Build remediation and utility workflows, then choose whether they inherit global communications or define a workflow-specific override."
+        title="Recipes"
+        description="Build reusable remediation and utility recipes, then choose whether they inherit the communication policy or define recipe-specific routes."
       />
       <WorkflowRepoSyncPanel
         canClear={canClear}
@@ -2503,8 +3711,8 @@ function WorkflowsPage() {
         settings={settings}
       />
       <Panel
-        title="Workflow inventory"
-        subtitle={`${recipesQuery.data.length} workflows loaded. Select a workflow to edit it or remove it when it is no longer used.`}
+        title="Recipe Inventory"
+        subtitle={`${recipesQuery.data.length} recipes loaded. Select a recipe to edit it or remove it when it is no longer used.`}
         actions={
           <button
             className="primary-button"
@@ -2512,14 +3720,14 @@ function WorkflowsPage() {
             type="button"
             onClick={openCreateWorkflowDialog}
           >
-            Create workflow
+            Create recipe
           </button>
         }
       >
         {!canEdit ? (
           <div className="helper-card">
             <strong>Read-only access</strong>
-            <p>Your role can inspect workflows, but only operators and admins can change them.</p>
+            <p>Your role can inspect recipes, but only operators can change them.</p>
           </div>
         ) : null}
         <div className="table-wrap">
@@ -2529,7 +3737,7 @@ function WorkflowsPage() {
                 <th>Name</th>
                 <th>Description</th>
                 <th>Enabled</th>
-                <th>Communications</th>
+                <th>Communication Routes</th>
                 <th>Steps</th>
                 <th>Updated</th>
                 <th />
@@ -2538,8 +3746,8 @@ function WorkflowsPage() {
             <tbody>
               {recipesQuery.data.map((workflow) => (
                 <tr className={workflow.enabled ? undefined : "workflow-row-disabled"} key={workflow.id}>
-                  <td>{workflow.name}</td>
-                  <td>{workflow.description || "-"}</td>
+                  <td className="text-cell strong-cell">{workflow.name}</td>
+                  <td className="text-cell muted-cell">{workflow.description || "-"}</td>
                   <td>
                     <StatusBadge status={workflow.enabled ? "active" : "canceled"}>
                       {workflow.enabled ? "enabled" : "disabled"}
@@ -2547,9 +3755,9 @@ function WorkflowsPage() {
                   </td>
                   <td>
                     {workflow.communications.mode === "local"
-                      ? `${workflow.communications.routes.filter((route) => route.enabled).length} local route(s)`
+                      ? `${workflow.communications.routes.filter((route) => route.enabled).length} recipe route(s)`
                       : workflow.communications.routes.filter((route) => route.enabled).length
-                        ? `${workflow.communications.routes.filter((route) => route.enabled).length} global route(s)`
+                        ? `${workflow.communications.routes.filter((route) => route.enabled).length} policy route(s)`
                         : "none"}
                   </td>
                   <td>{workflow.recipe_ingredients.length}</td>
@@ -2568,7 +3776,7 @@ function WorkflowsPage() {
                       disabled={!canEdit}
                       type="button"
                       onClick={() => {
-                        if (window.confirm(`Delete workflow "${workflow.name}"?`)) {
+                        if (window.confirm(`Delete recipe "${workflow.name}"?`)) {
                           deleteMutation.mutate(workflow.id);
                         }
                       }}
@@ -2587,14 +3795,14 @@ function WorkflowsPage() {
           <div className="dialog-card dialog-card-wide">
             <div className="panel-head">
               <div>
-                <h4>{editingWorkflow ? `Edit ${editingWorkflow.name}` : "Create workflow"}</h4>
+                <h4>{editingWorkflow ? `Edit ${editingWorkflow.name}` : "Create recipe"}</h4>
                 <p>Simple mode keeps the common path short. Advanced mode exposes execution plumbing when you need it.</p>
               </div>
             </div>
             {!canEdit ? (
               <div className="helper-card">
                 <strong>Read-only access</strong>
-                <p>Your role can inspect workflows, but only operators and admins can change them.</p>
+                <p>Your role can inspect recipes, but only operators can change them.</p>
               </div>
             ) : null}
             <div className="mode-toggle">
@@ -2619,7 +3827,7 @@ function WorkflowsPage() {
             <form className="form-stack" onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}>
               <fieldset disabled={!canEdit}>
                 <div className="grid-two">
-                  <FormField label="Workflow name" help="Use the alert or handling pattern name operators will recognize.">
+                  <FormField label="Recipe name" help="Use the alert or handling pattern name operators will recognize.">
                     <input {...form.register("name")} placeholder="Node filesystem response" />
                     <FieldError message={form.formState.errors.name?.message} />
                   </FormField>
@@ -2627,30 +3835,30 @@ function WorkflowsPage() {
                     <input {...form.register("clear_timeout_sec")} placeholder="300" />
                   </FormField>
                 </div>
-                <FormField label="Description" help="Explain the intent so responders can understand why this workflow exists.">
+                <FormField label="Description" help="Explain the intent so responders can understand why this recipe exists.">
                   <textarea {...form.register("description")} rows={3} />
                 </FormField>
-                <FormField label="Enabled" help="Disable a workflow without deleting it when you want to keep its history and structure.">
+                <FormField label="Enabled" help="Disable a recipe without deleting it when you want to keep its history and structure.">
                   <label className="toggle-row">
                     <input type="checkbox" {...form.register("enabled")} />
-                    <span>Workflow is enabled</span>
+                    <span>Recipe is enabled</span>
                   </label>
                 </FormField>
 
                 <div className="builder-header">
                   <div>
-                    <h4>Communications</h4>
-                    <p>Communications are policy-driven. Use the global default or replace it with workflow-specific routes.</p>
+                    <h4>Communication Routes</h4>
+                    <p>Communication routes are policy-driven. Use the inherited policy or replace it with recipe-specific routes.</p>
                   </div>
                 </div>
 
                 <div className="builder-stack">
                   <div className="builder-card">
                     <div className="grid-two">
-                      <FormField label="Communications source" help="Use the global route set when possible, or replace it entirely for this workflow with workflow-specific communications.">
+                      <FormField label="Communications source" help="Use the inherited route set when possible, or replace it entirely for this recipe with recipe-specific communication routes.">
                         <select {...form.register("communications_mode")}>
-                          <option value="inherit">Use global default</option>
-                          <option value="local">Use workflow-specific communications</option>
+                          <option value="inherit">Use communication policy</option>
+                          <option value="local">Use recipe-specific routes</option>
                         </select>
                       </FormField>
                       <div className="helper-card">
@@ -2658,9 +3866,9 @@ function WorkflowsPage() {
                         <p>
                           {watchedCommunicationMode === "inherit"
                             ? policyQuery.data.configured
-                              ? `${policyQuery.data.routes.filter((route) => route.enabled).length} global route(s) are available to this workflow.`
-                              : "No global routes are configured yet. Switch this workflow to workflow-specific communications before enabling it."
-                            : `${watchedCommunicationRoutes.filter((route) => route.enabled).length} workflow-specific route(s) are currently enabled.`}
+                              ? `${policyQuery.data.routes.filter((route) => route.enabled).length} inherited route(s) are available to this recipe.`
+                              : "No communication routes are configured yet. Switch this recipe to recipe-specific routes before enabling it."
+                            : `${watchedCommunicationRoutes.filter((route) => route.enabled).length} recipe-specific route(s) are currently enabled.`}
                         </p>
                       </div>
                     </div>
@@ -2678,26 +3886,29 @@ function WorkflowsPage() {
                               </div>
                               <KeyValue label="Provider" value={route.execution_target} />
                               <KeyValue label="Destination" value={route.destination_target || "-"} />
-                              <KeyValue label="Route config" value={providerConfigSummary(route.execution_target, route.provider_config)} />
+                              <DetailList compact>
+                                <DetailRow label="Route config" value={providerConfigSummary(route.execution_target, route.provider_config)} />
+                              </DetailList>
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <EmptyState message="No global communications are configured. Use workflow-specific communications or configure the global policy first." />
+                        <EmptyState message="No communication routes are configured. Use recipe-specific routes or configure the communication policy first." />
                       )
                     ) : (
                       <>
                         <div className="builder-header">
                           <div>
-                            <h4>Workflow-specific routes</h4>
-                            <p>These routes replace the global default entirely for this workflow.</p>
+                            <h4>Recipe-specific routes</h4>
+                            <p>These routes replace the inherited policy entirely for this recipe.</p>
                           </div>
                           <button
                             className="ghost-button"
+                            disabled={!defaultCommunicationTarget}
                             type="button"
                             onClick={() =>
                               communicationRoutes.append({
-                                ...emptyCommunicationRoute(),
+                                ...emptyCommunicationRoute(defaultCommunicationTarget),
                                 position: communicationRoutes.fields.length + 1,
                               })
                             }
@@ -2725,7 +3936,7 @@ function WorkflowsPage() {
                                   </div>
                                 </div>
                                 <div className="grid-two">
-                                  <FormField label="Route label" help="Name this route the way operators will recognize it later in incidents and communications history.">
+                                  <FormField label="Route label" help="Name this route the way operators will recognize it later in order and communication history.">
                                     <input {...form.register(`communications_routes.${index}.label` as const)} placeholder="Primary escalation route" />
                                     <FieldError message={form.formState.errors.communications_routes?.[index]?.label?.message} />
                                   </FormField>
@@ -2736,9 +3947,12 @@ function WorkflowsPage() {
                                           form.setValue(`communications_routes.${index}.provider_config` as any, {}),
                                       })}
                                     >
+                                      {!communicationTargetOptions.length ? (
+                                        <option value="">No communication providers advertised</option>
+                                      ) : null}
                                       {communicationTargetOptions.map((target) => (
                                         <option key={target} value={target}>
-                                          {target}
+                                          {titleize(target)}
                                         </option>
                                       ))}
                                     </select>
@@ -2748,7 +3962,7 @@ function WorkflowsPage() {
                                   <FormField label="Destination" help="Optional queue, channel, project, or room for this route.">
                                     <input {...form.register(`communications_routes.${index}.destination_target` as const)} placeholder="ops-alerts" />
                                   </FormField>
-                                  <FormField label="Enabled" help="Disabled routes stay in the workflow definition but do not run.">
+                                  <FormField label="Enabled" help="Disabled routes stay in the recipe definition but do not run.">
                                     <label className="toggle-row">
                                       <input type="checkbox" {...form.register(`communications_routes.${index}.enabled` as const)} />
                                       <span>Route is enabled</span>
@@ -2763,7 +3977,7 @@ function WorkflowsPage() {
                               </div>
                             ))
                           ) : (
-                            <EmptyState message="Add at least one route if this workflow should override the global default." />
+                            <EmptyState message="Add at least one route if this recipe should override the communication policy." />
                           )}
                         </div>
                       </>
@@ -2773,8 +3987,8 @@ function WorkflowsPage() {
 
                 <div className="builder-header">
                   <div>
-                    <h4>Workflow steps</h4>
-                    <p>Workflow steps should focus on remediation and utility logic. Communications are managed separately above.</p>
+                    <h4>Recipe Steps</h4>
+                    <p>Recipe steps should focus on remediation and utility logic. Communication routes are managed separately above.</p>
                   </div>
                   <button
                     className="ghost-button"
@@ -2788,6 +4002,8 @@ function WorkflowsPage() {
                         run_condition: "always",
                         parallel_group: 0,
                         depth: 0,
+                        operation: "",
+                        service_payload_values: {},
                         execution_parameters_override_text: "",
                       })
                     }
@@ -2814,9 +4030,22 @@ function WorkflowsPage() {
                         </div>
                       </div>
                       <div className="grid-three">
-                        <FormField label="Action" help="The reusable action this step will run.">
-                          <select {...form.register(`recipe_ingredients.${index}.ingredient_id` as const)}>
-                            <option value={0}>Choose an action</option>
+                        <FormField label="Ingredient Template" help="The reusable ingredient template this recipe step will run.">
+                          <select
+                            {...form.register(`recipe_ingredients.${index}.ingredient_id` as const, {
+                              valueAsNumber: true,
+                              onChange: (event) => {
+                                const action = availableActions.find((item) => item.id === Number(event.target.value));
+                                const defaults = workflowStepFormDefaults(action);
+                                form.setValue(`recipe_ingredients.${index}.operation` as const, defaults.operation || "");
+                                form.setValue(
+                                  `recipe_ingredients.${index}.service_payload_values` as const,
+                                  defaults.service_payload_values || {},
+                                );
+                              },
+                            })}
+                          >
+                            <option value={0}>Choose an ingredient template</option>
                             {availableActions.map((action) => (
                               <option key={action.id} value={action.id}>
                                 {action.task_key_template} ({titleize(action.execution_target)})
@@ -2824,6 +4053,11 @@ function WorkflowsPage() {
                             ))}
                           </select>
                         </FormField>
+                        <OperationField
+                          action={availableActions.find((item) => item.id === Number(watchedSteps[index]?.ingredient_id))}
+                          form={form}
+                          index={index}
+                        />
                         <FormField label="Run phase" help="Choose whether this runs when the alert fires, resolves, escalates, or both.">
                           <select {...form.register(`recipe_ingredients.${index}.run_phase` as const)}>
                             <option value="firing">firing</option>
@@ -2844,8 +4078,13 @@ function WorkflowsPage() {
                           </select>
                         </FormField>
                       </div>
+                      <ServicePayloadFields
+                        action={availableActions.find((item) => item.id === Number(watchedSteps[index]?.ingredient_id))}
+                        form={form}
+                        index={index}
+                      />
                       <div className="grid-two">
-                        <FormField label="On success" help="Continue keeps the workflow moving; stop ends the workflow after this step succeeds.">
+                        <FormField label="On success" help="Continue keeps the recipe moving; stop ends the recipe after this step succeeds.">
                           <select {...form.register(`recipe_ingredients.${index}.on_success` as const)}>
                             <option value="continue">continue</option>
                             <option value="stop">stop</option>
@@ -2865,10 +4104,22 @@ function WorkflowsPage() {
                       {mode === "advanced" ? (
                         <div className="grid-two">
                           <FormField label="Parallel group" help="Steps with the same group can be planned together. Use 0 for default sequential handling.">
-                            <input type="number" min={0} {...form.register(`recipe_ingredients.${index}.parallel_group` as const)} />
+                            <input
+                              type="number"
+                              min={0}
+                              {...form.register(`recipe_ingredients.${index}.parallel_group` as const, {
+                                valueAsNumber: true,
+                              })}
+                            />
                           </FormField>
-                          <FormField label="Depth" help="Execution depth for more advanced branching patterns. Leave at 0 for standard ordered workflows.">
-                            <input type="number" min={0} {...form.register(`recipe_ingredients.${index}.depth` as const)} />
+                          <FormField label="Depth" help="Execution depth for more advanced branching patterns. Leave at 0 for standard ordered recipes.">
+                            <input
+                              type="number"
+                              min={0}
+                              {...form.register(`recipe_ingredients.${index}.depth` as const, {
+                                valueAsNumber: true,
+                              })}
+                            />
                           </FormField>
                         </div>
                       ) : null}
@@ -2877,7 +4128,7 @@ function WorkflowsPage() {
                 </div>
 
                 <div className="preview-card">
-                  <div className="eyebrow">Workflow preview</div>
+                  <div className="eyebrow">Recipe preview</div>
                   <p>{workflowPreview}</p>
                 </div>
 
@@ -2886,7 +4137,7 @@ function WorkflowsPage() {
                     Cancel
                   </button>
                   <button className="primary-button" disabled={saveMutation.isPending} type="submit">
-                    {saveMutation.isPending ? "Saving..." : editingWorkflow ? "Save workflow" : "Create workflow"}
+                    {saveMutation.isPending ? "Saving..." : editingWorkflow ? "Save recipe" : "Create recipe"}
                   </button>
                 </div>
               </fieldset>
@@ -2898,151 +4149,14 @@ function WorkflowsPage() {
   );
 }
 
-function ActionsPage() {
-  const notify = useToast();
-  const principal = usePrincipal();
-  const queryClient = useQueryClient();
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [editingAction, setEditingAction] = useState<IngredientRecord | null>(null);
-  const canEdit = canManageActions(principal);
-
+function IngredientTemplatesPage() {
   const actionsQuery = useQuery({
     queryKey: ["actions"],
-    queryFn: () => apiGet("/api/v1/ingredients/?limit=500", ingredientRecordArraySchema),
-  });
-
-  const form = useForm<z.infer<typeof actionSchema>>({
-    resolver: zodResolver(actionSchema),
-    defaultValues: emptyActionFormValues,
-  });
-
-  const template = form.watch("template");
-  const actionPreview = buildActionPreview(form.watch());
-
-  const refreshActions = async () => {
-    await queryClient.invalidateQueries({ queryKey: ["actions"] });
-    await queryClient.refetchQueries({
-      queryKey: ["actions"],
-      exact: true,
-      type: "active",
-    });
-  };
-
-  const openCreateActionDialog = () => {
-    setEditingAction(null);
-    resetActionForm(form);
-    setEditorOpen(true);
-  };
-
-  const openEditActionDialog = (action: IngredientRecord) => {
-    setEditingAction(action);
-    setEditorOpen(true);
-  };
-
-  const closeActionDialog = () => {
-    setEditorOpen(false);
-    setEditingAction(null);
-    resetActionForm(form);
-  };
-
-  useEffect(() => {
-    if (template === "ticket" && !editingAction) {
-      form.setValue("execution_engine", "bakery");
-      form.setValue("execution_target", "rackspace_core");
-      form.setValue("execution_purpose", "comms");
-      form.setValue("execution_parameters_text", compactJson({ operation: "open" }));
-    }
-    if (template === "chat" && !editingAction) {
-      form.setValue("execution_engine", "bakery");
-      form.setValue("execution_target", "teams");
-      form.setValue("execution_purpose", "comms");
-      form.setValue("execution_parameters_text", compactJson({ operation: "notify" }));
-    }
-    if (template === "remediation" && !editingAction) {
-      form.setValue("execution_engine", "stackstorm");
-      form.setValue("execution_purpose", "remediation");
-      form.setValue("execution_parameters_text", compactJson({}));
-    }
-  }, [editingAction, form, template]);
-
-  useEffect(() => {
-    if (!editingAction) {
-      return;
-    }
-    form.reset({
-      template: classifyActionTemplate(editingAction),
-      task_key_template: editingAction.task_key_template,
-      execution_target: editingAction.execution_target,
-      destination_target: editingAction.destination_target || "",
-      execution_engine: editingAction.execution_engine,
-      execution_purpose: editingAction.execution_purpose,
-      execution_id: editingAction.execution_id || "",
-      is_blocking: editingAction.is_blocking,
-      on_failure: editingAction.on_failure,
-      expected_duration_sec: editingAction.expected_duration_sec,
-      timeout_duration_sec: editingAction.timeout_duration_sec,
-      retry_count: editingAction.retry_count,
-      retry_delay: editingAction.retry_delay,
-      execution_payload_text: editingAction.execution_payload
-        ? compactJson(editingAction.execution_payload)
-        : "",
-      execution_parameters_text: editingAction.execution_parameters
-        ? compactJson(editingAction.execution_parameters)
-        : "",
-    });
-  }, [editingAction, form]);
-
-  const saveMutation = useMutation({
-    mutationFn: async (values: z.infer<typeof actionSchema>) => {
-      const payload = {
-        execution_target: values.execution_target,
-        destination_target: values.destination_target || "",
-        task_key_template: values.task_key_template,
-        execution_id: values.execution_id || null,
-        execution_payload: parseOptionalJson(values.execution_payload_text, "Execution payload"),
-        execution_parameters: parseOptionalJson(values.execution_parameters_text, "Execution parameters"),
-        execution_engine: values.execution_engine,
-        execution_purpose: values.execution_purpose,
-        is_blocking: values.is_blocking,
-        expected_duration_sec: values.expected_duration_sec,
-        timeout_duration_sec: values.timeout_duration_sec,
-        retry_count: values.retry_count,
-        retry_delay: values.retry_delay,
-        on_failure: values.on_failure,
-      };
-      if (editingAction) {
-        return apiPut(
-          `/api/v1/ingredients/${editingAction.id}`,
-          ingredientRecordSchema,
-          ingredientUpdateRequestSchema.parse(payload),
-        );
-      }
-      return apiPost(
-        "/api/v1/ingredients/",
-        ingredientRecordSchema,
-        ingredientCreateRequestSchema.parse(payload),
-      );
-    },
-    onSuccess: async () => {
-      notify("success", editingAction ? "Action updated." : "Action created.");
-      closeActionDialog();
-      await refreshActions();
-    },
-    onError: (error) => notify("error", getErrorMessage(error)),
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: (actionId: number) => apiDelete(`/api/v1/ingredients/${actionId}`, deleteResponseSchema),
-    onSuccess: async () => {
-      notify("success", "Action deleted.");
-      closeActionDialog();
-      await refreshActions();
-    },
-    onError: (error) => notify("error", getErrorMessage(error)),
+    queryFn: () => apiGet("/api/v1/service-registry/ingredients?limit=500", ingredientRecordArraySchema),
   });
 
   if (actionsQuery.isLoading) {
-    return <PageLoading message="Loading reusable actions and templates." />;
+    return <PageLoading message="Loading ingredient templates." />;
   }
 
   if (actionsQuery.isError || !actionsQuery.data) {
@@ -3052,29 +4166,13 @@ function ActionsPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        title="Actions"
-        description="Reusable remediation and utility actions for workflows. Communication routes now live in Global Communications and the workflow communications section."
+        title="Ingredient Templates"
+        description="Plugin-provided ingredient templates for recipe steps. Manage templates through plugin manifest registration. Communication routes live in the communication policy and recipe communication sections."
       />
       <Panel
-        title="Action inventory"
-        subtitle={`${actionsQuery.data.length} actions loaded. Reusable actions available to workflows.`}
-        actions={
-          <button
-            className="primary-button"
-            disabled={!canEdit}
-            type="button"
-            onClick={openCreateActionDialog}
-          >
-            Create action
-          </button>
-        }
+        title="Ingredient Template Inventory"
+        subtitle={`${actionsQuery.data.length} ingredient templates loaded. Recipes use these as reusable step capabilities. Templates are managed through plugin manifest registration.`}
       >
-        {!canEdit ? (
-          <div className="helper-card">
-            <strong>Read-only access</strong>
-            <p>Your role can inspect actions, but only operators and admins can change them.</p>
-          </div>
-        ) : null}
         <div className="table-wrap">
           <table>
             <thead>
@@ -3085,7 +4183,6 @@ function ActionsPage() {
                 <th>Purpose</th>
                 <th>Blocking</th>
                 <th>Updated</th>
-                <th />
               </tr>
             </thead>
             <tbody>
@@ -3097,141 +4194,12 @@ function ActionsPage() {
                   <td>{action.execution_purpose}</td>
                   <td>{String(action.is_blocking)}</td>
                   <td>{formatDate(action.updated_at)}</td>
-                  <td className="action-cell">
-                    <button
-                      className="ghost-button"
-                      disabled={!canEdit}
-                      type="button"
-                      onClick={() => openEditActionDialog(action)}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      className="danger-button"
-                      disabled={!canEdit}
-                      type="button"
-                      onClick={() => {
-                        if (window.confirm(`Delete action "${action.task_key_template}"?`)) {
-                          deleteMutation.mutate(action.id);
-                        }
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </Panel>
-      {editorOpen ? (
-        <div aria-modal="true" className="dialog-backdrop" role="dialog">
-          <div className="dialog-card dialog-card-wide">
-            <div className="panel-head">
-              <div>
-                <h4>{editingAction ? `Edit ${editingAction.task_key_template}` : "Create action"}</h4>
-                <p>Start with remediation or custom automation templates. Ticket and chat actions remain available only for legacy compatibility.</p>
-              </div>
-            </div>
-            {!canEdit ? (
-              <div className="helper-card">
-                <strong>Read-only access</strong>
-                <p>Your role can inspect actions, but only operators and admins can change them.</p>
-              </div>
-            ) : null}
-            <form className="form-stack" onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}>
-              <fieldset disabled={!canEdit}>
-                <FormField label="Action type" help="Use remediation or custom for new workflow actions. Communications are configured in communications policy screens instead of ordinary workflow steps.">
-                  <select {...form.register("template")}>
-                    <option value="remediation">Remediation</option>
-                    <option value="custom">Custom</option>
-                    <option value="ticket">Ticket</option>
-                    <option value="chat">Chat notification</option>
-                  </select>
-                </FormField>
-                <div className="grid-two">
-                  <FormField label="Action name" help="The operator-facing name for this reusable action.">
-                    <input {...form.register("task_key_template")} placeholder="core.create-ticket" />
-                    <FieldError message={form.formState.errors.task_key_template?.message} />
-                  </FormField>
-                  <FormField label="Target" help="Provider or target identifier such as rackspace_core, teams, discord, or an action ref.">
-                    <input {...form.register("execution_target")} placeholder="rackspace_core" />
-                    <FieldError message={form.formState.errors.execution_target?.message} />
-                  </FormField>
-                </div>
-                <div className="grid-three">
-                  <FormField label="Destination" help="Optional route target such as a team channel, queue, project, or thread.">
-                    <input {...form.register("destination_target")} placeholder="ops-alerts" />
-                  </FormField>
-                  <FormField label="Execution engine" help="Choose bakery for communications and stackstorm for remediation actions.">
-                    <input {...form.register("execution_engine")} />
-                  </FormField>
-                  <FormField label="Purpose" help="Purpose helps explain how the action should be used in workflows.">
-                    <select {...form.register("execution_purpose")}>
-                      <option value="comms">comms</option>
-                      <option value="remediation">remediation</option>
-                      <option value="utility">utility</option>
-                    </select>
-                  </FormField>
-                </div>
-                <div className="grid-two">
-                  <FormField label="Execution ID" help="Optional provider-specific action or workflow identifier.">
-                    <input {...form.register("execution_id")} placeholder="optional" />
-                  </FormField>
-                  <FormField label="Blocking" help="Blocking actions must complete before the next workflow step moves on.">
-                    <label className="toggle-row">
-                      <input type="checkbox" {...form.register("is_blocking")} />
-                      <span>Action is blocking</span>
-                    </label>
-                  </FormField>
-                </div>
-                <div className="grid-four">
-                  <FormField label="Expected sec" help="Normal runtime used for operator expectations and workflow planning.">
-                    <input type="number" min={1} {...form.register("expected_duration_sec")} />
-                  </FormField>
-                  <FormField label="Timeout sec" help="Maximum runtime before the action is treated as timed out.">
-                    <input type="number" min={1} {...form.register("timeout_duration_sec")} />
-                  </FormField>
-                  <FormField label="Retries" help="How many retry attempts PoundCake should allow.">
-                    <input type="number" min={0} {...form.register("retry_count")} />
-                  </FormField>
-                  <FormField label="Retry delay" help="Delay in seconds between retries.">
-                    <input type="number" min={0} {...form.register("retry_delay")} />
-                  </FormField>
-                </div>
-                <FormField label="On failure" help="Choose whether the workflow stops, continues, or retries when this action fails.">
-                  <select {...form.register("on_failure")}>
-                    <option value="stop">stop</option>
-                    <option value="continue">continue</option>
-                    <option value="retry">retry</option>
-                  </select>
-                </FormField>
-                <FormField label="Execution payload (JSON)" help="Structured provider payload body. Leave blank when the action only needs parameters.">
-                  <textarea {...form.register("execution_payload_text")} rows={4} />
-                </FormField>
-                <FormField label="Execution parameters (JSON)" help="Provider-specific execution parameters such as operation=open or notify.">
-                  <textarea {...form.register("execution_parameters_text")} rows={4} />
-                </FormField>
-
-                <div className="preview-card">
-                  <div className="eyebrow">Action preview</div>
-                  <p>{actionPreview}</p>
-                </div>
-
-                <div className="form-actions">
-                  <button className="ghost-button" type="button" onClick={closeActionDialog}>
-                    Cancel
-                  </button>
-                  <button className="primary-button" disabled={saveMutation.isPending} type="submit">
-                    {saveMutation.isPending ? "Saving..." : editingAction ? "Save action" : "Create action"}
-                  </button>
-                </div>
-              </fieldset>
-            </form>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -3338,11 +4306,11 @@ function AccessPage() {
   });
 
   if (!canManageAccess(principal)) {
-    return <PageError message="You do not have access to manage PoundCake role bindings." />;
+    return <PageError message="You do not have access to manage PoundCake RBAC policies." />;
   }
 
   if (bindingsQuery.isLoading || (principalsQuery.isLoading && !principalsQuery.data)) {
-    return <PageLoading message="Loading provider status, observed principals, and role bindings." />;
+    return <PageLoading message="Loading provider status, observed principals, and RBAC policies." />;
   }
 
   if (principalsQuery.isError || bindingsQuery.isError || !principalsQuery.data || !bindingsQuery.data) {
@@ -3369,8 +4337,8 @@ function AccessPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        title="Access"
-        description="Manage provider-backed RBAC bindings for readers, operators, and admins. External providers are enabled at deploy time; this page manages who gets access after they appear in PoundCake."
+        title="RBAC Policies"
+        description="Manage provider-backed RBAC policy bindings for readers, operators, and admins. External providers are enabled at deploy time; this page manages who gets access after they appear in PoundCake."
       />
 
       <div className="status-grid">
@@ -3382,7 +4350,7 @@ function AccessPage() {
       </div>
 
       <div className="editor-grid">
-        <Panel title="Create role binding" subtitle="Bind either an observed user or an external group to a PoundCake role.">
+        <Panel title="Create RBAC policy" subtitle="Bind either an observed user or an external group to a PoundCake role.">
           <div className="form-stack">
             {!hasExternalProviders ? (
               <EmptyState message="No external auth providers are enabled yet. Add Active Directory, Auth0, or Azure AD in Helm auth values, redeploy PoundCake, then create bindings here." />
@@ -3390,7 +4358,7 @@ function AccessPage() {
             <div className="grid-two">
               <FormField
                 label="Provider"
-                help="Providers are enabled in Helm and appear here after redeploy. The local superuser is always available for recovery, but role bindings only apply to external providers."
+                help="Providers are enabled in Helm and appear here after redeploy. The local admin account is always available for recovery, but role bindings only apply to external providers."
               >
                 <select
                   disabled={!hasExternalProviders}
@@ -3417,7 +4385,7 @@ function AccessPage() {
             <div className="grid-two">
               <FormField
                 label="Role"
-                help="Readers are read-only. Operators can manage workflows, actions, suppressions, and alert rules. Admins can also manage access and all remaining configuration."
+                help="Readers observe redacted status. Operators manage recipes, suppressions, runtime cadence, and non-secret adapter settings. Admins manage credentials and RBAC."
               >
                 <select value={role} onChange={(event) => setRole(event.target.value as "reader" | "operator" | "admin")}>
                   <option value="reader">Reader</option>
@@ -3471,26 +4439,30 @@ function AccessPage() {
                 type="button"
                 onClick={() => createMutation.mutate()}
               >
-                {createMutation.isPending ? "Saving..." : "Create binding"}
+                {createMutation.isPending ? "Saving..." : "Create policy"}
               </button>
             </div>
           </div>
         </Panel>
 
         <HelpRail
-          title="Access help"
+          title="RBAC help"
           items={[
             {
-              label: "Operator scope",
-              description: "Operators can manage workflows, actions, suppressions, and alert rules, but they cannot change access or global communications.",
+              label: "operator role",
+              description: "Operators author recipes, manage suppressions, and tune safe runtime cadence and limits.",
             },
             {
-              label: "Admin scope",
-              description: "Admins can do everything operators can, plus manage role bindings and global communications.",
+              label: "admin role",
+              description: "Admins manage RBAC, adapter credentials, ingredient template writes, and scheduled task payload definitions.",
             },
             {
-              label: "Superuser safety",
-              description: "The local superuser remains outside normal RBAC binding changes so there is always a recovery path.",
+              label: "service role",
+              description: "Internal services own raw runtime execution detail through scoped HMAC routes.",
+            },
+            {
+              label: "local admin",
+              description: "The local bootstrap account reports the admin role and stays outside provider role bindings.",
             },
             {
               label: "Adding providers",
@@ -3500,7 +4472,7 @@ function AccessPage() {
         />
       </div>
 
-      <Panel title="Role bindings" subtitle="Change roles inline or remove bindings that are no longer needed.">
+      <Panel title="RBAC policies" subtitle="Change roles inline or remove bindings that are no longer needed.">
         <div className="table-wrap">
           <table>
             <thead>
@@ -3538,7 +4510,7 @@ function AccessPage() {
                       disabled={deleteMutation.isPending}
                       type="button"
                       onClick={() => {
-                        if (window.confirm("Delete this role binding?")) {
+                        if (window.confirm("Delete this RBAC policy?")) {
                           deleteMutation.mutate(binding.id);
                         }
                       }}
@@ -3609,88 +4581,10 @@ function NavGroup({
 function PageHeader({ title, description }: { title: string; description: string }) {
   return (
     <section className="page-header">
-      <div className="eyebrow">Operator workspace</div>
+      <div className="eyebrow">PoundCake workspace</div>
       <h3>{title}</h3>
       <p>{description}</p>
     </section>
-  );
-}
-
-function AlertRuleRepoSyncPanel({
-  canClear,
-  settings,
-  canEdit,
-  canImport,
-  isPending,
-  onExport,
-  onImport,
-  onClear,
-}: {
-  settings: AppSettings;
-  canClear: boolean;
-  canEdit: boolean;
-  canImport: boolean;
-  isPending: boolean;
-  onExport: () => void;
-  onImport: () => void;
-  onClear: () => void;
-}) {
-  return (
-    <Panel
-      title="Repo sync"
-      subtitle="Export the live rule set to Git, clear the current in-cluster rules when you want a fresh slate, then import from the repo."
-    >
-      {!settings.git_enabled ? (
-        <EmptyState message="Git integration is disabled. Set git.enabled, git.repoUrl, and the repo directories in Helm before using repo import/export." />
-      ) : (
-        <div className="form-stack">
-          <div className="helper-card">
-            <strong>Configured repository</strong>
-            <p>{formatRepoLocation(settings.git_repo_url, settings.git_branch)}</p>
-            <p>Alert rules directory: {settings.git_rules_path || "-"}</p>
-          </div>
-          {!canImport ? (
-            <div className="helper-card">
-              <strong>CRD mode required for import and clear</strong>
-              <p>
-                Export can still write the current rules to Git, but clear and import require
-                `prometheus.useCrds=true` so PoundCake can apply changes back into the cluster.
-              </p>
-            </div>
-          ) : null}
-          {!canClear ? (
-            <div className="helper-card">
-              <strong>Admin access required for clear</strong>
-              <p>Only admins can clear live alert rules.</p>
-            </div>
-          ) : null}
-          <div className="form-actions">
-            <button className="ghost-button" disabled={!canEdit || isPending} type="button" onClick={onExport}>
-              {isPending ? "Working..." : "Export to repo"}
-            </button>
-            <button
-              className="ghost-button"
-              disabled={!canEdit || !canImport || isPending}
-              type="button"
-              onClick={onImport}
-            >
-              {isPending ? "Working..." : "Import from repo"}
-            </button>
-            <DangerConfirmButton
-              dangerMessage="This removes every live alert rule currently managed by PoundCake. Import from repo does not delete missing rules automatically."
-              disabled={!canClear || !canImport || isPending}
-              isPending={isPending}
-              label="Clear alert rules"
-              title="Clear alert rules?"
-              onConfirm={onClear}
-            />
-          </div>
-          <div className="login-note">
-            Import upserts what is in Git. Use clear first when you want the repo to become the full live rule set.
-          </div>
-        </div>
-      )}
-    </Panel>
   );
 }
 
@@ -3714,7 +4608,7 @@ function WorkflowRepoSyncPanel({
   return (
     <Panel
       title="Repo sync"
-      subtitle="Import and export workflows and actions together from one place so action dependencies are loaded before workflows."
+      subtitle="Import and export recipes and ingredient templates together from one place so template dependencies are loaded before recipes."
     >
       {!settings.git_enabled ? (
         <EmptyState message="Git integration is disabled. Set git.enabled, git.repoUrl, git.workflowsPath, and git.actionsPath in Helm before using repo import/export." />
@@ -3723,14 +4617,14 @@ function WorkflowRepoSyncPanel({
           <div className="helper-card">
             <strong>Configured repository</strong>
             <p>{formatRepoLocation(settings.git_repo_url, settings.git_branch)}</p>
-            <p>Workflows directory: {settings.git_workflows_path || "-"}</p>
-            <p>Actions directory: {settings.git_actions_path || "-"}</p>
-            <p>Import loads actions first and then workflows so step references can resolve in the same run.</p>
+            <p>Recipes directory: {settings.git_workflows_path || "-"}</p>
+            <p>Ingredient templates directory: {settings.git_actions_path || "-"}</p>
+            <p>Import loads ingredient templates first and then recipes so step references can resolve in the same run.</p>
           </div>
           {!canClear ? (
             <div className="helper-card">
               <strong>Admin access required for clear</strong>
-              <p>Only admins can clear workflows and actions.</p>
+              <p>Only admins can clear recipes and ingredient templates.</p>
             </div>
           ) : null}
           <div className="form-actions">
@@ -3741,16 +4635,16 @@ function WorkflowRepoSyncPanel({
               {isPending ? "Working..." : "Import from repo"}
             </button>
             <DangerConfirmButton
-              dangerMessage="This removes every user-visible workflow and action currently stored in PoundCake. Import from repo does not delete missing items automatically."
+              dangerMessage="This removes every user-visible recipe and ingredient template currently stored in PoundCake. Import from repo does not delete missing items automatically."
               disabled={!canClear || isPending}
               isPending={isPending}
-              label="Clear workflows and actions"
-              title="Clear workflows and actions?"
+              label="Clear recipes and templates"
+              title="Clear recipes and ingredient templates?"
               onConfirm={onClear}
             />
           </div>
           <div className="login-note">
-            Repo sync for workflows and actions lives here. Use clear first when you want the repo to become the full visible workflow and action set.
+            Repo sync for recipes and ingredient templates lives here. Use clear first when you want the repo to become the full visible recipe and template set.
           </div>
         </div>
       )}
@@ -3910,6 +4804,89 @@ function MetricPill({ label, value }: { label: string; value: string }) {
   );
 }
 
+function StatusListItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="status-list-item">
+      <span>{label}</span>
+      <strong>{titleize(value)}</strong>
+    </div>
+  );
+}
+
+function formatPluginTier(value: ServicePluginSummaryRecord["plugin_tier"]): string {
+  return value === "supported" ? "Supported" : "Community";
+}
+
+function scheduledTaskStateLabel(task: ScheduledTaskStatusRecord) {
+  if (!task.is_enabled || task.status === "disabled") {
+    return "paused";
+  }
+  if (task.status === "idle") {
+    return "waiting for next run";
+  }
+  return titleize(task.status);
+}
+
+function isOperatorRunnableScheduledTask(task: ScheduledTaskStatusRecord) {
+  return Boolean(
+    task.source === "plugin_manifest" &&
+      task.is_enabled &&
+      (task.status === "idle" || task.status === "queued") &&
+      (task.task_type === "plugin_health_check" || task.task_type === "service_execution") &&
+      task.service_type &&
+      task.service_exec,
+  );
+}
+
+function scheduledTaskRunActionLabel(task: ScheduledTaskStatusRecord) {
+  return task.run_now_label || "Run task";
+}
+
+function scheduledTaskRunBlockedMessage({
+  adapterConfigDirty,
+  canUseSavedAdapterState,
+  pluginEnabled,
+  task,
+  taskConfigDirty,
+}: {
+  adapterConfigDirty: boolean;
+  canUseSavedAdapterState: boolean;
+  pluginEnabled: boolean;
+  task: ScheduledTaskStatusRecord;
+  taskConfigDirty: boolean;
+}) {
+  const label = scheduledTaskRunActionLabel(task);
+  if (taskConfigDirty) {
+    return "Save scheduled task changes before running this task.";
+  }
+  if (adapterConfigDirty || !canUseSavedAdapterState) {
+    return "Save adapter connection changes before running this task.";
+  }
+  if (!pluginEnabled) {
+    return "Enable the adapter before running this task.";
+  }
+  if (task.source !== "plugin_manifest") {
+    return `${label} is only available for plugin-advertised scheduled tasks.`;
+  }
+  if (!task.is_enabled || task.status === "disabled") {
+    return `${label} is paused. Enable the scheduled task before running it.`;
+  }
+  if (task.status === "queued") {
+    return "";
+  }
+  if (task.status !== "idle") {
+    return `${label} is already ${scheduledTaskStateLabel(task)}.`;
+  }
+  if (
+    (task.task_type !== "plugin_health_check" && task.task_type !== "service_execution") ||
+    !task.service_type ||
+    !task.service_exec
+  ) {
+    return `${label} is not available for this scheduled task.`;
+  }
+  return "";
+}
+
 function StatusBadge({
   children,
   status,
@@ -3988,6 +4965,19 @@ function KeyValue({ label, value }: { label: string; value: string }) {
   );
 }
 
+function DetailList({ children, compact = false }: { children: ReactNode; compact?: boolean }) {
+  return <div className={`detail-list ${compact ? "compact" : ""}`}>{children}</div>;
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="detail-row">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 function EmptyState({ message }: { message: string }) {
   return <div className="empty-state">{message}</div>;
 }
@@ -4036,17 +5026,28 @@ function usePrincipal() {
   return principal;
 }
 
+function useServicePlugins() {
+  return useContext(ServicePluginsContext);
+}
+
 function useToast() {
   return useContext(ToastContext);
+}
+
+function summarizePluginHealth(plugins: ServicePluginSummaryRecord[]) {
+  const ready = plugins.filter((plugin) => plugin.health_status === "healthy").length;
+  const initializing = plugins.filter((plugin) => plugin.health_status === "initializing").length;
+  return {
+    ready,
+    initializing,
+    notReady: plugins.length - ready,
+  };
 }
 
 function hasRole(
   principal: AuthMeRecord,
   role: "reader" | "operator" | "admin",
 ) {
-  if (principal.is_superuser) {
-    return true;
-  }
   if (principal.role === "service") {
     return false;
   }
@@ -4058,11 +5059,11 @@ function hasRole(
   return order[principal.role] >= order[role];
 }
 
-function canManageSuppressions(principal: AuthMeRecord) {
-  return hasRole(principal, "operator");
+function rbacRoleLabel(principal: AuthMeRecord) {
+  return titleize(principal.role);
 }
 
-function canManageAlertRules(principal: AuthMeRecord) {
+function canManageSuppressions(principal: AuthMeRecord) {
   return hasRole(principal, "operator");
 }
 
@@ -4070,9 +5071,7 @@ function canManageWorkflows(principal: AuthMeRecord) {
   return hasRole(principal, "operator");
 }
 
-function canManageActions(principal: AuthMeRecord) {
-  return hasRole(principal, "operator");
-}
+
 
 function canManageRepoSyncClear(principal: AuthMeRecord) {
   return hasRole(principal, "admin");
@@ -4087,15 +5086,18 @@ function canManageAccess(principal: AuthMeRecord) {
 }
 
 function getRouteName(pathname: string): string {
-  if (pathname.startsWith("/incidents")) return "Incidents";
-  if (pathname.startsWith("/communications")) return "Communications";
+  if (pathname.startsWith("/orders")) return "Orders";
+  if (pathname.startsWith("/communication-routes")) return "Communication Routes";
   if (pathname.startsWith("/suppressions")) return "Suppressions";
-  if (pathname.startsWith("/activity")) return "Activity";
+  if (pathname.startsWith("/execution-activity")) return "Work Execution Activity";
+  if (pathname.startsWith("/system-activity")) return "System Activity";
+  if (pathname.startsWith("/config/alerts")) return "Alerts";
   if (pathname.startsWith("/config/alert-rules")) return "Alert Rules";
-  if (pathname.startsWith("/config/communications")) return "Global Communications";
-  if (pathname.startsWith("/config/workflows")) return "Workflows";
-  if (pathname.startsWith("/config/actions")) return "Actions";
-  if (pathname.startsWith("/config/access")) return "Access";
+  if (pathname.startsWith("/config/plugins")) return "Plugins";
+  if (pathname.startsWith("/config/communication-policy")) return "Communication Policy";
+  if (pathname.startsWith("/config/recipes")) return "Recipes";
+  if (pathname.startsWith("/config/ingredient-templates")) return "Ingredient Templates";
+  if (pathname.startsWith("/config/access")) return "RBAC";
   return "Overview";
 }
 
@@ -4138,6 +5140,14 @@ function getErrorMessage(error: unknown): string {
     return String((error as { message: unknown }).message);
   }
   return "Something went wrong.";
+}
+
+function logOperatorAction(payload: UIOperatorActionRequest): void {
+  void apiPost(
+    "/api/v1/ui/operator-actions",
+    uiOperatorActionResponseSchema,
+    uiOperatorActionRequestSchema.parse(payload),
+  ).catch(() => undefined);
 }
 
 function isGatewayTimeoutError(error: unknown): boolean {
@@ -4231,7 +5241,7 @@ function normalizeProviderConfigForForm(
   return config;
 }
 
-function emptyCommunicationRoute(executionTarget = "rackspace_core") {
+function emptyCommunicationRoute(executionTarget = "") {
   return {
     id: crypto.randomUUID(),
     label: "",
@@ -4241,6 +5251,20 @@ function emptyCommunicationRoute(executionTarget = "rackspace_core") {
     enabled: true,
     position: 1,
   };
+}
+
+function communicationTargetsFromPolicy(
+  policy: Pick<CommunicationPolicyRecord, "routes"> & Partial<Pick<CommunicationPolicyRecord, "available_routes">>,
+  currentRoutes: Array<{ execution_target?: string }> = [],
+): string[] {
+  const targets = [
+    ...(policy.available_routes || []),
+    ...(policy.routes || []),
+    ...currentRoutes,
+  ]
+    .map((route) => route.execution_target)
+    .filter((target): target is string => Boolean(target && target.trim()));
+  return Array.from(new Set(targets)).sort((left, right) => left.localeCompare(right));
 }
 
 function providerConfigSummary(
@@ -4370,6 +5394,107 @@ function moveField(
   fieldArray.move(index, nextIndex);
 }
 
+function OperationField({
+  action,
+  form,
+  index,
+}: {
+  action: IngredientRecord | undefined;
+  form: ReturnType<typeof useForm<z.infer<typeof workflowSchema>>>;
+  index: number;
+}) {
+  const operations = getAllowedOperations(action);
+  if (operations.length <= 1) {
+    return null;
+  }
+  return (
+    <FormField label="Operation" help="The adapter operation this ingredient template will perform.">
+      <select {...form.register(`recipe_ingredients.${index}.operation` as const)}>
+        {operations.map((operation) => (
+          <option key={operation} value={operation}>
+            {operationLabel(action, operation)}
+          </option>
+        ))}
+      </select>
+    </FormField>
+  );
+}
+
+function ServicePayloadFields({
+  action,
+  form,
+  index,
+}: {
+  action: IngredientRecord | undefined;
+  form: ReturnType<typeof useForm<z.infer<typeof workflowSchema>>>;
+  index: number;
+}) {
+  const operation = form.watch(`recipe_ingredients.${index}.operation` as const);
+  const payloadSchema = operationPayloadSchema(action, String(operation || "")) || action?.payload_schema;
+  const properties = schemaProperties(payloadSchema);
+  const keys = Object.keys(properties);
+  if (!action || keys.length === 0) {
+    return null;
+  }
+  return (
+    <div className="grid-two">
+      {keys.map((key) => {
+        const property = properties[key];
+        const fieldPath = `recipe_ingredients.${index}.service_payload_values.${key}` as const;
+        const label = titleize(key.replace(/_/g, " "));
+        if (property.type === "boolean") {
+          return (
+            <FormField key={key} label={label} help="Boolean payload value from this ingredient template.">
+              <label className="toggle-row">
+                <input type="checkbox" {...form.register(fieldPath)} />
+                <span>Enabled</span>
+              </label>
+            </FormField>
+          );
+        }
+        if (property.type === "object" || property.type === "array") {
+          const watchedValue = form.watch(fieldPath);
+          return (
+            <FormField key={key} label={label} help="JSON payload value from this ingredient template.">
+              <textarea
+                value={
+                  typeof watchedValue === "string"
+                    ? watchedValue
+                    : compactJson((watchedValue || {}) as Record<string, unknown>)
+                }
+                onChange={(event) => {
+                  form.setValue(fieldPath, event.target.value);
+                }}
+                onBlur={(event) => {
+                  try {
+                    form.setValue(
+                      fieldPath,
+                      parseOptionalJson(event.target.value, `${label} JSON`) || {},
+                    );
+                  } catch {
+                    form.setValue(fieldPath, event.target.value);
+                  }
+                }}
+                rows={3}
+              />
+            </FormField>
+          );
+        }
+        return (
+          <FormField key={key} label={label} help="Payload value from this ingredient template.">
+            <input
+              type={property.type === "number" || property.type === "integer" ? "number" : "text"}
+              {...form.register(fieldPath, {
+                valueAsNumber: property.type === "number" || property.type === "integer",
+              })}
+            />
+          </FormField>
+        );
+      })}
+    </div>
+  );
+}
+
 function moveCommunicationRoute(
   fieldArray: {
     fields: Array<{ id: string }>;
@@ -4409,15 +5534,15 @@ function resetWorkflowForm(
       run_condition: "always",
       parallel_group: 0,
       depth: 0,
+      operation: "",
+      service_payload_values: {},
       execution_parameters_override_text: "",
     },
   ]);
   communicationRoutes.replace([]);
 }
 
-function resetActionForm(form: ReturnType<typeof useForm<z.infer<typeof actionSchema>>>) {
-  form.reset(emptyActionFormValues);
-}
+
 
 function describeWorkflowStep(
   step: z.infer<typeof workflowStepSchema> | undefined,
@@ -4428,9 +5553,124 @@ function describeWorkflowStep(
   }
   const action = actions.find((item) => item.id === Number(step.ingredient_id));
   if (!action) {
-    return "Choose an action to describe this step.";
+    return "Choose an ingredient template to describe this step.";
   }
-  return `Run ${action.task_key_template} during ${step.run_phase} when ${step.run_condition}. If it succeeds, ${step.on_success}.`;
+  const operation = step.operation ? ` (${operationLabel(action, step.operation)})` : "";
+  return `Run ${action.task_key_template}${operation} during ${step.run_phase} when ${step.run_condition}. If it succeeds, ${step.on_success}.`;
+}
+
+function workflowStepFormDefaults(
+  action?: IngredientRecord,
+  parameterOverrides?: Record<string, unknown> | null,
+  payloadOverrides?: Record<string, unknown> | null,
+): Pick<z.infer<typeof workflowStepSchema>, "operation" | "service_payload_values"> {
+  const defaultPayload = { ...((action?.service_payload_template || action?.execution_payload || {}) as Record<string, unknown>) };
+  const payload = { ...defaultPayload, ...(payloadOverrides || {}) };
+  const allowed = getAllowedOperations(action);
+  const params = (action?.service_exec_parameters || action?.execution_parameters || {}) as Record<string, unknown>;
+  const operation = String(
+    parameterOverrides?.operation || params.operation || allowed[0] || "",
+  );
+  return {
+    operation,
+    service_payload_values: payload,
+  };
+}
+
+function buildExecutionParametersForStep(
+  step: z.infer<typeof workflowStepSchema>,
+  action: IngredientRecord | undefined,
+  advancedOverrides: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  const allowed = getAllowedOperations(action);
+  const operation = String(step.operation || allowed[0] || "").trim();
+  const merged = { ...(advancedOverrides || {}) };
+  if (allowed.length > 0 && operation) {
+    merged.operation = operation;
+  }
+  return Object.keys(merged).length > 0 ? merged : null;
+}
+
+function buildServicePayloadForStep(
+  step: z.infer<typeof workflowStepSchema>,
+  action: IngredientRecord | undefined,
+): Record<string, unknown> | null {
+  const payloadSchema = operationPayloadSchema(action, step.operation || "") || action?.payload_schema;
+  const properties = schemaProperties(payloadSchema);
+  const required = schemaRequired(payloadSchema);
+  const values = step.service_payload_values || {};
+  const payload: Record<string, unknown> = {};
+  for (const key of Object.keys(properties)) {
+    const value = values[key];
+    if (value === undefined || value === null) {
+      continue;
+    }
+    if (typeof value === "string" && value.trim() === "" && !required.has(key)) {
+      continue;
+    }
+    payload[key] = value;
+  }
+  return Object.keys(payload).length > 0 ? payload : null;
+}
+
+function getAllowedOperations(action?: IngredientRecord): string[] {
+  const params = (action?.service_exec_parameters || action?.execution_parameters || {}) as Record<string, unknown>;
+  const raw = params.allowed_operations;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.map((item) => String(item).trim()).filter(Boolean);
+}
+
+function operationLabel(action: IngredientRecord | undefined, operation: string): string {
+  const params = (action?.service_exec_parameters || action?.execution_parameters || {}) as Record<string, unknown>;
+  const metadata = params.operation_metadata;
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    const entry = (metadata as Record<string, unknown>)[operation];
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      const label = (entry as Record<string, unknown>).label;
+      if (typeof label === "string" && label.trim()) {
+        return label;
+      }
+    }
+  }
+  return titleize(operation.replace(/_/g, " "));
+}
+
+function operationPayloadSchema(action: IngredientRecord | undefined, operation: string): unknown {
+  const params = (action?.service_exec_parameters || action?.execution_parameters || {}) as Record<string, unknown>;
+  const metadata = params.operation_metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return null;
+  }
+  const entry = (metadata as Record<string, unknown>)[operation];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+    return null;
+  }
+  const schema = (entry as Record<string, unknown>).payload_schema;
+  return schema && typeof schema === "object" && !Array.isArray(schema) ? schema : null;
+}
+
+function schemaProperties(schema: unknown): Record<string, { type?: string }> {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return {};
+  }
+  const properties = (schema as Record<string, unknown>).properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+    return {};
+  }
+  return properties as Record<string, { type?: string }>;
+}
+
+function schemaRequired(schema: unknown): Set<string> {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return new Set();
+  }
+  const required = (schema as Record<string, unknown>).required;
+  if (!Array.isArray(required)) {
+    return new Set();
+  }
+  return new Set(required.map((item) => String(item)));
 }
 
 function buildWorkflowPreview(
@@ -4444,7 +5684,7 @@ function buildWorkflowPreview(
     .map((step, index) => {
       const action = actions.find((item) => item.id === Number(step.ingredient_id));
       if (!action) {
-        return `step ${index + 1} is waiting for an action`;
+        return `step ${index + 1} is waiting for an ingredient template`;
       }
       return `${step.run_phase} -> ${action.task_key_template} (${titleize(action.execution_target)})`;
     })
@@ -4452,31 +5692,276 @@ function buildWorkflowPreview(
   const enabledRoutes = routes.filter((route) => route.enabled);
   const communicationsSummary = communicationsMode === "inherit"
     ? enabledRoutes.length
-      ? `inherit ${enabledRoutes.length} global communication route(s)`
-      : "inherit no configured global communication routes yet"
+      ? `inherit ${enabledRoutes.length} communication policy route(s)`
+      : "inherit no configured communication policy routes yet"
     : enabledRoutes.length
-      ? `use ${enabledRoutes.length} workflow-specific communication route(s)`
-      : "use workflow-specific communications with no enabled routes yet";
+      ? `use ${enabledRoutes.length} recipe-specific communication route(s)`
+      : "use recipe-specific communication routes with no enabled routes yet";
   if (!fragments.length) {
-    return `${workflowName || "This workflow"} will ${communicationsSummary} once you add execution steps.`;
+    return `${workflowName || "This recipe"} will ${communicationsSummary} once you add recipe steps.`;
   }
-  return `${workflowName || "This workflow"} will ${communicationsSummary}, then run ${fragments.join(", then ")}.`;
+  return `${workflowName || "This recipe"} will ${communicationsSummary}, then run ${fragments.join(", then ")}.`;
 }
 
-function classifyActionTemplate(action: IngredientRecord): "ticket" | "chat" | "remediation" | "custom" {
-  if (action.execution_purpose === "remediation") return "remediation";
-  if (["teams", "discord"].includes(action.execution_target)) return "chat";
-  if (["rackspace_core", "servicenow", "jira", "github", "pagerduty"].includes(action.execution_target)) {
-    return "ticket";
+
+
+
+
+function normalizeUiConfig(config: Record<string, unknown>): Record<string, string | boolean> {
+  const next: Record<string, string | boolean> = {};
+  for (const [key, value] of Object.entries(config)) {
+    next[key] = typeof value === "boolean" ? value : String(value ?? "");
   }
-  return "custom";
+  return next;
 }
 
-function buildActionPreview(values: z.infer<typeof actionSchema>): string {
-  const route = values.destination_target
-    ? `${values.execution_target}:${values.destination_target}`
-    : values.execution_target;
-  return `${titleize(values.template)} action "${values.task_key_template || "unnamed"}" will use ${values.execution_engine} against ${route || "a target"} with ${values.retry_count} retries.`;
+function serializeUiConfig(
+  config: Record<string, string | boolean>,
+  schema?: Record<string, unknown>,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (typeof value === "boolean") {
+      next[key] = value;
+      continue;
+    }
+    const trimmed = value.trim();
+    next[key] = isNumericOperatorConfigField(schema, key) && trimmed ? Number(trimmed) : trimmed;
+  }
+  return next;
+}
+
+function comparableOperatorConfig(
+  config: Record<string, unknown>,
+  schema?: Record<string, unknown>,
+): string {
+  const normalized: Record<string, unknown> = {};
+  for (const key of Object.keys(config).sort()) {
+    const value = config[key];
+    if (typeof value === "boolean") {
+      normalized[key] = value;
+      continue;
+    }
+    if (typeof value === "number") {
+      normalized[key] = Number.isFinite(value) ? value : "";
+      continue;
+    }
+    const trimmed = String(value ?? "").trim();
+    const numeric = isNumericOperatorConfigField(schema, key) && trimmed ? Number(trimmed) : NaN;
+    normalized[key] = Number.isFinite(numeric) ? numeric : trimmed;
+  }
+  return JSON.stringify(normalized);
+}
+
+function isNumericOperatorConfigField(schema: Record<string, unknown> | undefined, key: string): boolean {
+  const properties = schema?.properties;
+  if (properties && typeof properties === "object" && !Array.isArray(properties)) {
+    const property = (properties as Record<string, Record<string, unknown>>)[key];
+    const type = property ? String(property.type || "").toLowerCase() : "";
+    if (type === "number" || type === "integer") {
+      return true;
+    }
+  }
+  return key.endsWith("_seconds");
+}
+
+function hasRequiredCredentialRequirement(requirements: Array<Record<string, unknown>> | undefined): boolean {
+  return Boolean(requirements?.some((requirement) => requirement.required === true));
+}
+
+function editableCredentialRequirements(
+  requirements: Array<Record<string, unknown>> | undefined,
+): Array<Record<string, unknown>> {
+  return requirements?.filter((requirement) => requirement.managed !== true) || [];
+}
+
+function activeCredentialRequirement(
+  requirements: Array<Record<string, unknown>> | undefined,
+  credentialType: string | null | undefined,
+): Record<string, unknown> | undefined {
+  if (!requirements?.length) {
+    return undefined;
+  }
+  if (!credentialType) {
+    return requirements[0];
+  }
+  return requirements.find((requirement) => requirement.credential_type === credentialType) || requirements[0];
+}
+
+function credentialPayloadFields(
+  requirements: Array<Record<string, unknown>> | undefined,
+  credentialType: string | null | undefined,
+): Array<{ name: string; label: string; help?: string }> {
+  const requirement = activeCredentialRequirement(requirements, credentialType);
+  const schema = requirement?.credential_schema;
+  if (schema && typeof schema === "object" && !Array.isArray(schema)) {
+    const properties = (schema as Record<string, unknown>).properties;
+    if (properties && typeof properties === "object" && !Array.isArray(properties)) {
+      return Object.entries(properties as Record<string, Record<string, unknown>>).map(
+        ([name, property]) => ({
+          name,
+          label: credentialPayloadFieldLabel(
+            credentialType,
+            name,
+            String(property.title || titleize(name.replace(/_/g, " "))),
+          ),
+          help: credentialPayloadFieldHelp(credentialType, name),
+        }),
+      );
+    }
+  }
+  const fallback = defaultCredentialField(credentialType);
+  return [{
+    name: fallback,
+    label: credentialPayloadFieldLabel(
+      credentialType,
+      fallback,
+      titleize(fallback.replace(/_/g, " ")),
+    ),
+    help: credentialPayloadFieldHelp(credentialType, fallback),
+  }];
+}
+
+function buildCredentialPayload(
+  requirements: Array<Record<string, unknown>> | undefined,
+  credentialType: string | null | undefined,
+  credentialField: string,
+  credentialInput: string,
+  credentialInputs: Record<string, string>,
+): Record<string, string> | undefined {
+  const fields = credentialPayloadFields(requirements, credentialType);
+  if (fields.length === 1) {
+    const value = credentialInput.trim();
+    return credentialInputHasNewValue(value) ? { [credentialField]: value } : undefined;
+  }
+  const payload: Record<string, string> = {};
+  for (const field of fields) {
+    const value = (credentialInputs[field.name] || "").trim();
+    if (credentialInputHasNewValue(value)) {
+      payload[field.name] = value;
+    }
+  }
+  return Object.keys(payload).length ? payload : undefined;
+}
+
+function credentialInputHasNewValue(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return Boolean(normalized && normalized !== "leave blank to keep existing");
+}
+
+function operatorConfigFields(
+  schema: Record<string, unknown> | undefined,
+  config: Record<string, string | boolean>,
+): Array<{ name: string; label: string; type: string }> {
+  const properties = schema?.properties;
+  if (properties && typeof properties === "object" && !Array.isArray(properties)) {
+    return Object.entries(properties as Record<string, Record<string, unknown>>).map(
+      ([name, property]) => ({
+        name,
+        label: String(property.title || titleize(name.replace(/_/g, " "))),
+        type: String(property.type || typeof config[name] || "string"),
+      }),
+    );
+  }
+  return Object.keys(config).map((name) => ({
+    name,
+    label: titleize(name.replace(/_/g, " ")),
+    type: typeof config[name],
+  }));
+}
+
+function defaultCredentialField(credentialType: string | null | undefined): string {
+  if (credentialType === "stackstorm_api_key") {
+    return "api_key";
+  }
+  if (credentialType === "kubernetes_kubeconfig") {
+    return "kubeconfig";
+  }
+  if (credentialType === "git_repository_auth") {
+    return "token";
+  }
+  return "token";
+}
+
+function credentialSlotLabel(credentialType: string | null | undefined): string {
+  if (credentialType === "bakery_bootstrap_hmac") {
+    return "PoundCake credential slot";
+  }
+  return "Credential key ID";
+}
+
+function credentialSlotHelp(credentialType: string | null | undefined): string {
+  if (credentialType === "bakery_bootstrap_hmac") {
+    return "Local PoundCake storage slot. Keep this as default for the normal Bakery connection.";
+  }
+  return "A named slot for this adapter credential. Use default for the normal connection; use another key only when the same adapter needs separate credentials for different targets.";
+}
+
+function credentialValueLabel(credentialType: string | null | undefined): string {
+  if (credentialType === "bakery_bootstrap_hmac") {
+    return "bootstrap-key";
+  }
+  return "Credential value";
+}
+
+function credentialPayloadFieldLabel(
+  credentialType: string | null | undefined,
+  fieldName: string,
+  fallback: string,
+): string {
+  if (credentialType === "bakery_bootstrap_hmac") {
+    if (fieldName === "hmac_key_id" || fieldName === "key_id") {
+      return "bootstrap-key-id";
+    }
+    if (fieldName === "hmac_secret") {
+      return "bootstrap-key";
+    }
+  }
+  return fallback;
+}
+
+function credentialPayloadFieldHelp(
+  credentialType: string | null | undefined,
+  fieldName: string,
+): string | undefined {
+  if (credentialType !== "bakery_bootstrap_hmac") {
+    return undefined;
+  }
+  if (fieldName === "hmac_key_id" || fieldName === "key_id") {
+    return "Paste the bootstrap-key-id minted by the remote Bakery for this PoundCake monitor.";
+  }
+  if (fieldName === "hmac_secret") {
+    return "Paste the bootstrap-key minted by the remote Bakery for this PoundCake monitor.";
+  }
+  return undefined;
+}
+
+function credentialFieldOptions(
+  credentialType: string | null | undefined,
+): Array<{ value: string; label: string }> {
+  if (credentialType === "stackstorm_api_key") {
+    return [
+      { value: "api_key", label: "API key" },
+      { value: "auth_token", label: "Auth token" },
+    ];
+  }
+  if (credentialType === "kubernetes_kubeconfig") {
+    return [
+      { value: "kubeconfig", label: "Kubeconfig" },
+      { value: "token", label: "Token" },
+    ];
+  }
+  if (credentialType === "git_repository_auth") {
+    return [
+      { value: "token", label: "Token" },
+      { value: "ssh_key_path", label: "SSH key path" },
+    ];
+  }
+  return [
+    { value: "token", label: "Token" },
+    { value: "username", label: "Username" },
+    { value: "password", label: "Password" },
+  ];
 }
 
 function isCommunicationAction(action: IngredientRecord): boolean {

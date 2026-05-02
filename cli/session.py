@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from shared.types import JSONObject
+
 import json
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -45,7 +46,7 @@ class StoredSession:
     permissions: list[str] | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "StoredSession":
+    def from_dict(cls, data: JSONObject) -> "StoredSession":
         return cls(
             session_id=str(data["session_id"]),
             username=str(data["username"]),
@@ -62,7 +63,7 @@ class StoredSession:
     def is_expired(self) -> bool:
         return _parse_expires_at(self.expires_at) <= datetime.now(timezone.utc)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> JSONObject:
         return asdict(self)
 
 
@@ -97,7 +98,7 @@ class SessionStore:
         sessions.pop(key, None)
         self._write(sessions)
 
-    def _load(self) -> dict[str, Any]:
+    def _load(self) -> JSONObject:
         if not self.path.exists():
             return {}
         try:
@@ -108,7 +109,7 @@ class SessionStore:
             return {}
         return data
 
-    def _write(self, sessions: dict[str, Any]) -> None:
+    def _write(self, sessions: JSONObject) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(sessions, indent=2, sort_keys=True)
         self.path.write_text(payload + "\n", encoding="utf-8")

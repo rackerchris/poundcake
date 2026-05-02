@@ -1,6 +1,3 @@
-{{- if and .Values.poundcake.enabled .Values.bakery.client.enabled (not .Values.bakery.client.baseUrl) }}
-{{- fail "bakery.client.baseUrl must be set when bakery.client.enabled=true (remote Bakery mode)" }}
-{{- end }}
 {{- if .Values.poundcake.enabled }}
 apiVersion: apps/v1
 kind: Deployment
@@ -24,6 +21,7 @@ spec:
         {{- include "poundcake.logLabelsForComponent" (dict "component" "api") | nindent 8 }}
         {{- include "poundcake.selectorLabels" . | nindent 8 }}
     spec:
+      enableServiceLinks: false
       {{- if .Values.podSecurityContext }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -42,13 +40,9 @@ spec:
             - |
               {{- include "poundcake.gateLogHelpers" . | nindent 14 }}
               gate_wait_for_tcp "{{ include "poundcake.databaseHost" . }}" "3306" "wait-stage-ready-mariadb" "tcp {{ include "poundcake.databaseHost" . }}:3306"
-              gate_wait_for_nonempty_file "/run/secrets/st2/st2_api_key" "wait-stage-ready-st2-apikey" "st2 api key file"
           volumeMounts:
             - name: app-config
               mountPath: /app/config
-            - name: st2-apikey
-              mountPath: /run/secrets/st2
-              readOnly: true
       containers:
         - name: api
           image: {{ include "poundcake.poundcakeImageRef" . }}
@@ -56,7 +50,7 @@ spec:
           securityContext:
             {{- toYaml .Values.poundcakeImage.securityContext | nindent 12 }}
           workingDir: /app
-          command: ["/app/api/scripts/entrypoint-auto-migrate.sh"]
+          command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
           env:
             - name: PYTHONPATH
               value: /app
@@ -65,131 +59,83 @@ spec:
                 secretKeyRef:
                   name: poundcake-secrets
                   key: DB_NAME
-            - name: DB_USER
+            - name: DB_API_USER
               valueFrom:
                 secretKeyRef:
                   name: poundcake-secrets
-                  key: DB_USER
-            - name: DB_PASSWORD
+                  key: DB_API_USER
+            - name: DB_API_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: poundcake-secrets
-                  key: DB_PASSWORD
+                  key: DB_API_PASSWORD
+            - name: DB_AUTH_VERIFIER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_AUTH_VERIFIER_USER
+            - name: DB_AUTH_VERIFIER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_AUTH_VERIFIER_PASSWORD
+            - name: DB_CREDENTIAL_MANAGER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_CREDENTIAL_MANAGER_USER
+            - name: DB_CREDENTIAL_MANAGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_CREDENTIAL_MANAGER_PASSWORD
+            - name: DB_PLUGIN_OPERATION_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_OPERATION_USER
+            - name: DB_PLUGIN_OPERATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_OPERATION_PASSWORD
             - name: POUNDCAKE_DATABASE_URL
-              value: mysql+pymysql://$(DB_USER):$(DB_PASSWORD)@{{ include "poundcake.databaseHost" . }}:3306/$(DB_NAME)
-            - name: POUNDCAKE_STACKSTORM_URL
-              value: {{ include "poundcake.stackstormApiUrl" . | quote }}
-            - name: POUNDCAKE_STACKSTORM_VERIFY_SSL
-              value: "False"
-            - name: MONGODB_HOST
-              value: stackstorm-mongodb
-            - name: MONGODB_PORT
-              value: "27017"
-            - name: RABBITMQ_HOST
-              value: stackstorm-rabbitmq
-            - name: RABBITMQ_PORT
-              value: "5672"
-            - name: RABBITMQ_MANAGEMENT_PORT
-              value: "15672"
-            - name: REDIS_HOST
-              value: stackstorm-redis
-            - name: REDIS_PORT
-              value: "6379"
-            - name: POUNDCAKE_REDIS_URL
-              value: redis://$(REDIS_HOST):$(REDIS_PORT)/0
-            - name: RABBITMQ_USER
+              value: mysql+pymysql://$(DB_API_USER):$(DB_API_PASSWORD)@{{ include "poundcake.databaseHost" . }}:3306/$(DB_NAME)
+            - name: POUNDCAKE_AUTH_VERIFIER_DATABASE_URL
+              value: mysql+pymysql://$(DB_AUTH_VERIFIER_USER):$(DB_AUTH_VERIFIER_PASSWORD)@{{ include "poundcake.databaseHost" . }}:3306/$(DB_NAME)
+            - name: POUNDCAKE_CREDENTIAL_MANAGER_DATABASE_URL
+              value: mysql+pymysql://$(DB_CREDENTIAL_MANAGER_USER):$(DB_CREDENTIAL_MANAGER_PASSWORD)@{{ include "poundcake.databaseHost" . }}:3306/$(DB_NAME)
+            - name: POUNDCAKE_PLUGIN_OPERATION_DB_URL
+              value: mysql+pymysql://$(DB_PLUGIN_OPERATION_USER):$(DB_PLUGIN_OPERATION_PASSWORD)@{{ include "poundcake.databaseHost" . }}:3306/$(DB_NAME)
+            - name: POUNDCAKE_ENABLED_PLUGINS
+              value: {{ include "poundcake.enabledPlugins" . | quote }}
+            {{- include "poundcake.monitoringEnv" . | nindent 12 }}
+            - name: POUNDCAKE_WEBHOOK_BEARER_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: stackstorm-secrets
-                  key: RABBITMQ_USER
-            - name: RABBITMQ_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: stackstorm-secrets
-                  key: RABBITMQ_PASSWORD
+                  name: poundcake-secrets
+                  key: WEBHOOK_BEARER_TOKEN
             - name: POUNDCAKE_LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
             - name: POUNDCAKE_LOG_FORMAT
               value: {{ .Values.logFormat | quote }}
             - name: POUNDCAKE_APP_VERSION
               value: {{ include "poundcake.poundcakeImageVersion" . | quote }}
-            - name: POUNDCAKE_PROMETHEUS_URL
-              value: {{ .Values.prometheus.url | quote }}
-            - name: POUNDCAKE_PROMETHEUS_VERIFY_SSL
-              value: {{ .Values.prometheus.verifySsl | quote }}
-            - name: POUNDCAKE_PROMETHEUS_USE_CRDS
-              value: {{ .Values.prometheus.useCrds | quote }}
-            - name: POUNDCAKE_PROMETHEUS_CRD_NAMESPACE
-              value: {{ default .Release.Namespace .Values.prometheus.crdNamespace | quote }}
-            - name: POUNDCAKE_PROMETHEUS_CRD_LABELS
-              value: {{ .Values.prometheus.crdLabels | toJson | quote }}
-            - name: POUNDCAKE_GIT_ENABLED
-              value: {{ .Values.git.enabled | quote }}
-            - name: POUNDCAKE_GIT_REPO_URL
-              value: {{ .Values.git.repoUrl | quote }}
-            - name: POUNDCAKE_GIT_BRANCH
-              value: {{ .Values.git.branch | quote }}
-            - name: POUNDCAKE_GIT_RULES_PATH
-              value: {{ .Values.git.rulesPath | quote }}
-            - name: POUNDCAKE_GIT_WORKFLOWS_PATH
-              value: {{ .Values.git.workflowsPath | quote }}
-            - name: POUNDCAKE_GIT_ACTIONS_PATH
-              value: {{ .Values.git.actionsPath | quote }}
-            - name: POUNDCAKE_GIT_FILE_PER_ALERT
-              value: {{ .Values.git.filePerAlert | quote }}
-            - name: POUNDCAKE_GIT_FILE_PATTERN
-              value: {{ .Values.git.filePattern | quote }}
-            - name: POUNDCAKE_GIT_USER_NAME
-              value: {{ .Values.git.userName | quote }}
-            - name: POUNDCAKE_GIT_USER_EMAIL
-              value: {{ .Values.git.userEmail | quote }}
-            - name: POUNDCAKE_GIT_PROVIDER
-              value: {{ .Values.git.provider | quote }}
-            {{- if .Values.git.existingSecret }}
-            - name: POUNDCAKE_GIT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.git.existingSecret }}
-                  key: {{ .Values.git.secretKeys.token }}
-                  optional: true
-            - name: POUNDCAKE_GIT_SSH_KEY_PATH
-              value: {{ printf "/run/secrets/poundcake-git/%s" .Values.git.secretKeys.sshKey | quote }}
-            {{- else }}
-            - name: POUNDCAKE_GIT_TOKEN
-              value: ""
-            - name: POUNDCAKE_GIT_SSH_KEY_PATH
-              value: ""
-            {{- end }}
-            - name: POUNDCAKE_BOOTSTRAP_INGREDIENTS_DIR
-              value: {{ .Values.bootstrap.ingredientsDir | quote }}
-            - name: POUNDCAKE_BOOTSTRAP_RECIPES_DIR
-              value: {{ .Values.bootstrap.recipesDir | quote }}
-            - name: POUNDCAKE_BOOTSTRAP_REMOTE_SYNC_ENABLED
-              value: {{ .Values.bootstrap.remoteSyncEnabled | quote }}
-            - name: POUNDCAKE_BOOTSTRAP_RULES_REPO_URL
-              value: {{ .Values.bootstrap.rulesRepoUrl | quote }}
-            - name: POUNDCAKE_BOOTSTRAP_RULES_BRANCH
-              value: {{ .Values.bootstrap.rulesBranch | quote }}
-            - name: POUNDCAKE_BOOTSTRAP_RULES_PATH
-              value: {{ .Values.bootstrap.rulesPath | quote }}
             - name: SERVICE_NAME
               value: api
             - name: POUNDCAKE_AUTH_ENABLED
               value: {{ .Values.auth.enabled | quote }}
+            - name: POUNDCAKE_ALLOWED_ORIGINS
+              value: {{ .Values.auth.allowedOrigins | toJson | quote }}
             {{- if .Values.auth.enabled }}
             - name: POUNDCAKE_AUTH_SESSION_TIMEOUT
               value: {{ .Values.auth.sessionTimeout | quote }}
+            - name: POUNDCAKE_AUTH_ABSOLUTE_MAX_SESSION
+              value: {{ .Values.auth.absoluteMaxSession | quote }}
             - name: POUNDCAKE_AUTH_OIDC_STATE_TTL
               value: {{ .Values.auth.oidcStateTtl | quote }}
             - name: POUNDCAKE_AUTH_LOCAL_ENABLED
               value: {{ .Values.auth.local.enabled | quote }}
-            - name: POUNDCAKE_AUTH_SECRET_NAME
-              value: {{ include "poundcake.fullname" . }}-admin
-            - name: POUNDCAKE_AUTH_SECRET_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  apiVersion: v1
-                  fieldPath: metadata.namespace
             - name: POUNDCAKE_AUTH_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -200,11 +146,6 @@ spec:
                 secretKeyRef:
                   name: {{ include "poundcake.fullname" . }}-admin
                   key: password
-            - name: POUNDCAKE_AUTH_SERVICE_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "poundcake.fullname" . }}-admin
-                  key: internal-api-key
             - name: POUNDCAKE_AUTH_AD_ENABLED
               value: {{ .Values.auth.activeDirectory.enabled | quote }}
             - name: POUNDCAKE_AUTH_AD_SERVER_URI
@@ -288,8 +229,6 @@ spec:
               value: {{ .Values.auth.azureAd.enabled | quote }}
             - name: POUNDCAKE_AUTH_AZURE_AD_TENANT
               value: {{ .Values.auth.azureAd.shared.tenant | quote }}
-            - name: POUNDCAKE_AUTH_AZURE_AD_AUDIENCE
-              value: {{ .Values.auth.azureAd.shared.audience | quote }}
             - name: POUNDCAKE_AUTH_AZURE_AD_SCOPE
               value: {{ .Values.auth.azureAd.shared.scope | quote }}
             - name: POUNDCAKE_AUTH_AZURE_AD_USERNAME_CLAIM
@@ -318,82 +257,22 @@ spec:
             - name: POUNDCAKE_AUTH_AZURE_AD_CLI_CLIENT_ID
               value: {{ .Values.auth.azureAd.cli.clientId | quote }}
             {{- end }}
-            - name: POUNDCAKE_STACKSTORM_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: stackstorm-apikeys
-                  key: st2_api_key
-            - name: ST2_API_KEY_FILE
-              value: /run/secrets/st2/st2_api_key
-            - name: POUNDCAKE_PACK_SYNC_TOKEN
+            - name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
                   name: poundcake-secrets
-                  key: PACK_SYNC_TOKEN
-            - name: POUNDCAKE_BAKERY_ENABLED
-              value: {{ .Values.bakery.client.enabled | quote }}
-            - name: POUNDCAKE_BAKERY_BASE_URL
-              value: {{ include "poundcake.bakeryBaseUrl" . | quote }}
-            - name: POUNDCAKE_BAKERY_AUTH_MODE
-              value: {{ .Values.bakery.client.auth.mode | quote }}
-            {{- $defaultBakeryMonitorId := printf "%s/%s" .Release.Namespace .Release.Name }}
-            - name: POUNDCAKE_BAKERY_MONITOR_ID
-              value: {{ default $defaultBakeryMonitorId .Values.bakery.client.monitor.id | quote }}
-            - name: POUNDCAKE_BAKERY_MONITOR_ENVIRONMENT_LABEL
-              value: {{ default $defaultBakeryMonitorId .Values.bakery.client.monitor.environmentLabel | quote }}
-            - name: POUNDCAKE_BAKERY_MONITOR_NAMESPACE
-              value: {{ default .Release.Namespace .Values.bakery.client.monitor.namespace | quote }}
-            - name: POUNDCAKE_BAKERY_MONITOR_RELEASE_NAME
-              value: {{ default .Release.Name .Values.bakery.client.monitor.releaseName | quote }}
-            - name: POUNDCAKE_BAKERY_MONITOR_REGION
-              value: {{ .Values.bakery.client.monitor.region | quote }}
-            - name: POUNDCAKE_BAKERY_MONITOR_CLUSTER_NAME
-              value: {{ .Values.bakery.client.monitor.clusterName | quote }}
-            - name: POUNDCAKE_BAKERY_MONITOR_TAGS
-              value: {{ toJson .Values.bakery.client.monitor.tags | quote }}
-            - name: POUNDCAKE_BAKERY_MONITOR_HEARTBEAT_INTERVAL_SECONDS
-              value: {{ .Values.bakery.client.heartbeatIntervalSeconds | quote }}
-            - name: POUNDCAKE_BAKERY_COLLECTION_POLL_INTERVAL_SECONDS
-              value: {{ .Values.bakery.client.collectionPollIntervalSeconds | quote }}
-            - name: POUNDCAKE_BAKERY_REQUEST_TIMEOUT_SECONDS
-              value: {{ .Values.bakery.client.requestTimeoutSeconds | quote }}
-            - name: POUNDCAKE_BAKERY_MAX_RETRIES
-              value: {{ .Values.bakery.client.maxRetries | quote }}
-            - name: POUNDCAKE_BAKERY_POLL_INTERVAL_SECONDS
-              value: {{ .Values.bakery.client.pollIntervalSeconds | quote }}
-            - name: POUNDCAKE_BAKERY_POLL_TIMEOUT_SECONDS
-              value: {{ .Values.bakery.client.pollTimeoutSeconds | quote }}
-            - name: POUNDCAKE_BAKERY_ACTIVE_PROVIDER
-              value: {{ .Values.bakery.config.activeProvider | default "" | quote }}
-            - name: POUNDCAKE_CATCH_ALL_RECIPE_NAME
-              value: {{ .Values.poundcakeApi.ticketing.catchAllRecipeName | default "fallback-recipe" | quote }}
-            - name: POUNDCAKE_BAKERY_RACKSPACE_CONFIRMED_SOLVED_STATUS
-              value: {{ .Values.poundcakeApi.ticketing.rackspaceConfirmedSolvedStatus | default "confirmed solved" | quote }}
-            {{- $bakeryClientSecretName := .Values.bakery.client.auth.existingSecret | default (include "poundcake.bakerySecretName" .) }}
-            - name: POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID
+                  key: PLUGIN_CREDENTIAL_ENCRYPTION_KEY
+            - name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ $bakeryClientSecretName }}
-                  key: {{ .Values.bakery.client.auth.secretKeys.bootstrapKeyId }}
-                  optional: true
-            - name: POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $bakeryClientSecretName }}
-                  key: {{ .Values.bakery.client.auth.secretKeys.bootstrapKey }}
-                  optional: true
-            - name: POUNDCAKE_BAKERY_SECRET_ENCRYPTION_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $bakeryClientSecretName }}
-                  key: {{ .Values.bakery.client.auth.secretKeys.monitorEncryptionKey }}
-                  optional: true
+                  name: poundcake-secrets
+                  key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
           ports:
             - containerPort: 8000
               name: http
           readinessProbe:
             httpGet:
-              path: /api/v1/ready
+              path: /readyz
               port: 8000
             initialDelaySeconds: {{ .Values.poundcakeApi.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.poundcakeApi.readiness.periodSeconds }}
@@ -401,7 +280,7 @@ spec:
             failureThreshold: {{ .Values.poundcakeApi.readiness.failureThreshold }}
           livenessProbe:
             httpGet:
-              path: /api/v1/live
+              path: /livez
               port: 8000
             initialDelaySeconds: {{ .Values.poundcakeApi.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.poundcakeApi.liveness.periodSeconds }}
@@ -410,17 +289,9 @@ spec:
           volumeMounts:
             - name: app-config
               mountPath: /app/config
-            - name: st2-apikey
-              mountPath: /run/secrets/st2
-              readOnly: true
             {{- if and .Values.auth.enabled .Values.auth.activeDirectory.caBundle.existingSecret }}
             - name: poundcake-auth-ad-ca
               mountPath: {{ .Values.auth.activeDirectory.caBundle.mountPath | quote }}
-              readOnly: true
-            {{- end }}
-            {{- if .Values.git.existingSecret }}
-            - name: poundcake-git
-              mountPath: /run/secrets/poundcake-git
               readOnly: true
             {{- end }}
             - name: poundcake-alembic
@@ -434,17 +305,7 @@ spec:
               subPath: script.py.mako
       volumes:
         - name: app-config
-          projected:
-            sources:
-              - secret:
-                  name: stackstorm-startup-markers
-                  optional: true
-        - name: st2-apikey
-          secret:
-            secretName: stackstorm-apikeys
-            items:
-              - key: st2_api_key
-                path: st2_api_key
+          emptyDir: {}
         {{- if and .Values.auth.enabled .Values.auth.activeDirectory.caBundle.existingSecret }}
         - name: poundcake-auth-ad-ca
           secret:
@@ -452,12 +313,6 @@ spec:
             items:
               - key: {{ .Values.auth.activeDirectory.caBundle.key }}
                 path: {{ .Values.auth.activeDirectory.caBundle.fileName }}
-        {{- end }}
-        {{- if .Values.git.existingSecret }}
-        - name: poundcake-git
-          secret:
-            secretName: {{ .Values.git.existingSecret }}
-            optional: true
         {{- end }}
         - name: poundcake-alembic
           configMap:
@@ -469,89 +324,6 @@ spec:
                 path: env.py
               - key: script.py.mako
                 path: script.py.mako
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: poundcake-chef
-  labels:
-    app.kubernetes.io/component: chef
-    {{- include "poundcake.labels" . | nindent 4 }}
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/component: chef
-      {{- include "poundcake.selectorLabels" . | nindent 6 }}
-  template:
-    metadata:
-      annotations:
-        checksum/poundcake-secrets: {{ include "poundcake.secretChecksumMaterial" . | sha256sum }}
-      labels:
-        app.kubernetes.io/component: chef
-        {{- include "poundcake.logLabelsForComponent" (dict "component" "chef") | nindent 8 }}
-        {{- include "poundcake.selectorLabels" . | nindent 8 }}
-    spec:
-      {{- if .Values.podSecurityContext }}
-      securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      {{- end }}
-      {{- include "poundcake.poundcakePullSecrets" . | nindent 6 }}
-      serviceAccountName: {{ include "poundcake.serviceAccountName" . }}
-      {{- include "poundcake.podPlacement" . | nindent 6 }}
-      initContainers:
-        - name: wait-api
-          image: {{ .Values.images.busybox }}
-          securityContext:
-            {{- toYaml .Values.utilitySecurityContext | nindent 12 }}
-          command:
-            - sh
-            - -ec
-            - |
-              {{- include "poundcake.gateLogHelpers" . | nindent 14 }}
-              gate_wait_for_tcp "poundcake-api" "{{ .Values.services.api.port }}" "wait-api-port" "tcp poundcake-api:{{ .Values.services.api.port }}"
-              gate_wait_for_http_status "{{ include "poundcake.apiServiceUrl" . }}/api/v1/ready" "wait-api-ready" "http endpoint poundcake-api:{{ .Values.services.api.port }}/api/v1/ready" 200
-          volumeMounts:
-            - name: app-config
-              mountPath: /app/config
-      containers:
-        - name: chef
-          image: {{ include "poundcake.poundcakeImageRef" . }}
-          imagePullPolicy: {{ .Values.poundcakeImage.pullPolicy }}
-          securityContext:
-            {{- toYaml .Values.poundcakeImage.securityContext | nindent 12 }}
-          workingDir: /app
-          command: ["python3", "kitchen/chef.py"]
-          env:
-            - name: PYTHONPATH
-              value: /app
-            - name: POUNDCAKE_API_URL
-              value: {{ include "poundcake.apiServiceUrl" . | quote }}
-            - name: CHEF_POLL_INTERVAL
-              value: {{ .Values.intervals.chef | quote }}
-            - name: LOG_LEVEL
-              value: INFO
-            - name: POUNDCAKE_LOG_FORMAT
-              value: {{ .Values.logFormat | quote }}
-            - name: SERVICE_NAME
-              value: chef
-            {{- if .Values.auth.enabled }}
-            - name: POUNDCAKE_AUTH_SERVICE_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "poundcake.fullname" . }}-admin
-                  key: internal-api-key
-            {{- end }}
-      volumes:
-        - name: app-config
-          projected:
-            sources:
-              - secret:
-                  name: stackstorm-startup-markers
-                  optional: true
-              - secret:
-                  name: stackstorm-apikeys
-                  optional: true
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -575,6 +347,7 @@ spec:
         {{- include "poundcake.logLabelsForComponent" (dict "component" "ui") | nindent 8 }}
         {{- include "poundcake.selectorLabels" . | nindent 8 }}
     spec:
+      enableServiceLinks: false
       {{- if .Values.podSecurityContext }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -593,7 +366,7 @@ spec:
             - |
               {{- include "poundcake.gateLogHelpers" . | nindent 14 }}
               gate_wait_for_tcp "poundcake-api" "{{ .Values.services.api.port }}" "wait-stage10-api-port" "tcp poundcake-api:{{ .Values.services.api.port }}"
-              gate_wait_for_http_status "{{ include "poundcake.apiServiceUrl" . }}/api/v1/ready" "wait-stage10-api-ready" "http endpoint poundcake-api:{{ .Values.services.api.port }}/api/v1/ready" 200
+              gate_wait_for_http_status "{{ include "poundcake.apiServiceUrl" . }}/readyz" "wait-stage10-api-ready" "http endpoint poundcake-api:{{ .Values.services.api.port }}/readyz" 200
           volumeMounts:
             - name: app-config
               mountPath: /app/config
@@ -615,6 +388,8 @@ spec:
           env:
             - name: API_URL
               value: {{ include "poundcake.apiServiceUrl" . | quote }}
+            - name: UI_NGINX_ACCESS_LOG
+              value: {{ .Values.uiImage.nginxAccessLog | quote }}
             - name: SERVICE_NAME
               value: ui
           ports:
@@ -636,11 +411,7 @@ spec:
             periodSeconds: 10
       volumes:
         - name: app-config
-          projected:
-            sources:
-              - secret:
-                  name: stackstorm-startup-markers
-                  optional: true
+          emptyDir: {}
         {{- if .Values.uiImage.runtimeWritablePaths.enabled }}
         - name: ui-nginx-confd
           emptyDir: {}
@@ -658,7 +429,7 @@ metadata:
     app.kubernetes.io/component: prep-chef
     {{- include "poundcake.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.prepChef.replicaCount }}
   selector:
     matchLabels:
       app.kubernetes.io/component: prep-chef
@@ -672,6 +443,7 @@ spec:
         {{- include "poundcake.logLabelsForComponent" (dict "component" "prep-chef") | nindent 8 }}
         {{- include "poundcake.selectorLabels" . | nindent 8 }}
     spec:
+      enableServiceLinks: false
       {{- if .Values.podSecurityContext }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -690,7 +462,7 @@ spec:
             - |
               {{- include "poundcake.gateLogHelpers" . | nindent 14 }}
               gate_wait_for_tcp "poundcake-api" "{{ .Values.services.api.port }}" "wait-api-port" "tcp poundcake-api:{{ .Values.services.api.port }}"
-              gate_wait_for_http_status "{{ include "poundcake.apiServiceUrl" . }}/api/v1/ready" "wait-api-ready" "http endpoint poundcake-api:{{ .Values.services.api.port }}/api/v1/ready" 200
+              gate_wait_for_http_status "{{ include "poundcake.apiServiceUrl" . }}/readyz" "wait-api-ready" "http endpoint poundcake-api:{{ .Values.services.api.port }}/readyz" 200
           volumeMounts:
             - name: app-config
               mountPath: /app/config
@@ -705,33 +477,46 @@ spec:
           env:
             - name: PYTHONPATH
               value: /app
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_NAME
+            - name: DB_PREP_CHEF_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PREP_CHEF_READER_USER
+            - name: DB_PREP_CHEF_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PREP_CHEF_READER_PASSWORD
+            - name: POUNDCAKE_DATABASE_URL
+              value: mysql+pymysql://$(DB_PREP_CHEF_READER_USER):$(DB_PREP_CHEF_READER_PASSWORD)@{{ include "poundcake.databaseHost" . }}:3306/$(DB_NAME)
             - name: POUNDCAKE_API_URL
               value: {{ include "poundcake.apiServiceUrl" . | quote }}
+            {{- include "poundcake.monitoringEnv" . | nindent 12 }}
             - name: PREP_INTERVAL
               value: {{ .Values.intervals.prepChef | quote }}
-            - name: LOG_LEVEL
-              value: INFO
+            - name: POUNDCAKE_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
             - name: POUNDCAKE_LOG_FORMAT
               value: {{ .Values.logFormat | quote }}
             - name: SERVICE_NAME
               value: prep-chef
+            - name: POUNDCAKE_INTERNAL_HMAC_SERVICE_TYPE
+              value: prep-chef
             {{- if .Values.auth.enabled }}
-            - name: POUNDCAKE_AUTH_SERVICE_TOKEN
+            - name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "poundcake.fullname" . }}-admin
-                  key: internal-api-key
+                  name: poundcake-secrets
+                  key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
             {{- end }}
       volumes:
         - name: app-config
-          projected:
-            sources:
-              - secret:
-                  name: stackstorm-startup-markers
-                  optional: true
-              - secret:
-                  name: stackstorm-apikeys
-                  optional: true
+          emptyDir: {}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -741,7 +526,7 @@ metadata:
     app.kubernetes.io/component: timer
     {{- include "poundcake.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.timer.replicaCount }}
   selector:
     matchLabels:
       app.kubernetes.io/component: timer
@@ -755,6 +540,7 @@ spec:
         {{- include "poundcake.logLabelsForComponent" (dict "component" "timer") | nindent 8 }}
         {{- include "poundcake.selectorLabels" . | nindent 8 }}
     spec:
+      enableServiceLinks: false
       {{- if .Values.podSecurityContext }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -773,7 +559,7 @@ spec:
             - |
               {{- include "poundcake.gateLogHelpers" . | nindent 14 }}
               gate_wait_for_tcp "poundcake-api" "{{ .Values.services.api.port }}" "wait-api-port" "tcp poundcake-api:{{ .Values.services.api.port }}"
-              gate_wait_for_http_status "{{ include "poundcake.apiServiceUrl" . }}/api/v1/ready" "wait-api-ready" "http endpoint poundcake-api:{{ .Values.services.api.port }}/api/v1/ready" 200
+              gate_wait_for_http_status "{{ include "poundcake.apiServiceUrl" . }}/readyz" "wait-api-ready" "http endpoint poundcake-api:{{ .Values.services.api.port }}/readyz" 200
           volumeMounts:
             - name: app-config
               mountPath: /app/config
@@ -788,44 +574,151 @@ spec:
           env:
             - name: PYTHONPATH
               value: /app
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_NAME
+            - name: DB_TIMER_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_TIMER_READER_USER
+            - name: DB_TIMER_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_TIMER_READER_PASSWORD
+            - name: POUNDCAKE_DATABASE_URL
+              value: mysql+pymysql://$(DB_TIMER_READER_USER):$(DB_TIMER_READER_PASSWORD)@{{ include "poundcake.databaseHost" . }}:3306/$(DB_NAME)
             - name: POUNDCAKE_API_URL
               value: {{ include "poundcake.apiServiceUrl" . | quote }}
+            {{- include "poundcake.monitoringEnv" . | nindent 12 }}
             - name: TIMER_INTERVAL
               value: {{ .Values.intervals.timer | quote }}
-            - name: SLA_BUFFER_PERCENT
-              value: "0.2"
-            - name: LOG_LEVEL
-              value: INFO
+            - name: POUNDCAKE_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
             - name: POUNDCAKE_LOG_FORMAT
               value: {{ .Values.logFormat | quote }}
             - name: SERVICE_NAME
               value: timer
-            - name: PREP_INTERVAL
-              value: {{ .Values.intervals.prepInterval | quote }}
-            - name: POUNDCAKE_INCIDENT_RECONCILE_INTERVAL_SECONDS
-              value: {{ .Values.timer.incidentReconcileIntervalSeconds | quote }}
-            - name: POUNDCAKE_INCIDENT_RECONCILE_LIMIT
-              value: {{ .Values.timer.incidentReconcileLimit | quote }}
+            - name: POUNDCAKE_INTERNAL_HMAC_SERVICE_TYPE
+              value: timer
             {{- if .Values.auth.enabled }}
-            - name: POUNDCAKE_AUTH_SERVICE_TOKEN
+            - name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "poundcake.fullname" . }}-admin
-                  key: internal-api-key
+                  name: poundcake-secrets
+                  key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
             {{- end }}
           volumeMounts:
             - name: app-config
               mountPath: /app/config
       volumes:
         - name: app-config
-          projected:
-            sources:
-              - secret:
-                  name: stackstorm-startup-markers
-                  optional: true
-              - secret:
-                  name: stackstorm-apikeys
-                  optional: true
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poundcake-expediter-runner
+  labels:
+    app.kubernetes.io/component: expediter-runner
+    {{- include "poundcake.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.expediterRunner.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: expediter-runner
+      {{- include "poundcake.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/poundcake-secrets: {{ include "poundcake.secretChecksumMaterial" . | sha256sum }}
+      labels:
+        app.kubernetes.io/component: expediter-runner
+        {{- include "poundcake.logLabelsForComponent" (dict "component" "expediter-runner") | nindent 8 }}
+        {{- include "poundcake.selectorLabels" . | nindent 8 }}
+    spec:
+      enableServiceLinks: false
+      {{- if .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
+      {{- include "poundcake.poundcakePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "poundcake.serviceAccountName" . }}
+      {{- include "poundcake.podPlacement" . | nindent 6 }}
+      initContainers:
+        - name: wait-api
+          image: {{ .Values.images.busybox }}
+          securityContext:
+            {{- toYaml .Values.utilitySecurityContext | nindent 12 }}
+          command:
+            - sh
+            - -ec
+            - |
+              {{- include "poundcake.gateLogHelpers" . | nindent 14 }}
+              gate_wait_for_tcp "poundcake-api" "{{ .Values.services.api.port }}" "wait-api-port" "tcp poundcake-api:{{ .Values.services.api.port }}"
+              gate_wait_for_http_status "{{ include "poundcake.apiServiceUrl" . }}/readyz" "wait-api-ready" "http endpoint poundcake-api:{{ .Values.services.api.port }}/readyz" 200
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      containers:
+        - name: expediter-runner
+          image: {{ include "poundcake.poundcakeImageRef" . }}
+          imagePullPolicy: {{ .Values.poundcakeImage.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.poundcakeImage.securityContext | nindent 12 }}
+          workingDir: /app
+          command: ["python3", "kitchen/expediter_runner.py"]
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_NAME
+            - name: DB_EXPEDITER_RUNNER_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_EXPEDITER_RUNNER_READER_USER
+            - name: DB_EXPEDITER_RUNNER_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_EXPEDITER_RUNNER_READER_PASSWORD
+            - name: POUNDCAKE_DATABASE_URL
+              value: mysql+pymysql://$(DB_EXPEDITER_RUNNER_READER_USER):$(DB_EXPEDITER_RUNNER_READER_PASSWORD)@{{ include "poundcake.databaseHost" . }}:3306/$(DB_NAME)
+            - name: POUNDCAKE_API_URL
+              value: {{ include "poundcake.apiServiceUrl" . | quote }}
+            {{- include "poundcake.monitoringEnv" . | nindent 12 }}
+            - name: EXPEDITER_RUNNER_INTERVAL
+              value: {{ .Values.intervals.expediterRunner | quote }}
+            - name: EXPEDITER_RUNNER_LIMIT
+              value: {{ .Values.expediterRunner.limit | quote }}
+            - name: POUNDCAKE_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: POUNDCAKE_LOG_FORMAT
+              value: {{ .Values.logFormat | quote }}
+            - name: SERVICE_NAME
+              value: expediter-runner
+            - name: POUNDCAKE_INTERNAL_HMAC_SERVICE_TYPE
+              value: expediter-runner
+            {{- if .Values.auth.enabled }}
+            - name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
+            {{- end }}
+          volumeMounts:
+            - name: app-config
+              mountPath: /app/config
+      volumes:
+        - name: app-config
+          emptyDir: {}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -849,6 +742,7 @@ spec:
         {{- include "poundcake.logLabelsForComponent" (dict "component" "dishwasher") | nindent 8 }}
         {{- include "poundcake.selectorLabels" . | nindent 8 }}
     spec:
+      enableServiceLinks: false
       {{- if .Values.podSecurityContext }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -867,7 +761,7 @@ spec:
             - |
               {{- include "poundcake.gateLogHelpers" . | nindent 14 }}
               gate_wait_for_tcp "poundcake-api" "{{ .Values.services.api.port }}" "wait-api-port" "tcp poundcake-api:{{ .Values.services.api.port }}"
-              gate_wait_for_http_status "{{ include "poundcake.apiServiceUrl" . }}/api/v1/ready" "wait-api-ready" "http endpoint poundcake-api:{{ .Values.services.api.port }}/api/v1/ready" 200
+              gate_wait_for_http_status "{{ include "poundcake.apiServiceUrl" . }}/readyz" "wait-api-ready" "http endpoint poundcake-api:{{ .Values.services.api.port }}/readyz" 200
           volumeMounts:
             - name: app-config
               mountPath: /app/config
@@ -882,86 +776,47 @@ spec:
           env:
             - name: PYTHONPATH
               value: /app
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_NAME
+            - name: DB_DISHWASHER_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_DISHWASHER_READER_USER
+            - name: DB_DISHWASHER_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_DISHWASHER_READER_PASSWORD
+            - name: POUNDCAKE_DATABASE_URL
+              value: mysql+pymysql://$(DB_DISHWASHER_READER_USER):$(DB_DISHWASHER_READER_PASSWORD)@{{ include "poundcake.databaseHost" . }}:3306/$(DB_NAME)
             - name: POUNDCAKE_API_URL
               value: {{ include "poundcake.apiServiceUrl" . | quote }}
-            - name: LOG_LEVEL
-              value: INFO
+            - name: POUNDCAKE_ENABLED_PLUGINS
+              value: {{ include "poundcake.enabledPlugins" . | quote }}
+            {{- include "poundcake.monitoringEnv" . | nindent 12 }}
+            - name: POUNDCAKE_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
             - name: POUNDCAKE_LOG_FORMAT
               value: {{ .Values.logFormat | quote }}
-            - name: DISHWASHER_DEFAULT_DURATION
-              value: "60"
-            - name: DISHWASHER_DEFAULT_TIMEOUT
-              value: "300"
-            - name: DISHWASHER_PRUNE_MISSING
-              value: "false"
-            - name: DISHWASHER_INTERVAL
-              value: {{ .Values.intervals.dishwasher | quote }}
-            - name: POUNDCAKE_BOOTSTRAP_INGREDIENTS_DIR
-              value: {{ .Values.bootstrap.ingredientsDir | quote }}
-            - name: POUNDCAKE_BOOTSTRAP_RECIPES_DIR
-              value: {{ .Values.bootstrap.recipesDir | quote }}
-            - name: POUNDCAKE_BOOTSTRAP_REMOTE_SYNC_ENABLED
-              value: {{ .Values.bootstrap.remoteSyncEnabled | quote }}
-            - name: POUNDCAKE_BOOTSTRAP_RULES_REPO_URL
-              value: {{ .Values.bootstrap.rulesRepoUrl | quote }}
-            - name: POUNDCAKE_BOOTSTRAP_RULES_BRANCH
-              value: {{ .Values.bootstrap.rulesBranch | quote }}
-            - name: POUNDCAKE_BOOTSTRAP_RULES_PATH
-              value: {{ .Values.bootstrap.rulesPath | quote }}
-            - name: POUNDCAKE_GIT_ENABLED
-              value: {{ .Values.git.enabled | quote }}
-            - name: POUNDCAKE_GIT_REPO_URL
-              value: {{ .Values.git.repoUrl | quote }}
-            - name: POUNDCAKE_GIT_BRANCH
-              value: {{ .Values.git.branch | quote }}
-            - name: POUNDCAKE_GIT_PROVIDER
-              value: {{ .Values.git.provider | quote }}
-            {{- if .Values.git.existingSecret }}
-            - name: POUNDCAKE_GIT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.git.existingSecret }}
-                  key: {{ .Values.git.secretKeys.token }}
-                  optional: true
-            - name: POUNDCAKE_GIT_SSH_KEY_PATH
-              value: {{ printf "/run/secrets/poundcake-git/%s" .Values.git.secretKeys.sshKey | quote }}
-            {{- else }}
-            - name: POUNDCAKE_GIT_TOKEN
-              value: ""
-            - name: POUNDCAKE_GIT_SSH_KEY_PATH
-              value: ""
-            {{- end }}
             - name: SERVICE_NAME
               value: dishwasher
+            - name: POUNDCAKE_INTERNAL_HMAC_SERVICE_TYPE
+              value: dishwasher
             {{- if .Values.auth.enabled }}
-            - name: POUNDCAKE_AUTH_SERVICE_TOKEN
+            - name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "poundcake.fullname" . }}-admin
-                  key: internal-api-key
+                  name: poundcake-secrets
+                  key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
             {{- end }}
           volumeMounts:
             - name: app-config
               mountPath: /app/config
-            {{- if .Values.git.existingSecret }}
-            - name: poundcake-git
-              mountPath: /run/secrets/poundcake-git
-              readOnly: true
-            {{- end }}
       volumes:
         - name: app-config
-          projected:
-            sources:
-              - secret:
-                  name: stackstorm-startup-markers
-                  optional: true
-              - secret:
-                  name: stackstorm-apikeys
-                  optional: true
-        {{- if .Values.git.existingSecret }}
-        - name: poundcake-git
-          secret:
-            secretName: {{ .Values.git.existingSecret }}
-            optional: true
-        {{- end }}
+          emptyDir: {}
 {{- end }}

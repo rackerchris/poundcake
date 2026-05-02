@@ -26,11 +26,25 @@ ORDERS_RESOLVED_BEFORE_DISH = Counter(
     ["group_name", "severity"],
 )
 
-ORDERS_PROCESSING_DURATION = Histogram(
-    "poundcake_order_processing_duration_seconds",
-    "Time spent processing orders",
-    ["group_name"],
+ORDER_LIFETIME = Histogram(
+    "poundcake_order_lifetime_seconds",
+    "Total order lifetime from ingestion to terminal state",
+    ["group_name", "status"],
+    buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0),
+)
+
+DISH_WALL_TIME = Histogram(
+    "poundcake_dish_wall_time_seconds",
+    "Dish elapsed wall time from first work execution dispatch to terminal state",
+    ["group_name", "run_phase", "status"],
     buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+)
+
+DISH_WORK_EXECUTION_TIME = Histogram(
+    "poundcake_dish_work_execution_seconds",
+    "Total dish work execution time summed across work execution rows",
+    ["group_name", "run_phase", "status"],
+    buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0),
 )
 
 # Remediation metrics
@@ -51,18 +65,6 @@ REMEDIATION_DURATION = Histogram(
 ACTIVE_TASKS = Gauge("poundcake_active_tasks", "Number of currently processing tasks")
 
 QUEUED_TASKS = Gauge("poundcake_queued_tasks", "Number of tasks waiting in queue")
-
-# StackStorm metrics
-ST2_EXECUTIONS = Counter(
-    "poundcake_st2_executions_total", "Total StackStorm action executions", ["action_ref", "status"]
-)
-
-ST2_EXECUTION_DURATION = Histogram(
-    "poundcake_st2_execution_duration_seconds",
-    "StackStorm action execution duration",
-    ["action_ref"],
-    buckets=(1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0),
-)
 
 # API metrics
 HTTP_REQUESTS = Counter(
@@ -102,12 +104,6 @@ MAPPINGS_MATCHED = Counter(
     ["mapping_name"],
 )
 
-POUNDCAKE_BAKERY_REQUEST_FAILURES = Counter(
-    "poundcake_bakery_request_failures_total",
-    "Total failed requests from PoundCake to Bakery",
-    ["action", "reason"],
-)
-
 POUNDCAKE_SUPPRESSED_EVENTS = Counter(
     "poundcake_suppressed_events_total",
     "Total suppressed events attributed to suppression windows",
@@ -128,13 +124,6 @@ POUNDCAKE_SUPPRESSION_SUMMARY_TICKETS = Counter(
 POUNDCAKE_SUPPRESSION_SUMMARY_FAILURES = Counter(
     "poundcake_suppression_summary_failures_total",
     "Total suppression summary lifecycle failures",
-)
-
-# Endpoint deprecation telemetry
-DEPRECATED_ENDPOINT_HITS = Counter(
-    "poundcake_deprecated_endpoint_hits_total",
-    "Total calls to deprecated API endpoints",
-    ["endpoint", "replacement"],
 )
 
 
@@ -173,6 +162,45 @@ def record_order_processed(group_name: str, status: str) -> None:
     ORDERS_PROCESSED.labels(group_name=group_name, status=status).inc()
 
 
+def record_order_lifetime(group_name: str, status: str, lifetime_seconds: int | None) -> None:
+    """Record total order lifetime from ingestion to terminal state."""
+    if lifetime_seconds is None:
+        return
+    ORDER_LIFETIME.labels(group_name=group_name, status=status).observe(lifetime_seconds)
+
+
+def record_dish_wall_time(
+    group_name: str,
+    run_phase: str,
+    status: str,
+    wall_time_seconds: int | None,
+) -> None:
+    """Record elapsed dish wall time."""
+    if wall_time_seconds is None:
+        return
+    DISH_WALL_TIME.labels(
+        group_name=group_name,
+        run_phase=run_phase or "unknown",
+        status=status,
+    ).observe(wall_time_seconds)
+
+
+def record_dish_work_execution_time(
+    group_name: str,
+    run_phase: str,
+    status: str,
+    work_execution_seconds: int | None,
+) -> None:
+    """Record summed work execution time for a dish."""
+    if work_execution_seconds is None:
+        return
+    DISH_WORK_EXECUTION_TIME.labels(
+        group_name=group_name,
+        run_phase=run_phase or "unknown",
+        status=status,
+    ).observe(work_execution_seconds)
+
+
 def record_order_resolved_before_dish_start(group_name: str, severity: str) -> None:
     """Record an order resolved before any dish was started.
 
@@ -194,19 +222,6 @@ def record_remediation(action: str, status: str, duration: float | None = None) 
     REMEDIATIONS_EXECUTED.labels(action=action, status=status).inc()
     if duration is not None:
         REMEDIATION_DURATION.labels(action=action).observe(duration)
-
-
-def record_st2_execution(action_ref: str, status: str, duration: float | None = None) -> None:
-    """Record a StackStorm execution.
-
-    Args:
-        action_ref: Action reference (pack.action)
-        status: Execution status
-        duration: Execution duration in seconds
-    """
-    ST2_EXECUTIONS.labels(action_ref=action_ref, status=status).inc()
-    if duration is not None:
-        ST2_EXECUTION_DURATION.labels(action_ref=action_ref).observe(duration)
 
 
 def record_http_request(method: str, endpoint: str, status_code: int, duration: float) -> None:
@@ -260,16 +275,6 @@ def update_mappings_total(count: int) -> None:
     MAPPINGS_TOTAL.set(count)
 
 
-def record_deprecated_endpoint_hit(endpoint: str, replacement: str) -> None:
-    """Record usage of a deprecated endpoint.
-
-    Args:
-        endpoint: Deprecated endpoint path.
-        replacement: Recommended replacement endpoint path.
-    """
-    DEPRECATED_ENDPOINT_HITS.labels(endpoint=endpoint, replacement=replacement).inc()
-
-
 def record_mapping_match(mapping_name: str) -> None:
     """Record a mapping match.
 
@@ -277,11 +282,6 @@ def record_mapping_match(mapping_name: str) -> None:
         mapping_name: Name of the matched mapping
     """
     MAPPINGS_MATCHED.labels(mapping_name=mapping_name).inc()
-
-
-def record_bakery_request_failure(action: str, reason: str) -> None:
-    """Record a PoundCake-to-Bakery request failure."""
-    POUNDCAKE_BAKERY_REQUEST_FAILURES.labels(action=action, reason=reason).inc()
 
 
 def record_suppressed_event(suppression_id: int, alertname: str, severity: str) -> None:

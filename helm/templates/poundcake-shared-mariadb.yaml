@@ -19,41 +19,101 @@ spec:
   name: {{ .Values.secrets.dbName }}
   characterSet: utf8mb4
   collate: utf8mb4_unicode_ci
+{{- $apiWritableTables := list
+  "alert_suppression_matchers"
+  "alert_suppressions"
+  "auth_principals"
+  "auth_role_bindings"
+  "dish_ingredients"
+  "dishes"
+  "ingredients"
+  "orders"
+  "recipe_ingredients"
+  "recipes"
+  "scheduled_tasks"
+  "service_plugins"
+  "suppressed_events"
+  "suppression_summaries"
+}}
+{{- $apiReadableTables := $apiWritableTables }}
+{{- $readonlyReadableTables := $apiWritableTables }}
+{{- $dbUsers := concat (list
+  (dict "suffix" "migrator" "username" .Values.secrets.dbMigratorUser "passwordKey" "DB_MIGRATOR_PASSWORD" "privileges" (list "ALL PRIVILEGES") "table" "*")
+  (dict "suffix" "plugin-registry-service-plugins" "username" .Values.secrets.dbPluginRegistryUser "passwordKey" "DB_PLUGIN_REGISTRY_PASSWORD" "privileges" (list "SELECT" "INSERT" "UPDATE") "table" "service_plugins")
+  (dict "suffix" "auth-verifier-service-plugins" "username" .Values.secrets.dbAuthVerifierUser "passwordKey" "DB_AUTH_VERIFIER_PASSWORD" "privileges" (list "SELECT") "table" "service_plugins")
+  (dict "suffix" "auth-verifier-service-identity" "username" .Values.secrets.dbAuthVerifierUser "passwordKey" "DB_AUTH_VERIFIER_PASSWORD" "privileges" (list "SELECT") "table" "service_identity_credentials")
+  (dict "suffix" "auth-verifier-hmac-nonces" "username" .Values.secrets.dbAuthVerifierUser "passwordKey" "DB_AUTH_VERIFIER_PASSWORD" "privileges" (list "SELECT" "INSERT") "table" "hmac_nonces")
+  (dict "suffix" "service-identity-manager-service-plugins" "username" .Values.secrets.dbServiceIdentityManagerUser "passwordKey" "DB_SERVICE_IDENTITY_MANAGER_PASSWORD" "privileges" (list "SELECT" "UPDATE") "table" "service_plugins")
+  (dict "suffix" "service-identity-manager-service-identity" "username" .Values.secrets.dbServiceIdentityManagerUser "passwordKey" "DB_SERVICE_IDENTITY_MANAGER_PASSWORD" "privileges" (list "SELECT" "INSERT" "UPDATE") "table" "service_identity_credentials")
+  (dict "suffix" "credential-manager-service-plugins" "username" .Values.secrets.dbCredentialManagerUser "passwordKey" "DB_CREDENTIAL_MANAGER_PASSWORD" "privileges" (list "SELECT" "UPDATE") "table" "service_plugins")
+  (dict "suffix" "credential-manager-credentials" "username" .Values.secrets.dbCredentialManagerUser "passwordKey" "DB_CREDENTIAL_MANAGER_PASSWORD" "privileges" (list "SELECT" "INSERT" "UPDATE" "DELETE") "table" "adapter_credentials")
+  (dict "suffix" "plugin-operation-service-plugins" "username" .Values.secrets.dbPluginOperationUser "passwordKey" "DB_PLUGIN_OPERATION_PASSWORD" "privileges" (list "SELECT" "UPDATE") "table" "service_plugins")
+  (dict "suffix" "plugin-operation-ingredients" "username" .Values.secrets.dbPluginOperationUser "passwordKey" "DB_PLUGIN_OPERATION_PASSWORD" "privileges" (list "SELECT" "INSERT" "UPDATE" "DELETE") "table" "ingredients")
+  (dict "suffix" "plugin-operation-recipes" "username" .Values.secrets.dbPluginOperationUser "passwordKey" "DB_PLUGIN_OPERATION_PASSWORD" "privileges" (list "SELECT" "INSERT" "UPDATE" "DELETE") "table" "recipes")
+  (dict "suffix" "plugin-operation-recipe-ingredients" "username" .Values.secrets.dbPluginOperationUser "passwordKey" "DB_PLUGIN_OPERATION_PASSWORD" "privileges" (list "SELECT" "INSERT" "UPDATE" "DELETE") "table" "recipe_ingredients")
+  (dict "suffix" "plugin-operation-scheduled-tasks" "username" .Values.secrets.dbPluginOperationUser "passwordKey" "DB_PLUGIN_OPERATION_PASSWORD" "privileges" (list "SELECT" "INSERT" "UPDATE" "DELETE") "table" "scheduled_tasks")
+  (dict "suffix" "plugin-operation-dishes" "username" .Values.secrets.dbPluginOperationUser "passwordKey" "DB_PLUGIN_OPERATION_PASSWORD" "privileges" (list "SELECT" "INSERT" "UPDATE" "DELETE") "table" "dishes")
+  (dict "suffix" "prep-chef-reader-service-plugins" "username" .Values.secrets.dbPrepChefReaderUser "passwordKey" "DB_PREP_CHEF_READER_PASSWORD" "privileges" (list "SELECT") "table" "service_plugins")
+  (dict "suffix" "prep-chef-reader-service-identity" "username" .Values.secrets.dbPrepChefReaderUser "passwordKey" "DB_PREP_CHEF_READER_PASSWORD" "privileges" (list "SELECT") "table" "service_identity_credentials_prep_chef")
+  (dict "suffix" "timer-reader-service-plugins" "username" .Values.secrets.dbTimerReaderUser "passwordKey" "DB_TIMER_READER_PASSWORD" "privileges" (list "SELECT") "table" "service_plugins")
+  (dict "suffix" "timer-reader-service-identity" "username" .Values.secrets.dbTimerReaderUser "passwordKey" "DB_TIMER_READER_PASSWORD" "privileges" (list "SELECT") "table" "service_identity_credentials_timer")
+  (dict "suffix" "expediter-runner-reader-service-plugins" "username" .Values.secrets.dbExpediterRunnerReaderUser "passwordKey" "DB_EXPEDITER_RUNNER_READER_PASSWORD" "privileges" (list "SELECT") "table" "service_plugins")
+  (dict "suffix" "expediter-runner-reader-service-identity" "username" .Values.secrets.dbExpediterRunnerReaderUser "passwordKey" "DB_EXPEDITER_RUNNER_READER_PASSWORD" "privileges" (list "SELECT") "table" "service_identity_credentials_expediter_runner")
+  (dict "suffix" "dishwasher-reader-service-plugins" "username" .Values.secrets.dbDishwasherReaderUser "passwordKey" "DB_DISHWASHER_READER_PASSWORD" "privileges" (list "SELECT") "table" "service_plugins")
+  (dict "suffix" "dishwasher-reader-service-identity" "username" .Values.secrets.dbDishwasherReaderUser "passwordKey" "DB_DISHWASHER_READER_PASSWORD" "privileges" (list "SELECT") "table" "service_identity_credentials_dishwasher")
+) (list) -}}
+{{- range $table := $apiReadableTables }}
+{{- $dbUsers = append $dbUsers (dict "suffix" (printf "api-read-%s" ($table | replace "_" "-")) "username" $.Values.secrets.dbApiUser "passwordKey" "DB_API_PASSWORD" "privileges" (list "SELECT") "table" $table) }}
+{{- end }}
+{{- range $table := $apiWritableTables }}
+{{- $dbUsers = append $dbUsers (dict "suffix" (printf "api-write-%s" ($table | replace "_" "-")) "username" $.Values.secrets.dbApiUser "passwordKey" "DB_API_PASSWORD" "privileges" (list "INSERT" "UPDATE" "DELETE") "table" $table) }}
+{{- end }}
+{{- range $table := $readonlyReadableTables }}
+{{- $dbUsers = append $dbUsers (dict "suffix" (printf "readonly-%s" ($table | replace "_" "-")) "username" $.Values.secrets.dbReadonlyUser "passwordKey" "DB_READONLY_PASSWORD" "privileges" (list "SELECT") "table" $table) }}
+{{- end }}
+{{- $seenUsers := dict -}}
+{{- range $user := $dbUsers }}
+{{- if not (hasKey $seenUsers $user.username) }}
+{{- $_ := set $seenUsers $user.username true }}
 ---
 apiVersion: k8s.mariadb.com/v1alpha1
 kind: User
 metadata:
-  name: {{ include "poundcake.fullname" . }}-db-user
+  name: {{ include "poundcake.fullname" $ }}-db-{{ $user.suffix }}
   namespace: {{ $mariaDbNamespace }}
   labels:
-    {{- include "poundcake.labels" . | nindent 4 }}
+    {{- include "poundcake.labels" $ | nindent 4 }}
     app.kubernetes.io/component: poundcake-database
 spec:
   mariaDbRef:
     name: {{ $serverName }}
-  name: {{ .Values.secrets.dbUser }}
+  name: {{ $user.username }}
   passwordSecretKeyRef:
     name: poundcake-secrets
-    key: DB_PASSWORD
-  maxUserConnections: {{ .Values.mariadbOperator.user.maxUserConnections }}
+    key: {{ $user.passwordKey }}
+  maxUserConnections: {{ $.Values.mariadbOperator.user.maxUserConnections }}
   host: "%"
+{{- end }}
+{{- end }}
+{{- range $grant := $dbUsers }}
 ---
 apiVersion: k8s.mariadb.com/v1alpha1
 kind: Grant
 metadata:
-  name: {{ include "poundcake.fullname" . }}-db-grant
+  name: {{ include "poundcake.fullname" $ }}-db-grant-{{ $grant.suffix }}
   namespace: {{ $mariaDbNamespace }}
   labels:
-    {{- include "poundcake.labels" . | nindent 4 }}
+    {{- include "poundcake.labels" $ | nindent 4 }}
     app.kubernetes.io/component: poundcake-database
 spec:
   mariaDbRef:
     name: {{ $serverName }}
   privileges:
-    {{- toYaml .Values.mariadbOperator.grants.privileges | nindent 4 }}
-  database: {{ .Values.secrets.dbName }}
-  table: "*"
-  username: {{ .Values.secrets.dbUser }}
+    {{- toYaml $grant.privileges | nindent 4 }}
+  database: {{ $.Values.secrets.dbName }}
+  table: {{ $grant.table | quote }}
+  username: {{ $grant.username }}
   host: "%"
   grantOption: false
+{{- end }}
 {{- end }}

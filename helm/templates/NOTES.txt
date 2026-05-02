@@ -7,8 +7,6 @@
 2. Access services inside the cluster:
 
    - API:           {{ include "poundcake.apiServiceUrl" . }}
-   - StackStorm API: {{ include "poundcake.stackstormApiUrl" . }}
-   - StackStorm Auth: {{ include "poundcake.stackstormAuthUrl" . }}
 
 3. Bootstrap jobs to check:
 

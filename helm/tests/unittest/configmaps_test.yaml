@@ -2,86 +2,28 @@ suite: configmaps
 templates:
   - templates/poundcake-configmaps.yaml
 tests:
-  - it: renders all required configmaps
+  - it: renders PoundCake configmaps
     asserts:
       - hasDocuments:
-          count: 4
-      - equal:
-          path: metadata.name
-          value: stackstorm-config
-        documentIndex: 0
-      - equal:
-          path: metadata.name
-          value: stackstorm-scripts
-        documentIndex: 1
+          count: 2
       - equal:
           path: metadata.name
           value: poundcake-scripts
-        documentIndex: 2
+        documentIndex: 0
       - equal:
           path: metadata.name
           value: poundcake-alembic
-        documentIndex: 3
+        documentIndex: 1
 
   - it: includes expected config data entries
     asserts:
       - isNotNull:
-          path: data["st2-entrypoint.sh"]
-        documentIndex: 1
-      - matchRegex:
-          path: data["st2-entrypoint.sh"]
-          pattern: "/tmp/st2/st2.conf"
-        documentIndex: 1
-      - matchRegex:
-          path: data["st2-entrypoint.sh"]
-          pattern: "neither envsubst nor python3 is available"
-        documentIndex: 1
-      - matchRegex:
-          path: data["st2-entrypoint.sh"]
-          pattern: "not found and .* is not in PATH"
-        documentIndex: 1
-      - isNotNull:
-          path: data["install-third-party-packs.sh"]
-        documentIndex: 1
-      - matchRegex:
-          path: data["install-third-party-packs.sh"]
-          pattern: "st2 pack install"
-        documentIndex: 1
-      - matchRegex:
-          path: data["install-third-party-packs.sh"]
-          pattern: "git clone --depth 1"
-        documentIndex: 1
-      - matchRegex:
-          path: data["automated-setup.sh"]
-          pattern: "stackstorm.bootstrap.packs.<pack>.enabled"
-        documentIndex: 1
-      - matchRegex:
-          path: data["automated-setup.sh"]
-          pattern: "st2 key set kubernetes\\.host"
-        documentIndex: 1
-      - matchRegex:
-          path: data["automated-setup.sh"]
-          pattern: "KUBERNETES_SERVICEACCOUNT_TOKEN_PATH"
-        documentIndex: 1
-      - matchRegex:
-          path: data["automated-setup.sh"]
-          pattern: "Waiting for StackStorm pack-management actions to be registered"
-        documentIndex: 1
-      - matchRegex:
-          path: data["automated-setup.sh"]
-          pattern: "st2 action get packs\\.install"
-        documentIndex: 1
-      - matchRegex:
-          path: data["automated-setup.sh"]
-          pattern: "docker compose -f docker/docker-compose.yml exec st2client st2 pack install <pack-name>"
-        documentIndex: 1
-      - isNotNull:
           path: data["mariadb-init.sh"]
-        documentIndex: 2
+        documentIndex: 0
       - matchRegex:
           path: data["alembic.ini"]
           pattern: "script_location = alembic"
-        documentIndex: 3
+        documentIndex: 1
       - isNotNull:
           path: data["env.py"]
-        documentIndex: 3
+        documentIndex: 1

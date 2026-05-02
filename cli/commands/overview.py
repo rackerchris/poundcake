@@ -11,7 +11,6 @@ from cli.utils import print_error, print_output, render_sections
 
 def _overview_table(payload: dict) -> str:
     health = payload["health"]
-    stats = payload["stats"]
     overview = payload["overview"]
     sections = [
         (
@@ -19,17 +18,15 @@ def _overview_table(payload: dict) -> str:
             {
                 "platform_status": health.get("status"),
                 "version": health.get("version"),
-                "alerts_tracked": stats.get("total_alerts"),
-                "recent_alerts": stats.get("recent_alerts"),
-                "workflow_count": stats.get("total_recipes"),
-                "execution_count": stats.get("total_executions"),
+                "orders_new": overview.get("queue", {}).get("orders_new"),
+                "orders_processing": overview.get("queue", {}).get("orders_processing"),
                 "failed_orders": overview.get("failures", {}).get("orders_failed"),
                 "failed_dishes": overview.get("failures", {}).get("dishes_failed"),
                 "active_suppressions": overview.get("suppressions", {}).get("active"),
             },
         ),
         (
-            "Recent Incidents",
+            "Recent Orders",
             [
                 {
                     "id": item.get("id"),
@@ -91,7 +88,7 @@ def _overview_table(payload: dict) -> str:
     help="Recent activity records to fetch",
 )
 @click.option(
-    "--incident-limit", type=int, default=8, show_default=True, help="Recent incidents to fetch"
+    "--order-limit", type=int, default=8, show_default=True, help="Recent orders to fetch"
 )
 @click.option(
     "--communication-limit",
@@ -111,7 +108,7 @@ def _overview_table(payload: dict) -> str:
 def overview(
     ctx: click.Context,
     activity_limit: int,
-    incident_limit: int,
+    order_limit: int,
     communication_limit: int,
     suppression_limit: int,
 ) -> None:
@@ -121,10 +118,9 @@ def overview(
     try:
         payload = {
             "health": client.health(),
-            "stats": client.stats(),
             "overview": client.observability_overview(),
             "activity": client.list_observability_activity(limit=activity_limit),
-            "incidents": client.list_orders(limit=incident_limit),
+            "incidents": client.list_order_statuses(limit=order_limit),
             "communications": client.list_communications(limit=communication_limit),
             "suppressions": client.list_suppressions(limit=suppression_limit),
         }

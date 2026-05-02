@@ -7,15 +7,13 @@
 """Pydantic schemas for PoundCake API."""
 
 from pydantic import (
-    AliasChoices,
     BaseModel as PydanticBaseModel,
     ConfigDict,
     Field,
-    RootModel,
     field_validator,
     model_validator,
 )
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
 
 from api.types import (
@@ -25,8 +23,14 @@ from api.types import (
     AuthRole,
     DishProcessingStatus,
     OrderProcessingStatus,
+    OrderType,
     AlertStatus,
     CanonicalExecutionStatus,
+    PluginHealthStatus,
+    ScheduledTaskSource,
+    ScheduledTaskStatus,
+    ScheduledTaskType,
+    PluginHealthCheckState,
     OnSuccessAction,
     OnFailureAction,
     SuppressionScope,
@@ -37,6 +41,8 @@ from api.types import (
     RunCondition,
     ExecutionPurpose,
     RemediationOutcome,
+    JSONObject,
+    JSONValue,
 )
 from api.services.communications import (
     ALERTMANAGER_REQUIRED_ANNOTATION_FIELDS,
@@ -60,7 +66,7 @@ class BaseModel(PydanticBaseModel):
 class ComponentHealth(BaseModel):
     status: str  # healthy, degraded, unhealthy
     message: Optional[str] = None
-    details: Optional[Dict[str, Any]] = None
+    details: Optional[JSONObject] = None
 
 
 class HealthResponse(BaseModel):
@@ -68,7 +74,7 @@ class HealthResponse(BaseModel):
     version: str
     instance_id: str
     timestamp: datetime
-    components: Dict[str, ComponentHealth]  # database, stackstorm, mongodb, rabbitmq, redis
+    components: Dict[str, ComponentHealth]
 
 
 class LivenessResponse(BaseModel):
@@ -76,31 +82,316 @@ class LivenessResponse(BaseModel):
     version: str
 
 
-class StatsResponse(BaseModel):
-    total_alerts: int
-    total_recipes: int
-    total_executions: int
-    alerts_by_processing_status: Dict[str, int]
-    alerts_by_alert_status: Dict[str, int]
-    executions_by_status: Dict[str, int]
-    recent_alerts: int
+class ServicePluginSummaryResponse(BaseModel):
+    service_type: str
+    plugin_short_id: str
+    plugin_type: str = "external_plugin"
+    plugin_tier: str = "community"
+    plugin_log_key: Optional[str] = None
+    enabled: bool
+    run_interval_seconds: Optional[int] = Field(default=None, ge=1)
+    query_limit: Optional[int] = Field(default=None, ge=1)
+    status_message: Optional[str] = None
+    config_editable: bool = False
+    ingredient_template_count: int
+    recipe_template_count: int
+    credential_status: str = "unknown"
+    credential_error: Optional[str] = None
+    last_credential_bootstrap_at: Optional[datetime] = None
+    last_credential_rotation_at: Optional[datetime] = None
+    health_status: PluginHealthStatus
+    health_message: Optional[str] = None
+    health_error_code: Optional[str] = None
+    health_latency_ms: Optional[int] = None
+    last_health_check_at: Optional[datetime] = None
+    next_health_check_at: Optional[datetime] = None
+    health_check_task_id: Optional[int] = None
+    health_check_interval_seconds: Optional[int] = Field(default=None, ge=1)
+    health_check_enabled: bool = False
+    last_success_at: Optional[datetime] = None
+    consecutive_failures: int = 0
+    health_check_state: PluginHealthCheckState = "idle"
+    health_check_order_id: Optional[int] = None
+    health_check_started_at: Optional[datetime] = None
+    health_check_grace_until: Optional[datetime] = None
+    helper_available: bool = False
+    helper_capabilities: List[str] = Field(default_factory=list)
+    required_helper_capabilities: Dict[str, List[str]] = Field(default_factory=dict)
+    missing_helper_capabilities: Dict[str, List[str]] = Field(default_factory=dict)
+
+
+class ServicePluginBaseResponse(BaseModel):
+    plugin_short_id: str
+    plugin_type: str = "external_plugin"
+    plugin_tier: str = "community"
+    plugin_log_key: Optional[str] = None
+    enabled: bool = True
+    run_interval_seconds: Optional[int] = Field(default=None, ge=1)
+    query_limit: Optional[int] = Field(default=None, ge=1)
+    status_message: Optional[str] = None
+    config_editable: bool = False
+    credential_status: str = "unknown"
+    credential_error: Optional[str] = None
+    last_credential_bootstrap_at: Optional[datetime] = None
+    last_credential_rotation_at: Optional[datetime] = None
+    health_status: PluginHealthStatus
+    health_message: Optional[str] = None
+    health_error_code: Optional[str] = None
+    health_latency_ms: Optional[int] = Field(default=None, ge=0)
+    health_details: Optional[JSONObject] = None
+    capabilities_hash: Optional[str] = Field(default=None, max_length=64)
+    registered_ingredient_count: int = Field(default=0, ge=0)
+    registered_recipe_count: int = Field(default=0, ge=0)
+    last_health_check_at: Optional[datetime] = None
+    next_health_check_at: Optional[datetime] = None
+    health_check_task_id: Optional[int] = None
+    health_check_interval_seconds: Optional[int] = Field(default=None, ge=1)
+    health_check_enabled: bool = False
+    health_check_state: Optional[PluginHealthCheckState] = None
+    health_check_order_id: Optional[int] = None
+    health_check_started_at: Optional[datetime] = None
+    health_check_grace_until: Optional[datetime] = None
+    helper_available: bool = False
+    helper_capabilities: List[str] = Field(default_factory=list)
+    required_helper_capabilities: Dict[str, List[str]] = Field(default_factory=dict)
+    missing_helper_capabilities: Dict[str, List[str]] = Field(default_factory=dict)
+
+
+class ServicePluginResponse(ServicePluginBaseResponse):
+    id: int
+    service_type: str
+    consecutive_failures: int
+    last_success_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class ServicePluginHealthResponse(BaseModel):
+    service_type: str
+    plugin_short_id: str
+    plugin_type: str = "external_plugin"
+    plugin_tier: str = "community"
+    plugin_log_key: Optional[str] = None
+    enabled: bool
+    run_interval_seconds: Optional[int] = Field(default=None, ge=1)
+    query_limit: Optional[int] = Field(default=None, ge=1)
+    status_message: Optional[str] = None
+    config_editable: bool = False
+    credential_status: str = "unknown"
+    credential_error: Optional[str] = None
+    last_credential_bootstrap_at: Optional[datetime] = None
+    last_credential_rotation_at: Optional[datetime] = None
+    health_status: PluginHealthStatus
+    health_message: Optional[str] = None
+    health_error_code: Optional[str] = None
+    health_latency_ms: Optional[int] = None
+    health_details: Optional[JSONObject] = None
+    registered_ingredient_count: int
+    registered_recipe_count: int
+    consecutive_failures: int
+    last_health_check_at: Optional[datetime] = None
+    next_health_check_at: Optional[datetime] = None
+    health_check_task_id: Optional[int] = None
+    health_check_interval_seconds: Optional[int] = Field(default=None, ge=1)
+    health_check_enabled: bool = False
+    last_success_at: Optional[datetime] = None
+    updated_at: datetime
+    health_check_state: PluginHealthCheckState = "idle"
+    health_check_order_id: Optional[int] = None
+    health_check_started_at: Optional[datetime] = None
+    health_check_grace_until: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class ServicePluginHealthCheckResponse(BaseModel):
+    service_type: str
+    status: PluginHealthStatus
+    message: Optional[str] = None
+    error_code: Optional[str] = None
+    latency_ms: Optional[int] = None
+    details: Optional[JSONObject] = None
+    checked_at: datetime
+
+
+class ServicePluginUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    run_interval_seconds: Optional[int] = Field(default=None, ge=1)
+    query_limit: Optional[int] = Field(default=None, ge=1)
+    health_check_interval_seconds: Optional[int] = Field(default=None, ge=1)
+    status_message: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ServicePluginConfigurationResponse(BaseModel):
+    service_type: str
+    config: JSONObject = Field(default_factory=dict)
+    config_schema: JSONObject = Field(default_factory=dict)
+    credential_requirements: List[JSONObject] = Field(default_factory=list)
+    credential_type: Optional[str] = None
+    credential_key_id: str = "default"
+    credential_configured: bool = False
+    updated_at: datetime
+
+
+class ServicePluginConfigurationUpdate(BaseModel):
+    config: JSONObject = Field(default_factory=dict)
+
+
+class ServicePluginCredentialUpdate(BaseModel):
+    credential_type: str = Field(default="stackstorm_api_key", min_length=1, max_length=64)
+    credential_key_id: str = Field(default="default", min_length=1, max_length=255)
+    credential_payload: JSONObject
+    rotate_credential: bool = False
+
+
+class ServicePluginConnectionTestRequest(BaseModel):
+    config: Optional[JSONObject] = None
+    credential_key_id: str = Field(default="default", min_length=1, max_length=255)
+
+
+class ServicePluginActionResponse(BaseModel):
+    service_type: str
+    status: str
+    message: str
+    details: JSONObject = Field(default_factory=dict)
+    checked_at: datetime
+
+
+class PrometheusRuleGroupSummary(BaseModel):
+    name: str
+    rule_count: int = Field(default=0, ge=0)
+    alert_count: int = Field(default=0, ge=0)
+    recording_count: int = Field(default=0, ge=0)
+    alert_names: List[str] = Field(default_factory=list)
+    recording_names: List[str] = Field(default_factory=list)
+
+
+class PrometheusRuleResourceResponse(BaseModel):
+    name: str
+    namespace: str
+    labels: JSONObject = Field(default_factory=dict)
+    annotations: JSONObject = Field(default_factory=dict)
+    groups: List[PrometheusRuleGroupSummary] = Field(default_factory=list)
+    group_count: int = Field(default=0, ge=0)
+    rule_count: int = Field(default=0, ge=0)
+    alert_count: int = Field(default=0, ge=0)
+    recording_count: int = Field(default=0, ge=0)
+    raw: JSONObject = Field(default_factory=dict)
+
+
+class PrometheusRuleListResponse(BaseModel):
+    service_type: str = "k8s"
+    namespace: str
+    items: List[PrometheusRuleResourceResponse] = Field(default_factory=list)
+    resource_count: int = Field(default=0, ge=0)
+    group_count: int = Field(default=0, ge=0)
+    rule_count: int = Field(default=0, ge=0)
+    alert_count: int = Field(default=0, ge=0)
+    recording_count: int = Field(default=0, ge=0)
+    checked_at: datetime
+
+
+class ScheduledTaskBase(BaseModel):
+    task_key: str = Field(..., min_length=1, max_length=255)
+    task_type: ScheduledTaskType
+    service_type: Optional[str] = Field(default=None, max_length=50)
+    service_exec: Optional[str] = Field(default=None, max_length=255)
+    source: ScheduledTaskSource = "registered"
+    is_enabled: bool = True
+    run_interval_seconds: int = Field(default=300, ge=1)
+    next_run_at: Optional[datetime] = None
+    priority: int = Field(default=100, ge=0)
+    timeout_seconds: int = Field(default=300, ge=1)
+    task_payload: Optional[JSONObject] = None
+    task_parameters: Optional[JSONObject] = None
+    expected_outcome: Optional[JSONValue] = None
+
+    @model_validator(mode="after")
+    def _validate_service_execution(self) -> "ScheduledTaskBase":
+        if self.task_type == "service_execution":
+            if not self.service_type or not self.service_exec:
+                raise ValueError("service_execution tasks require service_type and service_exec")
+        return self
+
+
+class ScheduledTaskCreate(ScheduledTaskBase):
+    pass
+
+
+class ScheduledTaskUpdate(BaseModel):
+    is_enabled: Optional[bool] = None
+    run_interval_seconds: Optional[int] = Field(default=None, ge=1)
+    next_run_at: Optional[datetime] = None
+    priority: Optional[int] = Field(default=None, ge=0)
+    timeout_seconds: Optional[int] = Field(default=None, ge=1)
+    task_payload: Optional[JSONObject] = None
+    task_parameters: Optional[JSONObject] = None
+    expected_outcome: Optional[JSONValue] = None
+
+
+class ScheduledTaskResponse(ScheduledTaskBase):
+    id: int
+    status: ScheduledTaskStatus
+    last_status: Optional[CanonicalExecutionStatus] = None
+    last_message: Optional[str] = None
+    last_order_id: Optional[int] = None
+    last_order_req_id: Optional[str] = None
+    last_started_at: Optional[datetime] = None
+    last_completed_at: Optional[datetime] = None
+    consecutive_failures: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class ScheduledTaskStatusResponse(BaseModel):
+    """Redacted scheduled task status without task payloads or expected outcomes."""
+
+    id: int
+    task_key: str
+    task_type: ScheduledTaskType
+    service_type: Optional[str] = None
+    service_exec: Optional[str] = None
+    source: ScheduledTaskSource
+    is_enabled: bool
+    run_interval_seconds: int
+    next_run_at: Optional[datetime] = None
+    priority: int
+    timeout_seconds: int
+    status: ScheduledTaskStatus
+    last_status: Optional[CanonicalExecutionStatus] = None
+    last_message: Optional[str] = None
+    last_order_id: Optional[int] = None
+    last_order_req_id: Optional[str] = None
+    last_started_at: Optional[datetime] = None
+    last_completed_at: Optional[datetime] = None
+    consecutive_failures: int
+    run_now_label: str
+    run_now_description: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
 
 
 class CommunicationRouteBase(BaseModel):
     id: Optional[str] = None
     label: str = Field(..., min_length=1, max_length=255)
-    execution_target: str = Field(..., min_length=1, max_length=100)
+    service_type: str = Field(..., min_length=1, max_length=100)
     destination_target: Optional[str] = Field(default="", max_length=255)
-    provider_config: Dict[str, Any] = Field(default_factory=dict)
+    provider_config: JSONObject = Field(default_factory=dict)
     enabled: bool = True
     position: int = Field(default=1, ge=1)
 
-    @field_validator("execution_target")
+    @field_validator("service_type")
     @classmethod
-    def _validate_execution_target(cls, value: str) -> str:
+    def _validate_service_type(cls, value: str) -> str:
         normalized = normalize_destination_type(value)
         if not normalized:
-            raise ValueError("execution_target is required")
+            raise ValueError("service_type is required")
         return normalized
 
 
@@ -108,7 +399,7 @@ class CommunicationRouteCreate(CommunicationRouteBase):
     @model_validator(mode="after")
     def _normalize_provider_config(self) -> "CommunicationRouteCreate":
         self.provider_config = normalize_route_provider_config(
-            self.execution_target,
+            self.service_type,
             self.provider_config,
         )
         return self
@@ -120,7 +411,7 @@ class CommunicationRouteResponse(CommunicationRouteBase):
     @model_validator(mode="after")
     def _normalize_provider_config(self) -> "CommunicationRouteResponse":
         self.provider_config = normalize_route_provider_config(
-            self.execution_target,
+            self.service_type,
             self.provider_config,
             require_required=False,
         )
@@ -134,6 +425,7 @@ class CommunicationPolicyUpdate(BaseModel):
 class CommunicationPolicyResponse(BaseModel):
     configured: bool
     routes: List[CommunicationRouteResponse] = Field(default_factory=list)
+    available_routes: List[CommunicationRouteResponse] = Field(default_factory=list)
     lifecycle_summary: Dict[str, str] = Field(default_factory=dict)
 
 
@@ -158,10 +450,10 @@ class RecipeCommunicationsResponse(BaseModel):
 
 class AlertmanagerAlertRequest(BaseModel):
     status: str = Field(..., min_length=1)
-    labels: Dict[str, Any] = Field(default_factory=dict)
-    annotations: Dict[str, Any] = Field(default_factory=dict)
-    startsAt: str = Field(..., min_length=1)
-    fingerprint: str = Field(..., min_length=1)
+    labels: JSONObject = Field(default_factory=dict)
+    annotations: JSONObject = Field(default_factory=dict)
+    startsAt: str = Field(..., min_length=1, max_length=64)
+    fingerprint: str = Field(..., min_length=1, max_length=64)
     endsAt: Optional[Any] = None
     generatorURL: Optional[str] = None
 
@@ -169,7 +461,7 @@ class AlertmanagerAlertRequest(BaseModel):
 
     @field_validator("labels")
     @classmethod
-    def _validate_labels(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+    def _validate_labels(cls, value: JSONObject) -> JSONObject:
         missing = sorted(
             field
             for field in ALERTMANAGER_REQUIRED_LABEL_FIELDS
@@ -181,7 +473,7 @@ class AlertmanagerAlertRequest(BaseModel):
 
     @field_validator("annotations")
     @classmethod
-    def _validate_annotations(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+    def _validate_annotations(cls, value: JSONObject) -> JSONObject:
         missing = sorted(
             field
             for field in ALERTMANAGER_REQUIRED_ANNOTATION_FIELDS
@@ -197,9 +489,9 @@ class AlertmanagerWebhookRequest(BaseModel):
     alerts: List[AlertmanagerAlertRequest] = Field(..., min_length=1)
     receiver: Optional[str] = None
     groupKey: Optional[str] = None
-    groupLabels: Dict[str, Any] = Field(default_factory=dict)
-    commonLabels: Dict[str, Any] = Field(default_factory=dict)
-    commonAnnotations: Dict[str, Any] = Field(default_factory=dict)
+    groupLabels: JSONObject = Field(default_factory=dict)
+    commonLabels: JSONObject = Field(default_factory=dict)
+    commonAnnotations: JSONObject = Field(default_factory=dict)
     externalURL: Optional[str] = None
     version: Optional[str] = None
     truncatedAlerts: Optional[int] = None
@@ -215,62 +507,41 @@ class AlertmanagerWebhookRequest(BaseModel):
 class IngredientBase(BaseModel):
     """Base schema for Ingredient creation/updates."""
 
-    execution_target: str = Field(..., max_length=100)
+    service_exec: str = Field(..., min_length=1, max_length=100)
     destination_target: Optional[str] = Field(default="", max_length=255)
     task_key_template: str = Field(..., max_length=255)
 
-    execution_id: Optional[str] = Field(None, max_length=100)
-    action_id: Optional[str] = Field(
-        None, max_length=100, description="Deprecated alias for execution_id"
-    )
-    execution_payload: Optional[Dict[str, Any]] = None
-    execution_parameters: Optional[Dict[str, Any]] = None
+    service_type: str = Field(..., min_length=1, max_length=50)
+    service_payload_template: Optional[JSONObject] = None
+    payload_schema: JSONObject = Field(...)
+    service_exec_parameters: Optional[JSONObject] = None
+    default_expected_secs: int = Field(..., gt=0)
+    default_timeout: int = Field(default=300, gt=0)
+    service_exec_expected_outcome_default: Optional[Any] = None
 
-    execution_engine: str = Field(default="undefined", max_length=50)
-    execution_purpose: ExecutionPurpose = Field(default="utility")
-    ingredient_kind: Optional[ExecutionPurpose] = Field(
-        None, description="Deprecated alias for execution_purpose"
-    )
-    is_default: bool = False
+    ingredient_purpose: ExecutionPurpose = Field(default="utility")
     is_active: bool = True
     is_blocking: bool = True
-    expected_duration_sec: int = Field(..., gt=0)
-    timeout_duration_sec: int = Field(default=300, gt=0)
     retry_count: int = Field(default=0, ge=0)
     retry_delay: int = Field(default=5, ge=0)
     on_failure: OnFailureAction = Field(default="stop")
 
-    @field_validator("execution_payload")
+    @field_validator("service_payload_template", "payload_schema")
     @classmethod
-    def _validate_execution_payload(
-        cls, value: Optional[Dict[str, Any]]
-    ) -> Optional[Dict[str, Any]]:
+    def _validate_service_payload_objects(cls, value: Optional[JSONObject]) -> Optional[JSONObject]:
         if value is None:
             return value
         if not isinstance(value, dict):
-            raise ValueError("execution_payload must be an object when provided")
+            raise ValueError("service payload fields must be objects when provided")
         return value
 
-    @field_validator("execution_engine")
+    @field_validator("service_type")
     @classmethod
-    def _validate_execution_engine(cls, value: str) -> str:
+    def _validate_service_type(cls, value: str) -> str:
         normalized = (value or "").strip().lower()
-        if normalized not in {"undefined", "stackstorm", "bakery", "native", "argocd"}:
-            raise ValueError(
-                "execution_engine must be one of: undefined, stackstorm, bakery, native, argocd"
-            )
+        if not normalized:
+            raise ValueError("service_type must not be empty")
         return normalized
-
-    @model_validator(mode="after")
-    def _coalesce_deprecated_aliases(self) -> "IngredientBase":
-        if self.execution_id is None and self.action_id is not None:
-            self.execution_id = self.action_id
-        if self.action_id is None and self.execution_id is not None:
-            self.action_id = self.execution_id
-        if self.ingredient_kind is not None:
-            self.execution_purpose = self.ingredient_kind
-        self.ingredient_kind = self.execution_purpose
-        return self
 
 
 class IngredientCreate(IngredientBase):
@@ -279,66 +550,43 @@ class IngredientCreate(IngredientBase):
     pass
 
 
-class IngredientUpdate(BaseModel):
-    """Schema for updating an ingredient (all fields optional)."""
+class IngredientTemplateRegistration(BaseModel):
+    """Internal manifest-shaped schema for plugin ingredient registration."""
 
-    execution_target: Optional[str] = Field(None, max_length=100)
-    destination_target: Optional[str] = Field(None, max_length=255)
-    task_key_template: Optional[str] = Field(None, max_length=255)
-    execution_id: Optional[str] = Field(None, max_length=100)
-    action_id: Optional[str] = Field(
-        None, max_length=100, description="Deprecated alias for execution_id"
-    )
-    execution_payload: Optional[Dict[str, Any]] = None
-    execution_parameters: Optional[Dict[str, Any]] = None
-    execution_engine: Optional[str] = Field(None, max_length=50)
-    execution_purpose: Optional[ExecutionPurpose] = None
-    ingredient_kind: Optional[ExecutionPurpose] = Field(
-        None, description="Deprecated alias for execution_purpose"
-    )
-    is_default: Optional[bool] = None
-    is_active: Optional[bool] = None
-    is_blocking: Optional[bool] = None
-    expected_duration_sec: Optional[int] = Field(None, gt=0)
-    timeout_duration_sec: Optional[int] = Field(None, gt=0)
-    retry_count: Optional[int] = Field(None, ge=0)
-    retry_delay: Optional[int] = Field(None, ge=0)
-    on_failure: Optional[OnFailureAction] = None
+    service_exec: str = Field(..., min_length=1, max_length=100)
+    destination_target: Optional[str] = Field(default="", max_length=255)
+    task_key_template: str = Field(..., max_length=255)
 
-    @field_validator("execution_payload")
+    service_type: str = Field(..., min_length=1, max_length=50)
+    service_payload_template: Optional[JSONObject] = None
+    payload_schema: JSONObject = Field(...)
+    service_exec_parameters: Optional[JSONObject] = None
+    default_expected_secs: int = Field(..., gt=0)
+    default_timeout: int = Field(default=300, gt=0)
+    service_exec_expected_outcome_default: Optional[Any] = None
+
+    ingredient_purpose: ExecutionPurpose = Field(default="utility")
+    is_blocking: bool = True
+    retry_count: int = Field(default=0, ge=0)
+    retry_delay: int = Field(default=5, ge=0)
+    on_failure: OnFailureAction = Field(default="stop")
+
+    @field_validator("service_payload_template", "payload_schema")
     @classmethod
-    def _validate_execution_payload(
-        cls, value: Optional[Dict[str, Any]]
-    ) -> Optional[Dict[str, Any]]:
+    def _validate_service_payload_objects(cls, value: Optional[JSONObject]) -> Optional[JSONObject]:
         if value is None:
             return value
         if not isinstance(value, dict):
-            raise ValueError("execution_payload must be an object when provided")
+            raise ValueError("service payload fields must be objects when provided")
         return value
 
-    @field_validator("execution_engine")
+    @field_validator("service_type")
     @classmethod
-    def _validate_execution_engine(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        normalized = value.strip().lower()
-        if normalized not in {"undefined", "stackstorm", "bakery", "native", "argocd"}:
-            raise ValueError(
-                "execution_engine must be one of: undefined, stackstorm, bakery, native, argocd"
-            )
+    def _validate_service_type(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if not normalized:
+            raise ValueError("service_type must not be empty")
         return normalized
-
-    @model_validator(mode="after")
-    def _coalesce_deprecated_aliases(self) -> "IngredientUpdate":
-        if self.execution_id is None and self.action_id is not None:
-            self.execution_id = self.action_id
-        if self.action_id is None and self.execution_id is not None:
-            self.action_id = self.execution_id
-        if self.execution_purpose is None and self.ingredient_kind is not None:
-            self.execution_purpose = self.ingredient_kind
-        if self.ingredient_kind is None and self.execution_purpose is not None:
-            self.ingredient_kind = self.execution_purpose
-        return self
 
 
 class IngredientResponse(IngredientBase):
@@ -349,6 +597,28 @@ class IngredientResponse(IngredientBase):
     updated_at: datetime
     deleted: bool
     deleted_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class IngredientStatusResponse(BaseModel):
+    """Redacted service ingredient status without payload templates or expected outcomes."""
+
+    id: int
+    service_type: str
+    service_exec: str
+    destination_target: Optional[str] = ""
+    task_key_template: str
+    ingredient_purpose: ExecutionPurpose = Field(default="utility")
+    is_active: bool = True
+    is_blocking: bool = True
+    default_expected_secs: int
+    default_timeout: int
+    retry_count: int = 0
+    retry_delay: int = 5
+    on_failure: OnFailureAction = Field(default="stop")
+    created_at: datetime
+    updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
@@ -364,10 +634,11 @@ class RecipeIngredientBase(BaseModel):
     on_success: OnSuccessAction = Field(default="continue")
     parallel_group: int = Field(default=0, ge=0)
     depth: int = Field(default=0, ge=0)
-    execution_payload_override: Optional[Dict[str, Any]] = None
-    execution_parameters_override: Optional[Dict[str, Any]] = None
-    expected_duration_sec_override: Optional[int] = Field(default=None, gt=0)
-    timeout_duration_sec_override: Optional[int] = Field(default=None, gt=0)
+    service_payload: Optional[JSONObject] = None
+    service_exec_parameters_override: Optional[JSONObject] = None
+    service_exec_expected_secs: Optional[int] = Field(default=None, gt=0)
+    service_exec_timeout: Optional[int] = Field(default=None, gt=0)
+    service_exec_expected_outcome: Optional[Any] = None
     run_phase: RunPhase = Field(default="both")
     run_condition: RunCondition = Field(default="always")
 
@@ -380,6 +651,30 @@ class RecipeIngredientResponse(RecipeIngredientBase):
     id: int
     recipe_id: int
     ingredient: Optional[IngredientResponse] = None
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class RecipeIngredientStatusResponse(BaseModel):
+    """Redacted recipe step status without payload overrides or ingredient templates."""
+
+    id: int
+    recipe_id: int
+    ingredient_id: int
+    step_order: int
+    on_success: OnSuccessAction = Field(default="continue")
+    parallel_group: int = 0
+    depth: int = 0
+    run_phase: RunPhase = Field(default="both")
+    run_condition: RunCondition = Field(default="always")
+    service_type: Optional[str] = None
+    service_exec: Optional[str] = None
+    task_key_template: Optional[str] = None
+    ingredient_purpose: Optional[str] = None
+    ingredient_is_active: bool = True
+    ingredient_is_blocking: bool = True
+    expected_secs: Optional[int] = None
+    timeout_secs: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
@@ -439,6 +734,24 @@ class RecipeDetailResponse(RecipeResponse):
     inactive_ingredient_ids: List[int] = Field(default_factory=list)
 
 
+class RecipeStatusResponse(BaseModel):
+    """Redacted recipe status for reporting and selection views."""
+
+    id: int
+    name: str
+    description: Optional[str] = None
+    enabled: bool
+    clear_timeout_sec: Optional[int] = None
+    can_execute: bool = True
+    inactive_ingredient_count: int = 0
+    step_count: int = 0
+    communication_route_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
 # =============================================================================
 # Dish Schemas
 # =============================================================================
@@ -456,15 +769,13 @@ class DishUpdate(BaseModel):
     """Schema for updating a dish."""
 
     processing_status: Optional[DishProcessingStatus] = None
-    execution_status: Optional[str] = Field(None, max_length=50)
-    execution_ref: Optional[str] = Field(None, max_length=100)
+    dish_exec_status: Optional[str] = Field(None, max_length=50)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    expected_duration_sec: Optional[int] = None
-    actual_duration_sec: Optional[int] = None
-    result: Optional[Any] = None
+    expected_run_secs: Optional[int] = None
+    run_time_secs: Optional[int] = None
+    dish_actual_outcome: Optional[Any] = None
     error_message: Optional[str] = None
-    retry_attempt: Optional[int] = None
     run_phase: Optional[DishRunPhase] = None
 
 
@@ -474,15 +785,38 @@ class DishResponse(DishBase):
     id: int
     order_id: Optional[int] = None
     recipe_id: int
-    execution_ref: Optional[str] = None
-    execution_status: Optional[str] = None
+    dish_exec_status: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    expected_duration_sec: Optional[int] = None
-    actual_duration_sec: Optional[int] = None
-    result: Optional[Any] = None
+    expected_run_secs: Optional[int] = None
+    run_time_secs: Optional[int] = None
+    work_execution_time_secs: Optional[int] = None
+    work_execution_groups: List[Dict[str, int]] = Field(default_factory=list)
+    dish_actual_outcome: Optional[Any] = None
     error_message: Optional[str] = None
-    retry_attempt: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class DishStatusResponse(BaseModel):
+    """Redacted dish status for reporting and activity views."""
+
+    id: int
+    order_id: Optional[int] = None
+    order_type: OrderType
+    recipe_id: int
+    recipe_name: Optional[str] = None
+    processing_status: DishProcessingStatus
+    run_phase: DishRunPhase
+    dish_exec_status: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    expected_run_secs: Optional[int] = None
+    run_time_secs: Optional[int] = None
+    work_execution_time_secs: Optional[int] = None
+    work_execution_groups: List[Dict[str, int]] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -507,14 +841,8 @@ class OrderBase(BaseModel):
     fingerprint: str = Field(..., max_length=255)
     alert_status: str = Field(..., max_length=50)
     alert_group_name: str = Field(..., max_length=255)
-    labels: Dict[str, Any]
+    labels: JSONObject
     starts_at: datetime
-    bakery_ticket_id: Optional[str] = Field(None, max_length=36)
-    bakery_operation_id: Optional[str] = Field(None, max_length=36)
-    bakery_ticket_state: Optional[str] = Field(None, max_length=32)
-    bakery_permanent_failure: bool = False
-    bakery_last_error: Optional[str] = None
-    bakery_comms_id: Optional[str] = Field(None, max_length=36)
     fingerprint_when_active: Optional[str] = Field(None, max_length=255)
     remediation_outcome: RemediationOutcome = "pending"
     clear_timeout_sec: Optional[int] = Field(default=None, ge=1)
@@ -530,9 +858,10 @@ class OrderCreate(OrderBase):
     is_active: bool = True
     severity: Optional[str] = Field(None, max_length=50)
     instance: Optional[str] = Field(None, max_length=255)
+    correlation_key: Optional[str] = Field(None, max_length=64)
     counter: int = 1
-    annotations: Optional[Dict[str, Any]] = None
-    raw_data: Optional[Dict[str, Any]] = None
+    annotations: Optional[JSONObject] = None
+    raw_data: Optional[JSONObject] = None
     ends_at: Optional[datetime] = None
 
 
@@ -543,10 +872,6 @@ class OrderUpdate(BaseModel):
     processing_status: Optional[OrderProcessingStatus] = None
     is_active: Optional[bool] = None
     ends_at: Optional[datetime] = None
-    bakery_comms_id: Optional[str] = Field(None, max_length=36)
-    bakery_ticket_state: Optional[str] = Field(None, max_length=32)
-    bakery_permanent_failure: Optional[bool] = None
-    bakery_last_error: Optional[str] = None
     fingerprint_when_active: Optional[str] = Field(None, max_length=255)
     remediation_outcome: Optional[RemediationOutcome] = None
     clear_timeout_sec: Optional[int] = Field(default=None, ge=1)
@@ -563,11 +888,41 @@ class OrderResponse(OrderBase):
     is_active: bool
     severity: Optional[str] = None
     instance: Optional[str] = None
+    correlation_key: Optional[str] = None
     counter: int
-    annotations: Optional[Dict[str, Any]] = None
-    raw_data: Optional[Dict[str, Any]] = None
+    annotations: Optional[JSONObject] = None
+    raw_data: Optional[JSONObject] = None
     ends_at: Optional[datetime] = None
-    communications: List["OrderCommunicationResponse"] = Field(default_factory=list)
+    order_lifetime_secs: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class OrderStatusResponse(BaseModel):
+    """Redacted order status for reporting and operator-facing views."""
+
+    id: int
+    req_id: str
+    order_type: OrderType
+    alert_status: str
+    alert_group_name: str
+    processing_status: OrderProcessingStatus
+    is_active: bool
+    remediation_outcome: RemediationOutcome
+    clear_timeout_sec: Optional[int] = None
+    clear_deadline_at: Optional[datetime] = None
+    clear_timed_out_at: Optional[datetime] = None
+    auto_close_eligible: bool = False
+    severity: Optional[str] = None
+    instance: Optional[str] = None
+    correlation_key: Optional[str] = None
+    counter: int
+    starts_at: datetime
+    ends_at: Optional[datetime] = None
+    order_lifetime_secs: Optional[int] = None
+    communication_route_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -577,26 +932,33 @@ class OrderResponse(OrderBase):
 class DishIngredientUpsert(BaseModel):
     """Upsert payload for dish ingredient execution results."""
 
+    dish_id: Optional[int] = None
+    req_id: Optional[str] = Field(default=None, max_length=100)
     recipe_ingredient_id: Optional[int] = None
-    execution_ref: Optional[str] = None
-    task_key: Optional[str] = None
-    execution_engine: Optional[str] = None
-    execution_target: Optional[str] = None
+    service_exec_id: Optional[str] = Field(default=None, max_length=100)
+    service_type: Optional[str] = Field(default=None, max_length=50)
+    task_key: Optional[str] = Field(default=None, max_length=255)
+    service_exec: Optional[str] = Field(default=None, max_length=255)
     destination_target: Optional[str] = None
-    execution_payload: Optional[Dict[str, Any]] = None
-    execution_parameters: Optional[Dict[str, Any]] = None
-    expected_duration_sec: Optional[int] = None
-    timeout_duration_sec: Optional[int] = None
+    service_payload: Optional[JSONObject] = None
+    service_exec_parameters: Optional[JSONObject] = None
+    service_exec_expected_secs: Optional[int] = None
+    service_exec_timeout: Optional[int] = None
+    service_exec_expected_outcome: Optional[Any] = None
     retry_count: Optional[int] = None
     retry_delay: Optional[int] = None
     on_failure: Optional[str] = None
-    execution_status: Optional[str] = None
+    service_exec_status: Optional[CanonicalExecutionStatus] = None
     attempt: Optional[int] = None
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    canceled_at: Optional[datetime] = None
-    result: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = None
+    service_exec_start_time: Optional[datetime] = None
+    service_exec_completed_time: Optional[datetime] = None
+    service_exec_canceled_time: Optional[datetime] = None
+    service_exec_run_time: Optional[int] = None
+    service_exec_sla_exceeded: Optional[bool] = None
+    service_exec_claimed_at: Optional[datetime] = None
+    service_exec_claimed_by: Optional[str] = None
+    service_exec_actual_outcome: Optional[JSONObject] = None
+    service_exec_error: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
@@ -613,29 +975,71 @@ class DishIngredientResponse(BaseModel):
     """Dish ingredient execution record."""
 
     id: int
+    req_id: str
     dish_id: int
     recipe_ingredient_id: Optional[int] = None
+    service_exec_id: Optional[str] = None
     task_key: Optional[str] = None
-    execution_engine: Optional[str] = None
-    execution_target: Optional[str] = None
+    step_order: int = 1
+    parallel_group: int = 0
+    depth: int = 0
+    service_type: Optional[str] = None
+    service_exec: Optional[str] = None
     destination_target: Optional[str] = None
-    execution_ref: Optional[str] = None
-    execution_payload: Optional[Dict[str, Any]] = None
-    execution_parameters: Optional[Dict[str, Any]] = None
-    expected_duration_sec: Optional[int] = None
-    timeout_duration_sec: Optional[int] = None
+    service_payload: Optional[JSONObject] = None
+    service_exec_parameters: Optional[JSONObject] = None
+    service_exec_expected_secs: Optional[int] = None
+    service_exec_timeout: Optional[int] = None
+    service_exec_expected_outcome: Optional[Any] = None
     retry_count: Optional[int] = None
     retry_delay: Optional[int] = None
     on_failure: Optional[str] = None
-    execution_status: Optional[str] = None
+    service_exec_status: CanonicalExecutionStatus
     attempt: int
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    canceled_at: Optional[datetime] = None
-    result: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = None
+    service_exec_start_time: Optional[datetime] = None
+    service_exec_completed_time: Optional[datetime] = None
+    service_exec_canceled_time: Optional[datetime] = None
+    service_exec_run_time: Optional[int] = None
+    service_exec_sla_exceeded: bool = False
+    service_exec_claimed_at: Optional[datetime] = None
+    service_exec_claimed_by: Optional[str] = None
+    service_exec_actual_outcome: Optional[JSONObject] = None
+    service_exec_error: Optional[str] = None
     deleted: bool
     deleted_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class DishIngredientStatusResponse(BaseModel):
+    """Redacted dish ingredient execution status for operator-facing views."""
+
+    id: int
+    dish_id: int
+    recipe_ingredient_id: Optional[int] = None
+    task_key: Optional[str] = None
+    step_order: int = 1
+    parallel_group: int = 0
+    depth: int = 0
+    service_type: Optional[str] = None
+    service_exec: Optional[str] = None
+    retry_count: Optional[int] = None
+    retry_delay: Optional[int] = None
+    on_failure: Optional[str] = None
+    service_exec_status: CanonicalExecutionStatus
+    attempt: int
+    execution_role: Optional[str] = None
+    operation: Optional[str] = None
+    result_status: Optional[str] = None
+    result_message: Optional[str] = None
+    result_summary: Optional[JSONObject] = None
+    service_exec_start_time: Optional[datetime] = None
+    service_exec_completed_time: Optional[datetime] = None
+    service_exec_canceled_time: Optional[datetime] = None
+    service_exec_run_time: Optional[int] = None
+    service_exec_sla_exceeded: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -648,38 +1052,17 @@ class OrderDetailResponse(OrderResponse):
     dishes: List[DishResponse] = []
 
 
-class OrderCommunicationBase(BaseModel):
-    execution_target: str = Field(..., max_length=100)
-    destination_target: str = Field(default="", max_length=255)
-    bakery_ticket_id: Optional[str] = Field(default=None, max_length=36)
-    bakery_operation_id: Optional[str] = Field(default=None, max_length=36)
-    lifecycle_state: str = Field(default="pending", max_length=32)
-    remote_state: Optional[str] = Field(default=None, max_length=64)
-    writable: bool = True
-    reopenable: bool = False
-    last_error: Optional[str] = None
-
-
-class OrderCommunicationResponse(OrderCommunicationBase):
-    id: int
-    order_id: int
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = ConfigDict(from_attributes=True, extra="forbid")
-
-
 class IncidentTimelineEvent(BaseModel):
     timestamp: Optional[datetime] = None
     event_type: str
     status: str
     title: str
-    details: Dict[str, Any] = Field(default_factory=dict)
+    details: JSONObject = Field(default_factory=dict)
     correlation_ids: Dict[str, str] = Field(default_factory=dict)
 
 
 class IncidentTimelineResponse(BaseModel):
-    order: OrderResponse
+    order: OrderStatusResponse
     events: List[IncidentTimelineEvent]
 
 
@@ -691,7 +1074,7 @@ class IncidentTimelineResponse(BaseModel):
 class SuppressionMatcher(BaseModel):
     label_key: str = Field(..., min_length=1, max_length=255)
     operator: SuppressionMatcherOperator
-    value: Optional[str] = None
+    value: Optional[str] = Field(default=None, max_length=512)
 
 
 class SuppressionCreate(BaseModel):
@@ -700,16 +1083,21 @@ class SuppressionCreate(BaseModel):
     ends_at: datetime
     scope: SuppressionScope = "matchers"
     matchers: List[SuppressionMatcher] = Field(default_factory=list)
-    reason: Optional[str] = None
+    reason: Optional[str] = Field(default=None, max_length=1000)
     created_by: Optional[str] = Field(default=None, max_length=255)
     summary_ticket_enabled: bool = True
     enabled: bool = True
+    source: str = Field(default="local", max_length=32)
+    source_service_type: Optional[str] = Field(default=None, max_length=50)
+    source_ref: Optional[str] = Field(default=None, max_length=255)
+    source_payload: Optional[JSONObject] = None
+    last_synced_at: Optional[datetime] = None
 
 
 class SuppressionUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     ends_at: Optional[datetime] = None
-    reason: Optional[str] = None
+    reason: Optional[str] = Field(default=None, max_length=1000)
     enabled: Optional[bool] = None
     matchers: Optional[List[SuppressionMatcher]] = None
 
@@ -726,9 +1114,30 @@ class SuppressionResponse(BaseModel):
     canceled_at: Optional[datetime] = None
     created_by: Optional[str] = None
     summary_ticket_enabled: bool
+    source: str = "local"
+    source_service_type: Optional[str] = None
+    source_ref: Optional[str] = None
+    source_payload: Optional[JSONObject] = None
+    last_synced_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     matchers: List[SuppressionMatcher] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class SuppressionStatusResponse(BaseModel):
+    id: int
+    name: str
+    reason: Optional[str] = None
+    scope: SuppressionScope
+    status: SuppressionStatus
+    enabled: bool
+    starts_at: datetime
+    ends_at: datetime
+    canceled_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
@@ -751,8 +1160,8 @@ class SuppressedActivityResponse(BaseModel):
     severity: Optional[str] = None
     status: str
     req_id: Optional[str] = None
-    labels_json: Dict[str, Any]
-    annotations_json: Optional[Dict[str, Any]] = None
+    labels_json: JSONObject
+    annotations_json: Optional[JSONObject] = None
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
@@ -762,14 +1171,11 @@ class SuppressionSummaryResponse(BaseModel):
     total_suppressed: int
     total_cleared: int = 0
     total_still_firing: int = 0
-    by_alertname_json: Optional[Dict[str, Any]] = None
-    by_severity_json: Optional[Dict[str, Any]] = None
-    still_firing_alerts_json: Optional[Dict[str, Any]] = None
+    by_alertname_json: Optional[JSONObject] = None
+    by_severity_json: Optional[JSONObject] = None
+    still_firing_alerts_json: Optional[JSONObject] = None
     first_seen_at: Optional[datetime] = None
     last_seen_at: Optional[datetime] = None
-    bakery_ticket_id: Optional[str] = None
-    bakery_create_operation_id: Optional[str] = None
-    bakery_close_operation_id: Optional[str] = None
     summary_created_at: Optional[datetime] = None
     summary_close_at: Optional[datetime] = None
     last_error: Optional[str] = None
@@ -803,11 +1209,6 @@ class ObservabilityFailuresSummary(BaseModel):
     runbook_hints: List[str] = Field(default_factory=list)
 
 
-class ObservabilityBakerySummary(BaseModel):
-    summary_failures: int
-    order_dead_letters: int
-
-
 class ObservabilitySuppressionsSummary(BaseModel):
     active: int
     retrying_operations: int
@@ -818,7 +1219,6 @@ class ObservabilityOverviewResponse(BaseModel):
     health: ObservabilityHealthSummary
     queue: ObservabilityQueueSummary
     failures: ObservabilityFailuresSummary
-    bakery: ObservabilityBakerySummary
     suppressions: ObservabilitySuppressionsSummary
 
 
@@ -831,7 +1231,20 @@ class ObservabilityActivityRecord(BaseModel):
     target_kind: str
     target_id: str
     link_hint: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: JSONObject = Field(default_factory=dict)
+
+
+class ObservabilityActivityStatusRecord(BaseModel):
+    """Redacted observability activity for reporting feeds."""
+
+    type: str
+    status: str
+    title: str
+    summary: Optional[str] = None
+    timestamp: Optional[datetime] = None
+    target_kind: str
+    target_id: str
+    link_hint: Optional[str] = None
 
 
 class CommunicationActivityRecord(BaseModel):
@@ -852,25 +1265,18 @@ class CommunicationActivityRecord(BaseModel):
     updated_at: Optional[datetime] = None
 
 
-class BakeryOperationRecord(BaseModel):
-    source: str
+class CommunicationActivityStatusRecord(BaseModel):
+    """Redacted communication activity without provider IDs or raw errors."""
+
+    communication_id: str
+    reference_type: str
     reference_id: str
-    reference_type: Optional[str] = None
     reference_name: Optional[str] = None
-    channel: Optional[str] = None
+    channel: str
     destination: Optional[str] = None
-    ticket_id: Optional[str] = None
-    provider_reference_id: Optional[str] = None
-    operation_id: Optional[str] = None
-    status: Optional[str] = None
-    execution_target: Optional[str] = None
-    destination_target: Optional[str] = None
+    lifecycle_state: Optional[str] = None
     remote_state: Optional[str] = None
-    writable: Optional[bool] = None
-    reopenable: Optional[bool] = None
-    last_error: Optional[str] = None
     updated_at: Optional[datetime] = None
-    details: Optional[Dict[str, Any]] = None
 
 
 # ============================================================================
@@ -884,7 +1290,7 @@ class WebhookResponse(BaseModel):
     status: str  # created, counter_incremented, resolved, ignored, no_alerts
     order_id: Optional[int] = None
     message: Optional[str] = None
-    results: Optional[List[Dict[str, Any]]] = None
+    results: Optional[List[JSONObject]] = None
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
@@ -903,27 +1309,74 @@ class OrderDispatchResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
 
+class CookAdvanceReadyItem(BaseModel):
+    id: int
+    req_id: str
+    dish_id: int
+    recipe_ingredient_id: Optional[int] = None
+    task_key: Optional[str] = None
+    step_order: int = 1
+    parallel_group: int = 0
+    depth: int = 0
+    service_type: str
+    service_exec: str
+    service_exec_id: Optional[str] = None
+    service_exec_status: CanonicalExecutionStatus
+    on_failure: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class CookDispatchedItem(BaseModel):
+    dish_ingredient_id: int
+    req_id: str
+    service_type: str
+    service_exec: str
+    service_exec_id: Optional[str] = None
+    service_exec_status: CanonicalExecutionStatus
+    service_exec_error: Optional[str] = None
+
+
+class CookSegmentMetadata(BaseModel):
+    depth: int
+    parallel_group: int
+    service_types: List[str] = Field(default_factory=list)
+
+
+class CookAdvanceResponse(BaseModel):
+    status: Literal[
+        "complete", "ready", "dispatched", "failed", "errored", "timeout", "canceled", "blocked"
+    ]
+    dish_id: int
+    order_id: Optional[int] = None
+    segment: Optional[CookSegmentMetadata] = None
+    ready: List[CookAdvanceReadyItem] = Field(default_factory=list)
+    dispatched: List[CookDispatchedItem] = Field(default_factory=list)
+    blocked: Optional[str] = None
+    terminal: bool = False
+
+
 class ExecuteRequest(BaseModel):
-    execution_engine: str = Field(..., max_length=50)
-    execution_target: str = Field(..., max_length=255)
-    execution_payload: Optional[Dict[str, Any]] = None
-    execution_parameters: Optional[Dict[str, Any]] = None
+    dish_ingredient_id: Optional[int] = None
+    service_type: str = Field(..., min_length=1, max_length=50)
+    service_exec: str = Field(..., min_length=1, max_length=255)
+    service_payload: Optional[JSONObject] = None
+    service_exec_parameters: Optional[JSONObject] = None
     retry_count: int = Field(default=0, ge=0)
     retry_delay: int = Field(default=0, ge=0)
-    timeout_duration_sec: int = Field(default=300, gt=0)
-    context: Dict[str, Any] = Field(default_factory=dict)
+    service_exec_timeout: int = Field(default=300, gt=0)
+    context: JSONObject = Field(default_factory=dict)
 
-    @field_validator("execution_engine")
+    @field_validator("service_type")
     @classmethod
-    def _validate_execution_engine(cls, value: str) -> str:
+    def _validate_service_type(cls, value: str) -> str:
         normalized = (value or "").strip().lower()
-        if normalized not in {"stackstorm", "bakery"}:
-            raise ValueError("execution_engine must be one of: stackstorm, bakery")
+        if not normalized:
+            raise ValueError("service_type must not be empty")
         return normalized
 
-    @field_validator("execution_payload", "execution_parameters")
+    @field_validator("service_payload", "service_exec_parameters")
     @classmethod
-    def _validate_object_fields(cls, value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _validate_object_fields(cls, value: Optional[JSONObject]) -> Optional[JSONObject]:
         if value is None:
             return value
         if not isinstance(value, dict):
@@ -931,109 +1384,29 @@ class ExecuteRequest(BaseModel):
         return value
 
 
+class UIOperatorActionRequest(BaseModel):
+    action: str = Field(..., min_length=1, max_length=120)
+    surface: str = Field(..., min_length=1, max_length=120)
+    status: str = Field(default="attempt", min_length=1, max_length=40)
+    target: Optional[str] = Field(default=None, max_length=255)
+    details: JSONObject = Field(default_factory=dict)
+
+
+class UIOperatorActionResponse(BaseModel):
+    status: Literal["logged"] = "logged"
+
+
 class ExecutionEnvelopeResponse(BaseModel):
-    execution_ref: Optional[str] = None
-    engine: str
+    service_exec_id: Optional[str] = None
+    service_type: str
     status: CanonicalExecutionStatus
-    error_message: Optional[str] = None
-    result: Optional[Dict[str, Any]] = None
-    raw: Optional[Dict[str, Any]] = None
+    service_exec_error: Optional[str] = None
+    service_exec_actual_outcome: Optional[JSONObject] = None
+    raw: Optional[JSONObject] = None
+    context_updates: JSONObject = Field(default_factory=dict)
     attempts: int = 1
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
-
-
-class StackStormExecutionResponse(BaseModel):
-    """Normalized StackStorm execution document returned by PoundCake."""
-
-    id: str = Field(..., min_length=1)
-    action: Optional[str] = None
-    status: str
-    parent: Optional[str] = None
-    task_key: Optional[str] = None
-    start_timestamp: Optional[datetime] = None
-    end_timestamp: Optional[datetime] = None
-    result: Optional[Any] = None
-
-
-class StackStormExecutionListResponse(RootModel[List[StackStormExecutionResponse]]):
-    """Normalized StackStorm execution collection returned by PoundCake."""
-
-
-class StackStormExecutionTaskResponse(BaseModel):
-    """Normalized StackStorm task record returned by PoundCake."""
-
-    id: Optional[str] = None
-    task_key: Optional[str] = None
-    status: Optional[str] = None
-    start_timestamp: Optional[datetime] = None
-    end_timestamp: Optional[datetime] = None
-    result: Optional[Any] = None
-
-
-class StackStormExecutionTasksResponse(RootModel[List[StackStormExecutionTaskResponse]]):
-    """Normalized StackStorm task collection returned by PoundCake."""
-
-
-class StackStormExecutionMutationResponse(BaseModel):
-    """Result of cancel/delete execution operations."""
-
-    status: str
-    execution_id: str
-
-
-class StackStormWorkflowRegistrationRequest(BaseModel):
-    """Owned request payload for workflow registration in StackStorm."""
-
-    name: str = Field(..., min_length=1, max_length=255)
-    description: Optional[str] = None
-    execution_parameters: Optional[Dict[str, Any]] = None
-
-
-class StackStormWorkflowRegistrationResponse(BaseModel):
-    """Workflow registration result."""
-
-    workflow_id: str
-
-
-class StackStormSyncStepResponse(BaseModel):
-    """Summary stats for a StackStorm sync phase."""
-
-    created: int = 0
-    updated: int = 0
-    unchanged: Optional[int] = None
-    pruned: Optional[int] = None
-    skipped: Optional[int] = None
-    processed: Optional[int] = None
-    conflicts: Optional[int] = None
-    errors: Optional[int] = None
-    error_messages: List[str] = Field(default_factory=list)
-    source: Optional[str] = None
-    files_scanned: Optional[int] = None
-    rules_discovered: Optional[int] = None
-    generated: Optional[int] = None
-    enabled: Optional[bool] = None
-    refreshed: Optional[bool] = None
-    repo_url: Optional[str] = None
-    branch: Optional[str] = None
-    path: Optional[str] = None
-
-
-class StackStormBootstrapCatalogResponse(BaseModel):
-    """Bootstrap catalog sync summary."""
-
-    ingredients: StackStormSyncStepResponse
-    recipes: StackStormSyncStepResponse
-    remote_recipes: StackStormSyncStepResponse
-
-
-class StackStormSyncResponse(BaseModel):
-    """StackStorm sync endpoint result."""
-
-    ingredients: StackStormSyncStepResponse
-    recipes: StackStormSyncStepResponse
-    bootstrap_catalog: StackStormBootstrapCatalogResponse
-    bootstrap_marked: Optional[bool] = None
 
 
 class SessionResponse(BaseModel):
@@ -1213,117 +1586,8 @@ class SettingsResponse(BaseModel):
     git_rules_path: Optional[str] = None
     git_workflows_path: Optional[str] = None
     git_actions_path: Optional[str] = None
-    stackstorm_enabled: bool
     version: str
     global_communications_configured: bool
-
-
-class RepoSyncPullRequestResponse(BaseModel):
-    """Pull-request metadata returned by Git-backed sync operations."""
-
-    number: int | str | None = None
-    url: Optional[str] = None
-
-
-class RepoSyncResponse(BaseModel):
-    """Generic Git-backed import/export response."""
-
-    status: str
-    message: str
-    branch: Optional[str] = None
-    pull_request: Optional[RepoSyncPullRequestResponse] = None
-    exported: Optional[Dict[str, str | int | None]] = None
-    imported: Optional[Dict[str, int]] = None
-    skipped: Optional[Dict[str, int]] = None
-    warnings: Optional[List[str]] = None
-    cleared: Optional[Dict[str, int]] = None
-
-
-class PrometheusRuleResponse(BaseModel):
-    """Canonical Prometheus rule representation used by UI and CLI."""
-
-    group: str
-    crd: Optional[str] = None
-    file: Optional[str] = None
-    namespace: Optional[str] = None
-    interval: Optional[str] = None
-    name: str
-    query: str
-    duration: Optional[str] = None
-    labels: Dict[str, str] = Field(default_factory=dict)
-    annotations: Dict[str, str] = Field(default_factory=dict)
-    state: Optional[str] = None
-    health: Optional[str] = None
-
-
-class PrometheusRuleListResponse(BaseModel):
-    """Prometheus rule listing response."""
-
-    rules: List[PrometheusRuleResponse] = Field(default_factory=list)
-    source: str
-
-
-class PrometheusRuleGroupsResponse(BaseModel):
-    """Prometheus rule group listing response."""
-
-    groups: List[Dict[str, Any]] = Field(default_factory=list)
-
-
-class PrometheusMetricsResponse(BaseModel):
-    """Prometheus metric-name discovery response."""
-
-    metrics: List[str] = Field(default_factory=list)
-
-
-class PrometheusLabelsResponse(BaseModel):
-    """Prometheus label-name discovery response."""
-
-    labels: List[str] = Field(default_factory=list)
-
-
-class PrometheusLabelValuesResponse(BaseModel):
-    """Prometheus label-values discovery response."""
-
-    label: str
-    values: List[str] = Field(default_factory=list)
-
-
-class PrometheusHealthResponse(BaseModel):
-    """Prometheus connectivity health response."""
-
-    status: str
-    url: str
-    status_code: Optional[int] = None
-    latency_ms: Optional[int] = None
-    error: Optional[str] = None
-
-
-class PrometheusRuleWriteRequest(BaseModel):
-    """Create/update payload for Prometheus alert rules."""
-
-    alert: Optional[str] = Field(default=None, min_length=1)
-    record: Optional[str] = Field(default=None, min_length=1)
-    expr: str = Field(..., min_length=1, validation_alias=AliasChoices("expr", "query"))
-    for_: Optional[str] = Field(default=None, alias="for", serialization_alias="for")
-    labels: Dict[str, str] = Field(default_factory=dict)
-    annotations: Dict[str, str] = Field(default_factory=dict)
-    keep_firing_for: Optional[str] = None
-
-    @model_validator(mode="after")
-    def _validate_identity(self) -> "PrometheusRuleWriteRequest":
-        if not str(self.alert or "").strip() and not str(self.record or "").strip():
-            raise ValueError("either alert or record is required")
-        return self
-
-
-class PrometheusRuleMutationResponse(BaseModel):
-    """Create/update/delete result for a Prometheus rule operation."""
-
-    status: str
-    message: str
-    crd: Optional[Dict[str, Any]] = None
-    git: Optional[Dict[str, Any]] = None
-    git_error: Optional[str] = None
 
 
 class DishIngredientBulkUpsertResponse(BaseModel):

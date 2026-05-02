@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from shared.types import JSONObject
+
 from dataclasses import asdict, is_dataclass
 import json
 from pathlib import Path
@@ -131,7 +133,7 @@ def parse_json_value(value: str, label: str) -> Any:
         raise click.BadParameter(f"{label} must be valid JSON: {exc}") from exc
 
 
-def parse_json_object(value: str | None, label: str) -> dict[str, Any] | None:
+def parse_json_object(value: str | None, label: str) -> JSONObject | None:
     if value is None:
         return None
     parsed = parse_json_value(value, label)
@@ -150,7 +152,7 @@ def load_data_file(path: Path) -> Any:
     return loaded
 
 
-def require_mapping(data: Any, label: str) -> dict[str, Any]:
+def require_mapping(data: Any, label: str) -> JSONObject:
     if not isinstance(data, dict):
         raise click.BadParameter(f"{label} must be an object")
     return data

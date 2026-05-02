@@ -22,6 +22,7 @@ spec:
         {{- include "poundcake.logLabelsForComponent" (dict "component" "mariadb") | nindent 8 }}
         {{- include "poundcake.selectorLabels" . | nindent 8 }}
     spec:
+      enableServiceLinks: false
       {{- if .Values.podSecurityContext }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -42,16 +43,106 @@ spec:
                 secretKeyRef:
                   name: poundcake-secrets
                   key: DB_NAME
-            - name: MYSQL_USER
+            - name: MYSQL_MIGRATOR_USER
               valueFrom:
                 secretKeyRef:
                   name: poundcake-secrets
-                  key: DB_USER
-            - name: MYSQL_PASSWORD
+                  key: DB_MIGRATOR_USER
+            - name: MYSQL_MIGRATOR_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: poundcake-secrets
-                  key: DB_PASSWORD
+                  key: DB_MIGRATOR_PASSWORD
+            - name: MYSQL_API_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_API_USER
+            - name: MYSQL_API_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_API_PASSWORD
+            - name: MYSQL_AUTH_VERIFIER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_AUTH_VERIFIER_USER
+            - name: MYSQL_AUTH_VERIFIER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_AUTH_VERIFIER_PASSWORD
+            - name: MYSQL_CREDENTIAL_MANAGER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_CREDENTIAL_MANAGER_USER
+            - name: MYSQL_CREDENTIAL_MANAGER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_CREDENTIAL_MANAGER_PASSWORD
+            - name: MYSQL_PLUGIN_OPERATION_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_OPERATION_USER
+            - name: MYSQL_PLUGIN_OPERATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PLUGIN_OPERATION_PASSWORD
+            - name: MYSQL_PREP_CHEF_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PREP_CHEF_READER_USER
+            - name: MYSQL_PREP_CHEF_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_PREP_CHEF_READER_PASSWORD
+            - name: MYSQL_TIMER_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_TIMER_READER_USER
+            - name: MYSQL_TIMER_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_TIMER_READER_PASSWORD
+            - name: MYSQL_EXPEDITER_RUNNER_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_EXPEDITER_RUNNER_READER_USER
+            - name: MYSQL_EXPEDITER_RUNNER_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_EXPEDITER_RUNNER_READER_PASSWORD
+            - name: MYSQL_DISHWASHER_READER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_DISHWASHER_READER_USER
+            - name: MYSQL_DISHWASHER_READER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_DISHWASHER_READER_PASSWORD
+            - name: MYSQL_READONLY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_READONLY_USER
+            - name: MYSQL_READONLY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: poundcake-secrets
+                  key: DB_READONLY_PASSWORD
             - name: POUNDCAKE_LOG_FORMAT
               value: {{ .Values.logFormat | quote }}
           ports:
@@ -97,280 +188,5 @@ spec:
           configMap:
             name: poundcake-scripts
             defaultMode: 0755
----
 {{- end }}
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: stackstorm-mongodb
-  labels:
-    app.kubernetes.io/component: stackstorm-mongodb
-    {{- include "poundcake.labels" . | nindent 4 }}
-spec:
-  replicas: 1
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app.kubernetes.io/component: stackstorm-mongodb
-      {{- include "poundcake.selectorLabels" . | nindent 6 }}
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/component: stackstorm-mongodb
-        {{- include "poundcake.logLabelsForComponent" (dict "component" "stackstorm-mongodb") | nindent 8 }}
-        {{- include "poundcake.selectorLabels" . | nindent 8 }}
-    spec:
-      {{- if .Values.podSecurityContext }}
-      securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      {{- end }}
-      {{- include "poundcake.podPlacement" . | nindent 6 }}
-      containers:
-        - name: mongodb
-          image: {{ .Values.images.mongodb }}
-          imagePullPolicy: IfNotPresent
-          env:
-            - name: MONGO_INITDB_ROOT_USERNAME
-              value: admin
-            - name: MONGO_INITDB_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: stackstorm-secrets
-                  key: MONGO_ROOT_PASSWORD
-            - name: ST2_DB_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: stackstorm-secrets
-                  key: MONGO_USERNAME
-            - name: ST2_DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: stackstorm-secrets
-                  key: MONGO_PASSWORD
-            - name: POUNDCAKE_LOG_FORMAT
-              value: {{ .Values.logFormat | quote }}
-          ports:
-            - containerPort: 27017
-              name: mongo
-          volumeMounts:
-            - name: mongo-data
-              mountPath: /data/db
-            - name: scripts
-              mountPath: /docker-entrypoint-initdb.d/01-create-st2-user.sh
-              subPath: mongodb-init.sh
-          readinessProbe:
-            exec:
-              command: ["mongosh", "--eval", "db.adminCommand('ping')"]
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 12
-          livenessProbe:
-            tcpSocket:
-              port: 27017
-            initialDelaySeconds: 20
-            periodSeconds: 20
-            timeoutSeconds: 5
-            failureThreshold: 6
-            successThreshold: 1
-          startupProbe:
-            tcpSocket:
-              port: 27017
-            initialDelaySeconds: 0
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 30
-          {{- if .Values.infraSecurityContext.mongodb }}
-          securityContext:
-            {{- toYaml .Values.infraSecurityContext.mongodb | nindent 12 }}
-          {{- end }}
-      volumes:
-        - name: mongo-data
-          persistentVolumeClaim:
-            claimName: stackstorm-mongo
-        - name: scripts
-          configMap:
-            name: stackstorm-scripts
-            defaultMode: 0755
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: stackstorm-rabbitmq
-  labels:
-    app.kubernetes.io/component: stackstorm-rabbitmq
-    {{- include "poundcake.labels" . | nindent 4 }}
-spec:
-  replicas: 1
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app.kubernetes.io/component: stackstorm-rabbitmq
-      {{- include "poundcake.selectorLabels" . | nindent 6 }}
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/component: stackstorm-rabbitmq
-        {{- include "poundcake.logLabelsForComponent" (dict "component" "stackstorm-rabbitmq") | nindent 8 }}
-        {{- include "poundcake.selectorLabels" . | nindent 8 }}
-    spec:
-      {{- with .Values.podSecurityContext }}
-      securityContext:
-        {{- toYaml (omit . "fsGroup") | nindent 8 }}
-      {{- end }}
-      {{- include "poundcake.podPlacement" . | nindent 6 }}
-      initContainers:
-        - name: rabbitmq-cookie-fix
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - |
-              mkdir -p /var/lib/rabbitmq
-              chown 1000:1000 /var/lib/rabbitmq
-              chmod 700 /var/lib/rabbitmq
-              if [ -f /var/lib/rabbitmq/.erlang.cookie ]; then
-                chown 1000:1000 /var/lib/rabbitmq/.erlang.cookie
-                chmod 600 /var/lib/rabbitmq/.erlang.cookie
-              fi
-          securityContext:
-            runAsUser: 0
-            runAsGroup: 0
-            runAsNonRoot: false
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false
-            capabilities:
-              drop:
-                - ALL
-              add:
-                - CHOWN
-                - FOWNER
-          volumeMounts:
-            - name: rabbitmq-data
-              mountPath: /var/lib/rabbitmq
-      containers:
-        - name: rabbitmq
-          image: {{ .Values.images.rabbitmq }}
-          imagePullPolicy: IfNotPresent
-          env:
-            - name: RABBITMQ_DEFAULT_USER
-              valueFrom:
-                secretKeyRef:
-                  name: stackstorm-secrets
-                  key: RABBITMQ_USER
-            - name: RABBITMQ_DEFAULT_PASS
-              valueFrom:
-                secretKeyRef:
-                  name: stackstorm-secrets
-                  key: RABBITMQ_PASSWORD
-            - name: POUNDCAKE_LOG_FORMAT
-              value: {{ .Values.logFormat | quote }}
-          ports:
-            - containerPort: 5672
-              name: amqp
-            - containerPort: 15672
-              name: mgmt
-          volumeMounts:
-            - name: rabbitmq-data
-              mountPath: /var/lib/rabbitmq
-          readinessProbe:
-            exec:
-              command: ["rabbitmq-diagnostics", "ping"]
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 12
-          livenessProbe:
-            tcpSocket:
-              port: 5672
-            initialDelaySeconds: 20
-            periodSeconds: 20
-            timeoutSeconds: 5
-            failureThreshold: 6
-            successThreshold: 1
-          startupProbe:
-            tcpSocket:
-              port: 5672
-            initialDelaySeconds: 0
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 30
-          {{- if .Values.infraSecurityContext.rabbitmq }}
-          securityContext:
-            {{- toYaml .Values.infraSecurityContext.rabbitmq | nindent 12 }}
-          {{- end }}
-      volumes:
-        - name: rabbitmq-data
-          persistentVolumeClaim:
-            claimName: stackstorm-rabbitmq
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: stackstorm-redis
-  labels:
-    app.kubernetes.io/component: stackstorm-redis
-    {{- include "poundcake.labels" . | nindent 4 }}
-spec:
-  replicas: 1
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app.kubernetes.io/component: stackstorm-redis
-      {{- include "poundcake.selectorLabels" . | nindent 6 }}
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/component: stackstorm-redis
-        {{- include "poundcake.logLabelsForComponent" (dict "component" "stackstorm-redis") | nindent 8 }}
-        {{- include "poundcake.selectorLabels" . | nindent 8 }}
-    spec:
-      {{- if .Values.podSecurityContext }}
-      securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      {{- end }}
-      {{- include "poundcake.podPlacement" . | nindent 6 }}
-      containers:
-        - name: redis
-          image: {{ .Values.images.redis }}
-          imagePullPolicy: IfNotPresent
-          ports:
-            - containerPort: 6379
-              name: redis
-          volumeMounts:
-            - name: redis-data
-              mountPath: /data
-          readinessProbe:
-            exec:
-              command: ["redis-cli", "ping"]
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 12
-          livenessProbe:
-            tcpSocket:
-              port: 6379
-            initialDelaySeconds: 20
-            periodSeconds: 20
-            timeoutSeconds: 5
-            failureThreshold: 6
-            successThreshold: 1
-          startupProbe:
-            tcpSocket:
-              port: 6379
-            initialDelaySeconds: 0
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 30
-          {{- if .Values.infraSecurityContext.redis }}
-          securityContext:
-            {{- toYaml .Values.infraSecurityContext.redis | nindent 12 }}
-          {{- end }}
-      volumes:
-        - name: redis-data
-          persistentVolumeClaim:
-            claimName: stackstorm-redis
 {{- end }}

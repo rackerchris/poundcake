@@ -1,178 +1,161 @@
-# CLI Install And Quickstart
+# PoundCake CLI
 
-For the full command and flag inventory, see [REFERENCE.md](REFERENCE.md).
+`cakectl` is the preferred command name for the PoundCake control-plane CLI.
+It uses PoundCake's human auth model directly: log in with a username/password
+or device flow, receive a PoundCake session, and reuse that session for later
+requests.
 
-This page keeps the short, practical CLI quickstart.
+## Auth Model
 
-## Install
+- Human CLI auth is session-based.
+- Use `--token` or `POUNDCAKE_TOKEN` only for an existing PoundCake session token.
+- Use `--username` and `--password` for non-interactive operator use; the CLI
+  will log in automatically when it needs a session.
+- Internal service HMAC auth is not part of the human CLI surface.
 
-The PoundCake CLI ships inside this repo. There is not a separate published CLI package.
-
-Python 3.11+ is required.
-
-### Recommended Operator Install
-
-If the repo is already checked out on a host, install the CLI from that checkout into a dedicated virtual environment.
-
-Example using the common host checkout path:
-
-```bash
-python3 -m venv ~/.venvs/poundcake-cli
-source ~/.venvs/poundcake-cli/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install /opt/poundcake
-```
-
-From the repo root, the equivalent non-editable install is:
+Examples:
 
 ```bash
-python3 -m pip install .
+cakectl --url http://localhost:8080 auth login --provider local --username alice --password secret
+cakectl --url http://localhost:8080 auth me
+cakectl --url http://localhost:8080 orders list --processing-status processing
 ```
-
-You can also use:
-
-```bash
-make install
-```
-
-Installed commands:
-
-- `poundcake`
-- `poundcake-cli`
-
-Use `poundcake` as the standard command name.
-
-### Developer Install
-
-If you are working on the repo and want CLI changes to apply without reinstalling:
-
-```bash
-python3 -m pip install --upgrade pip setuptools wheel
-python3 -m pip install -e ".[dev]"
-```
-
-Or:
-
-```bash
-make dev-install
-```
-
-### Verify The Install
-
-```bash
-poundcake --help
-poundcake --url https://poundcake.example.com auth providers
-```
-
-If you installed into a dedicated virtual environment and `poundcake` is not on your shell `PATH`, either activate the virtual environment again or invoke the full path directly:
-
-```bash
-~/.venvs/poundcake-cli/bin/poundcake --help
-```
-
-### Troubleshooting
-
-- If `pip install -e .` fails with a `build_editable` or PEP 660 error, upgrade `pip`, `setuptools`, and `wheel`, or use the non-editable install path `python3 -m pip install .`.
-- If the CLI cannot reach PoundCake, pass `--url` explicitly. The default is `http://localhost:8080`, but local Docker Compose examples in this repo use `http://localhost:8000`.
 
 ## Global Options
 
-```bash
-poundcake --help
-```
+| Option | Env Var | Description |
+|---|---|---|
+| `--url, -u` | `POUNDCAKE_URL` | PoundCake API URL |
+| `--token, -t` | `POUNDCAKE_TOKEN` | PoundCake session token for authentication |
+| `--username` | `POUNDCAKE_USERNAME` | Username for password-based auto-login |
+| `--password` | `POUNDCAKE_PASSWORD` | Password for password-based auto-login |
+| `--webhook-token` | `POUNDCAKE_WEBHOOK_TOKEN` | Bearer token for webhook POST endpoints |
+| `--format, -f` | | Output format: `json`, `yaml`, `table` (default: `table`) |
+| `--verbose, -v` | | Enable verbose output |
 
-The most commonly used global flags are:
+## Supported Command Areas
 
-- `--url` / `POUNDCAKE_URL`
-- `--api-key` / `POUNDCAKE_API_KEY`
-- `--format json|yaml|table`
-- `--verbose`
+- `auth`: provider discovery, login/logout, current principal, RBAC bindings
+- `overview`: reader/operator summary over health, observability, orders, communications, and suppressions
+- `orders`: reporting/status views backed by `/orders/status`, `/orders/{id}/status`, and `/orders/{id}/timeline`
+- `dishes`: reporting/status views backed by `/dishes/status` and `/dishes/{id}/ingredient-status`
+- `communications`: redacted communication activity backed by `/communications/activity/status`
+- `recipes`: recipe CRUD for operator-owned desired state
+- `suppressions`: suppression management
+- `comm-policy`: communication policy management
+- `ingredients`: read-only ingredient template inspection
+- `api`: low-level authenticated API wrapper for E2E and debugging
+- `webhook`: post alerts via the webhook endpoint (POST /webhook)
+- `plugin`: manage plugin configuration and health checks
+- `activity`: view suppressed activity records
+- `ready`: check API readiness (GET /ready)
+- `health`: get full health status (GET /health)
 
-The CLI defaults to `http://localhost:8080` if `--url` is omitted. For local Docker Compose examples in this repo, use `http://localhost:8000`.
+The CLI no longer exposes legacy action-template or Prometheus rule command
+families that targeted removed or out-of-contract API routes.
 
-## Common Commands
+## E2E-Friendly API Wrapper
 
-```bash
-poundcake --url http://localhost:8000 overview
-poundcake --url http://localhost:8000 incidents list
-poundcake --url http://localhost:8000 communications list
-poundcake --url http://localhost:8000 alert-rules list
-poundcake --url http://localhost:8000 workflows list
-poundcake --url http://localhost:8000 actions list
-```
+Use `cakectl api` when a test needs an authenticated control-plane call without
+managing cookies directly.
 
-## Authentication
-
-Full auth provider enablement and RBAC setup are documented in [AUTH.md](AUTH.md).
-
-List enabled providers:
-
-```bash
-poundcake --url http://localhost:8000 auth providers
-```
-
-If you have the internal service token or another API key, pass it explicitly:
-
-```bash
-poundcake --url http://localhost:8000 --api-key "$POUNDCAKE_AUTH_SERVICE_TOKEN" incidents list
-```
-
-Local login:
+### Generic API Requests
 
 ```bash
-poundcake --url http://localhost:8000 auth login --provider local --username admin
-poundcake --url http://localhost:8000 auth me
-poundcake --url http://localhost:8000 auth logout
+cakectl --url http://localhost:8080 --username alice --password secret \
+  api get /service-registry/ingredients
+
+cakectl --url http://localhost:8080 --username alice --password secret \
+  api post /recipes/ --body-json '{"name":"demo","enabled":true,"recipe_ingredients":[]}'
 ```
 
-Browser/device-code providers:
+Read request body from a file:
 
 ```bash
-poundcake --url http://localhost:8000 auth login --provider auth0
-poundcake --url http://localhost:8000 auth login --provider azure_ad
+cakectl --url http://localhost:8080 \
+  api post /suppressions --body-file suppression-payload.json --format json
 ```
 
-Stored sessions live under `${XDG_CONFIG_HOME:-~/.config}/poundcake/session.json`.
-If `--api-key` is supplied, it takes precedence over any stored session.
-
-## File-Driven Commands
-
-`workflows`, `global-communications`, and `alert-rules apply` all work well with checked-in JSON or YAML:
+For public or route-level-token endpoints, bypass the CLI session explicitly:
 
 ```bash
-poundcake workflows create --file ./examples/workflow.yaml
-poundcake workflows update 17 --file ./examples/workflow-update.yaml
-poundcake global-communications set --file ./examples/global-comms.yaml
-poundcake alert-rules apply ./examples/rule-group.yaml --source-name kube-prometheus-stack
+cakectl --url http://localhost:8080 \
+  api post /webhook \
+  --no-session \
+  --header 'Authorization: Bearer example-token' \
+  --body-json '{"status":"firing","alerts":[]}'
 ```
 
-Inline JSON is also supported for quick edits:
+Verb aliases are available as `api get`, `api post`, `api put`, `api patch`,
+and `api delete`, each accepting the same options.
+
+## Webhook Commands
+
+Post Alertmanager-format payloads to trigger remediation orders.
 
 ```bash
-poundcake workflows create \
-  --name "Filesystem response" \
-  --step-json '{"ingredient_id":42,"run_phase":"firing"}' \
-  --route-json '{"label":"Core","execution_target":"rackspace_core","provider_config":{"account_number":"<rackspace-account-number>"}}'
+# Post from a file
+cakectl --url http://localhost:8080 --webhook-token my-token \
+  webhook post -f webhook-payload.json --format json
 
-poundcake global-communications set \
-  --route-json '{"label":"Core","execution_target":"rackspace_core","provider_config":{"account_number":"<rackspace-account-number>"}}' \
-  --route-json '{"label":"Discord","execution_target":"discord","destination_target":"ops-alerts"}'
+# Post and output only the resulting order ID
+order_id="$(cakectl --url http://localhost:8080 --webhook-token my-token \
+  webhook post -f webhook-payload.json --order-id-only)"
+
+# Post from stdin
+cat alertmanager-alert.json | cakectl --url http://localhost:8080 --webhook-token my-token \
+  webhook post --order-id-only
+
+# Post from inline JSON
+cakectl --url http://localhost:8080 --webhook-token my-token \
+  webhook post --body-json '{"status":"firing","alerts":[]}' --format json
 ```
 
-## Legacy Aliases
+## Plugin Commands
 
-The old nouns still work as aliases:
-
-- `orders` -> `incidents`
-- `ingredients` -> `actions`
-- `recipes` -> `workflows`
-- `rules` -> `alert-rules`
-
-## StackStorm CLI
-
-The local dev stack still includes a StackStorm client container:
+### Health Check
 
 ```bash
-docker compose -f docker/docker-compose.yml exec st2client st2 action list
-docker compose -f docker/docker-compose.yml exec st2client st2 execution list -n 5
+cakectl --url http://localhost:8080 plugin health k8s
+# {
+#   "health_status": "healthy",
+#   "health_message": "OK",
+#   "service_type": "k8s"
+# }
 ```
+
+### Configuration Update
+
+```bash
+# Update via inline JSON
+cakectl --url http://localhost:8080 plugin configuration alertmanager \
+  --config-json '{"config":{"webhook_bearer_token":"new-token"}}'
+
+# Update via file
+cakectl --url http://localhost:8080 plugin configuration alertmanager \
+  --config-file plugin-config.json
+```
+
+## Activity Commands
+
+```bash
+# List activity suppressed by a specific suppression
+cakectl --url http://localhost:8080 activity suppressed 42 --format json
+```
+
+## Health Commands
+
+```bash
+# Quick readiness check
+cakectl --url http://localhost:8080 ready
+
+# Full health status
+cakectl --url http://localhost:8080 health
+```
+
+## Naming
+
+`cakectl` is the recommended executable name because it reads naturally in
+operator and E2E workflows and matches the control-plane role of the tool more
+closely than `cakecli`. The existing `poundcake` script remains available as an
+alias to the same implementation.

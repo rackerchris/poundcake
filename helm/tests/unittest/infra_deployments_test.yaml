@@ -19,10 +19,6 @@ tests:
           value: true
         documentIndex: 0
       - equal:
-          path: spec.template.spec.containers[0].securityContext.runAsUser
-          value: 1000
-        documentIndex: 0
-      - equal:
           path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
           value: false
         documentIndex: 0
@@ -39,8 +35,8 @@ tests:
         documentIndex: 0
       - equal:
           path: spec.template.metadata.labels["poundcake.io/log-role"]
-          value: mongodb
-        documentIndex: 1
+          value: mariadb
+        documentIndex: 0
 
   - it: defaults infra deployments to worker nodes
     asserts:
@@ -48,25 +44,13 @@ tests:
           path: spec.template.spec.nodeSelector["node-role.kubernetes.io/worker"]
           value: worker
         documentIndex: 0
-      - equal:
-          path: spec.template.spec.nodeSelector["node-role.kubernetes.io/worker"]
-          value: worker
-        documentIndex: 3
 
-  - it: renders mongodb with writable root filesystem by default
+  - it: disables Kubernetes service environment variable injection
     asserts:
       - equal:
-          path: metadata.name
-          value: stackstorm-mongodb
-        documentIndex: 1
-      - equal:
-          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          path: spec.template.spec.enableServiceLinks
           value: false
-        documentIndex: 1
-      - equal:
-          path: spec.template.spec.containers[0].securityContext.runAsUser
-          value: 1000
-        documentIndex: 1
+        documentIndex: 0
 
   - it: uses Recreate strategy for pvc-backed infra deployments
     asserts:
@@ -74,94 +58,6 @@ tests:
           path: spec.strategy.type
           value: Recreate
         documentIndex: 0
-      - equal:
-          path: spec.strategy.type
-          value: Recreate
-        documentIndex: 1
-      - equal:
-          path: spec.strategy.type
-          value: Recreate
-        documentIndex: 2
-      - equal:
-          path: spec.strategy.type
-          value: Recreate
-        documentIndex: 3
-
-  - it: fixes rabbitmq data directory ownership before startup
-    asserts:
-      - equal:
-          path: spec.template.spec.initContainers[0].name
-          value: rabbitmq-cookie-fix
-        documentIndex: 2
-      - equal:
-          path: spec.template.spec.initContainers[0].command[2]
-          value: |
-            mkdir -p /var/lib/rabbitmq
-            chown 1000:1000 /var/lib/rabbitmq
-            chmod 700 /var/lib/rabbitmq
-            if [ -f /var/lib/rabbitmq/.erlang.cookie ]; then
-              chown 1000:1000 /var/lib/rabbitmq/.erlang.cookie
-              chmod 600 /var/lib/rabbitmq/.erlang.cookie
-            fi
-        documentIndex: 2
-      - equal:
-          path: spec.template.spec.initContainers[0].securityContext.runAsUser
-          value: 0
-        documentIndex: 2
-      - equal:
-          path: spec.template.spec.initContainers[0].securityContext.runAsNonRoot
-          value: false
-        documentIndex: 2
-      - equal:
-          path: spec.template.spec.initContainers[0].securityContext.capabilities.add[0]
-          value: CHOWN
-        documentIndex: 2
-      - equal:
-          path: spec.template.spec.initContainers[0].securityContext.capabilities.add[1]
-          value: FOWNER
-        documentIndex: 2
-      - isNull:
-          path: spec.template.spec.securityContext.fsGroup
-        documentIndex: 2
-
-  - it: applies configurable podSecurityContext to infra deployments
-    set:
-      podSecurityContext.runAsUser: 2001
-      podSecurityContext.fsGroup: 2001
-    asserts:
-      - equal:
-          path: spec.template.spec.securityContext.runAsUser
-          value: 2001
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.securityContext.fsGroup
-          value: 2001
-        documentIndex: 1
-      - equal:
-          path: spec.template.spec.securityContext.runAsUser
-          value: 2001
-        documentIndex: 2
-      - isNull:
-          path: spec.template.spec.securityContext.fsGroup
-        documentIndex: 2
-      - equal:
-          path: spec.template.spec.securityContext.fsGroup
-          value: 2001
-        documentIndex: 3
-
-  - it: allows overriding mongodb container security context
-    set:
-      infraSecurityContext.mongodb.readOnlyRootFilesystem: true
-      infraSecurityContext.mongodb.runAsUser: 999
-    asserts:
-      - equal:
-          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
-          value: true
-        documentIndex: 1
-      - equal:
-          path: spec.template.spec.containers[0].securityContext.runAsUser
-          value: 999
-        documentIndex: 1
 
   - it: does not render pull secrets from poundcakeImage settings
     set:
@@ -170,6 +66,3 @@ tests:
       - isNull:
           path: spec.template.spec.imagePullSecrets
         documentIndex: 0
-      - isNull:
-          path: spec.template.spec.imagePullSecrets
-        documentIndex: 3

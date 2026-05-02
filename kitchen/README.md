@@ -4,17 +4,23 @@ This directory contains the background workers that drive execution.
 
 ## Services
 
-- **prep-chef**: Claims new orders and creates dishes.
-- **chef**: Claims dishes and triggers workflow execution via `/api/v1/cook/execute` (`execution_engine=stackstorm`).
-- **timer**: Monitors StackStorm workflow executions and updates dish/dish_ingredients.
-- **dishwasher**: Syncs StackStorm actions/packs into Ingredients/Recipes.
+- **prep-chef**: Claims ready orders and hands them to Cook.
+- **cook**: Expands orders into dishes, hydrates dish ingredients from recipe ingredients, and advances ready steps.
+- **expediter-runner**: Claims runner-dispatched dish ingredients and performs workload execution through Expediter's internal execute boundary.
+- **timer**: Crawls in-flight dish ingredients, observes existing provider execution state only through Expediter, and reconciles outcomes.
+- **dishwasher**: Syncs plugin manifests into immutable ingredient templates, recipes, and scheduled tasks.
 
 ## Flow (High Level)
 
 1. Alertmanager posts `/api/v1/webhook`.
-2. `prep-chef` polls `/api/v1/orders?processing_status=new` and calls `/api/v1/orders/{order_id}/dispatch`.
-3. `chef` claims dishes via `/api/v1/dishes/{dish_id}/claim` and executes via `/api/v1/cook/execute`.
-4. `timer` polls `/api/v1/dishes?processing_status=processing` and writes results to `/api/v1/dishes/{dish_id}` and `/api/v1/dishes/{dish_id}/ingredients/bulk`.
+2. `prep-chef` polls `/api/v1/orders?processing_status=new` and calls `/api/v1/cook/orders/{order_id}`.
+3. Cook creates the dish and snapshots hydrated service fields into `dish_ingredients`.
+4. Cook dispatches ready dish ingredients through the internal Expediter gateway; Expediter records an expediter-runner receipt.
+5. `expediter-runner` claims runner receipts, asks Expediter to execute the row, and records either a terminal result or an external provider receipt.
+6. Expediter is the only worker-facing gateway that calls plugin adapters for execution, status, and cancellation.
+7. `timer` reads `/api/v1/dish-ingredients/in-flight`, polls `/api/v1/expediter/status/{service_type}/{service_exec_id}` as a read-only status check, reconciles outcomes, and calls `/api/v1/cook/dishes/{dish_id}/advance`.
+
+Timer never imports plugin adapters or provider clients directly, never dispatches plugin work, and never expects status polling to perform work. Cancellation is a lifecycle reconciliation exception, but it still goes through `/api/v1/expediter/cancel/{service_type}/{service_exec_id}` so Expediter remains the provider boundary.
 
 ## Environment Variables
 
@@ -23,5 +29,4 @@ This directory contains the background workers that drive execution.
 
 ## Debug Tips
 
-- Verify StackStorm is running: `curl http://poundcake-st2api:9101/v1`
 - List dishes: `curl http://localhost:8000/api/v1/dishes`

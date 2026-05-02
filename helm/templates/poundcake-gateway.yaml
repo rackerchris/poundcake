@@ -7,7 +7,7 @@
 {{- $apiProtocol := upper (default "HTTP" .Values.gateway.listeners.api.protocol) }}
 {{- $uiProtocol := upper (default "HTTP" .Values.gateway.listeners.ui.protocol) }}
 {{- $sharedListener := and $apiEnabled $uiEnabled (eq $apiHostname $uiHostname) (eq (int .Values.gateway.listeners.api.port) (int .Values.gateway.listeners.ui.port)) (eq $apiProtocol $uiProtocol) }}
-{{- $parentGatewayName := default .Values.gateway.name .Values.gateway.gatewayName }}
+{{- $parentGatewayName := .Values.gateway.gatewayName }}
 {{- $parentGatewayNamespace := .Values.gateway.gatewayNamespace }}
 {{- $routeHostnames := .Values.gateway.hostnames | default list }}
 {{- $listenerHostname := default "" .Values.gateway.listener.hostname }}
@@ -40,9 +40,6 @@ spec:
   {{- else if $listenerHostname }}
   hostnames:
     - {{ $listenerHostname | quote }}
-  {{- else if $apiHostname }}
-  hostnames:
-    - {{ $apiHostname | quote }}
   {{- end }}
   rules:
     - matches:
@@ -89,9 +86,6 @@ spec:
   {{- else if $listenerHostname }}
   hostnames:
     - {{ $listenerHostname | quote }}
-  {{- else if $uiHostname }}
-  hostnames:
-    - {{ $uiHostname | quote }}
   {{- end }}
   rules:
     - matches:

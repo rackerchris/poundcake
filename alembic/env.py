@@ -79,6 +79,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        connection.exec_driver_sql("SET time_zone = '+00:00'")
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

@@ -10,7 +10,13 @@ from typing import Optional, Type, Callable
 from pydantic import BaseModel, Field, ConfigDict
 from fastapi import Request, HTTPException
 
-from api.types import DishProcessingStatus, OrderProcessingStatus, AlertStatus
+from api.types import (
+    AlertStatus,
+    DishProcessingStatus,
+    OrderProcessingStatus,
+    OrderScope,
+    OrderType,
+)
 from api.types import SuppressionStatus
 
 
@@ -54,17 +60,19 @@ class DishQueryParams(BaseModel):
 
     processing_status: Optional[DishProcessingStatus] = Field(
         None,
-        description="Filter by processing status (new/processing/finalizing/complete/failed/abandoned/timeout/canceled)",
+        description="Filter by processing status (new/processing/finalizing/complete/failed/errored/timeout/canceled)",
     )
     req_id: Optional[str] = Field(
         None, min_length=1, max_length=100, description="Filter by request ID"
     )
     order_id: Optional[int] = Field(None, ge=1, description="Filter by order ID (positive integer)")
-    execution_ref: Optional[str] = Field(
+    order_scope: OrderScope = Field(
+        "all",
+        description="Filter by order type grouping (operator/system/all)",
+    )
+    order_type: Optional[OrderType] = Field(
         None,
-        min_length=1,
-        max_length=100,
-        description="Filter by execution reference",
+        description="Filter by explicit order type (webhook_alert/scheduled_task/manual)",
     )
     limit: int = Field(
         100, ge=1, le=1000, description="Maximum number of results to return (1-1000)"
@@ -87,23 +95,6 @@ class RecipeQueryParams(BaseModel):
     offset: int = Field(0, ge=0, description="Number of results to skip for pagination")
 
 
-class IngredientQueryParams(BaseModel):
-    """Query parameters for GET /api/v1/ingredients endpoint."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    execution_target: Optional[str] = Field(
-        None, min_length=1, max_length=100, description="Filter by execution target"
-    )
-    task_key_template: Optional[str] = Field(
-        None, min_length=1, max_length=255, description="Filter by task key template"
-    )
-    limit: int = Field(
-        100, ge=1, le=1000, description="Maximum number of results to return (1-1000)"
-    )
-    offset: int = Field(0, ge=0, description="Number of results to skip for pagination")
-
-
 class OrderQueryParams(BaseModel):
     """Query parameters for GET /api/v1/orders endpoint."""
 
@@ -113,7 +104,7 @@ class OrderQueryParams(BaseModel):
         None,
         description=(
             "Filter by processing status "
-            "(new/processing/waiting_clear/escalation/resolving/waiting_ticket_close/complete/failed/canceled)"
+            "(new/processing/resolving/complete/failed/errored/timeout/canceled)"
         ),
     )
     alert_status: Optional[AlertStatus] = Field(
@@ -124,6 +115,18 @@ class OrderQueryParams(BaseModel):
     )
     alert_group_name: Optional[str] = Field(
         None, min_length=1, max_length=255, description="Filter by alert group name"
+    )
+    exclude_plugin_health_checks: bool = Field(
+        False,
+        description="Exclude managed plugin health-check workflow orders from incident-facing lists",
+    )
+    order_scope: OrderScope = Field(
+        "all",
+        description="Filter by order type grouping (operator/system/all)",
+    )
+    order_type: Optional[OrderType] = Field(
+        None,
+        description="Filter by explicit order type (webhook_alert/scheduled_task/manual)",
     )
     limit: int = Field(
         100, ge=1, le=1000, description="Maximum number of results to return (1-1000)"
@@ -159,24 +162,24 @@ class SuppressedActivityQueryParams(BaseModel):
     offset: int = Field(0, ge=0, description="Number of results to skip for pagination")
 
 
-class BakeryOperationQueryParams(BaseModel):
-    """Query parameters for GET /api/v1/ticketing/bakery endpoint."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    status: Optional[str] = Field(None, description="Filter by operation/summary status")
-    limit: int = Field(
-        100, ge=1, le=1000, description="Maximum number of results to return (1-1000)"
-    )
-    offset: int = Field(0, ge=0, description="Number of results to skip for pagination")
-
-
 class ObservabilityActivityQueryParams(BaseModel):
     """Query parameters for GET /api/v1/observability/activity endpoint."""
 
     model_config = ConfigDict(extra="forbid")
 
     type: Optional[str] = Field(None, description="Filter by activity type")
+    exclude_plugin_health_checks: bool = Field(
+        False,
+        description="Exclude managed plugin health-check workflow activity from overview feeds",
+    )
+    order_scope: OrderScope = Field(
+        "all",
+        description="Filter order/dish activity by order type grouping (operator/system/all)",
+    )
+    order_type: Optional[OrderType] = Field(
+        None,
+        description="Filter order/dish activity by explicit order type",
+    )
     limit: int = Field(50, ge=1, le=250, description="Maximum number of results to return (1-250)")
     offset: int = Field(0, ge=0, description="Number of results to skip for pagination")
 

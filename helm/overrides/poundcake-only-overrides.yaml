@@ -4,10 +4,5 @@
 poundcake:
   enabled: true
 
-bakery:
-  enabled: false
-  client:
-    enabled: false
-
 database:
   mode: embedded

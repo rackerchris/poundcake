@@ -5,11 +5,6 @@
 # Main API deployment (service load balances across pods)
 replicaCount: 2
 
-# Worker services
-chef:
-  enabled: true
-  replicaCount: 2
-
 timer:
   enabled: true
   replicaCount: 2
@@ -22,10 +17,6 @@ dishwasher:
 service:
   type: LoadBalancer
   port: 8080
-
-# Required for multi-replica state coordination
-redis:
-  enabled: true
 
 # Recommended resilience setting
 podDisruptionBudget:

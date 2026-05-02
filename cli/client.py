@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from shared.types import JSONObject
+
 from dataclasses import dataclass
-from pathlib import PurePosixPath
-import re
+from datetime import datetime, timezone
 from typing import Any, Optional, TypeVar, cast
 
 import httpx
@@ -18,7 +19,7 @@ from api.schemas.schemas import (
     AuthRoleBindingCreate,
     AuthRoleBindingResponse,
     AuthRoleBindingUpdate,
-    CommunicationActivityRecord,
+    CommunicationActivityStatusRecord,
     CommunicationPolicyResponse,
     CommunicationPolicyUpdate,
     DeleteResponse,
@@ -26,25 +27,19 @@ from api.schemas.schemas import (
     DeviceAuthorizationPollResponse,
     DeviceAuthorizationStartRequest,
     DeviceAuthorizationStartResponse,
-    DishDetailResponse,
+    DishIngredientStatusResponse,
+    DishStatusResponse,
     HealthResponse,
     IncidentTimelineResponse,
-    IngredientCreate,
     IngredientResponse,
-    IngredientUpdate,
-    ObservabilityActivityRecord,
+    ObservabilityActivityStatusRecord,
     ObservabilityOverviewResponse,
-    OrderResponse,
-    PrometheusRuleListResponse,
-    PrometheusRuleMutationResponse,
-    PrometheusRuleResponse,
-    PrometheusRuleWriteRequest,
+    OrderStatusResponse,
     RecipeCreate,
     RecipeDetailResponse,
     RecipeUpdate,
     SessionResponse,
     SettingsResponse,
-    StatsResponse,
     SuppressionCreate,
     SuppressionDetailResponse,
     SuppressionResponse,
@@ -120,60 +115,64 @@ class DeviceAuthorizationStart:
     interval: int
 
 
-def _canonical_rule_source(value: str | None) -> set[str]:
-    """Return comparable identifiers for a Prometheus rule source."""
-
-    text = str(value or "").strip()
-    if not text:
-        return set()
-
-    basename = PurePosixPath(text).name
-    without_extension = re.sub(r"\.(yaml|yml)$", "", basename, flags=re.IGNORECASE)
-    sanitized = re.sub(r"[^a-z0-9.-]", "-", without_extension.lower())
-    sanitized = re.sub(r"^[^a-z0-9]+", "", sanitized)
-    sanitized = re.sub(r"[^a-z0-9]+$", "", sanitized)
-    if not sanitized:
-        sanitized = "prometheus-rule"
-    if len(sanitized) > 253:
-        sanitized = sanitized[:253].rstrip("-.")
-
-    return {
-        candidate
-        for candidate in {
-            text,
-            text.lower(),
-            basename,
-            basename.lower(),
-            without_extension,
-            without_extension.lower(),
-            sanitized,
-        }
-        if candidate
-    }
-
-
 class PoundCakeClient:
     """Client for interacting with the PoundCake API."""
 
     def __init__(
         self,
         base_url: str,
-        api_key: Optional[str] = None,
+        token: Optional[str] = None,
         *,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        webhook_token: Optional[str] = None,
         session_store: SessionStore | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+        self.token = token
+        self.username = username
+        self.password = password
+        self.webhook_token = webhook_token
         self.session_store = session_store or SessionStore()
-        self.session = None if api_key else self.session_store.get(self.base_url)
+        self.session = None if token else self.session_store.get(self.base_url)
         self.headers: dict[str, str] = {}
-        if api_key:
-            self.headers["Authorization"] = f"Bearer {api_key}"
+
+    def _now_utc(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
 
     def _cookies(self, *, use_session: bool = True) -> dict[str, str] | None:
-        if self.api_key or not use_session or not self.session:
+        if not use_session:
+            return None
+        if self.token:
+            return {"session_token": self.token}
+        if not self.session:
             return None
         return {"session_token": self.session.session_id}
+
+    def _can_auto_login(self) -> bool:
+        return bool(self.username and self.password and not self.token)
+
+    def _password_login_capable_providers(self) -> list[ProviderInfo]:
+        return [provider for provider in self.get_auth_providers() if provider.password_login]
+
+    def _resolve_auto_login_provider(self) -> str:
+        providers = self._password_login_capable_providers()
+        if not providers:
+            raise PoundCakeClientError("No password-based auth providers are enabled")
+        if len(providers) == 1:
+            return providers[0].name
+        provider_names = ", ".join(provider.name for provider in providers)
+        raise PoundCakeClientError(
+            "Multiple password-based auth providers are enabled; "
+            f"run 'poundcake auth login --provider <name>' first. Available: {provider_names}"
+        )
+
+    def ensure_authenticated(self) -> None:
+        """Log in automatically when credentials were supplied but no session exists."""
+        if self.token or self.session or not self._can_auto_login():
+            return
+        provider = self._resolve_auto_login_provider()
+        self.login(provider, str(self.username), str(self.password))
 
     def _extract_error_detail(self, response: httpx.Response) -> str:
         content_type = response.headers.get("content-type", "")
@@ -206,21 +205,19 @@ class PoundCakeClient:
         except ValidationError as exc:
             raise PoundCakeClientError(f"{context}: {exc}") from exc
 
-    def _validate_model_dump(
-        self, payload: Any, model: type[ModelT], context: str
-    ) -> dict[str, Any]:
+    def _validate_model_dump(self, payload: Any, model: type[ModelT], context: str) -> JSONObject:
         validated = self._validate_model(payload, model, context)
-        return cast(dict[str, Any], validated.model_dump(mode="json", by_alias=True))
+        return cast(JSONObject, validated.model_dump(mode="json", by_alias=True))
 
     def _validate_list_dump(
         self, payload: Any, item_model: type[ModelT], context: str
-    ) -> list[dict[str, Any]]:
+    ) -> list[JSONObject]:
         if not isinstance(payload, list):
             raise PoundCakeClientError(context)
-        validated: list[dict[str, Any]] = []
+        validated: list[JSONObject] = []
         for item in payload:
             model = self._validate_model(item, item_model, context)
-            validated.append(cast(dict[str, Any], model.model_dump(mode="json", by_alias=True)))
+            validated.append(cast(JSONObject, model.model_dump(mode="json", by_alias=True)))
         return validated
 
     def _validate_list(self, payload: Any, item_model: type[ModelT], context: str) -> list[ModelT]:
@@ -232,11 +229,11 @@ class PoundCakeClient:
         return validated
 
     def _validate_request_payload(
-        self, payload: dict[str, Any], model: type[ModelT], context: str
-    ) -> dict[str, Any]:
+        self, payload: JSONObject, model: type[ModelT], context: str
+    ) -> JSONObject:
         validated = self._validate_model(payload, model, context)
         return cast(
-            dict[str, Any],
+            JSONObject,
             validated.model_dump(mode="json", by_alias=True, exclude_none=True, exclude_unset=True),
         )
 
@@ -245,22 +242,66 @@ class PoundCakeClient:
         method: str,
         path: str,
         *,
-        json: Optional[dict[str, Any]] = None,
-        params: Optional[dict[str, Any]] = None,
+        json: Optional[JSONObject] = None,
+        params: Optional[JSONObject] = None,
         use_session: bool = True,
+        retry_auth: bool = True,
+        extra_headers: Optional[dict[str, str]] = None,
+        _refresh_attempted: bool = False,
     ) -> Any:
-        url = f"{self.base_url}{path}"
+        if use_session:
+            self.ensure_authenticated()
+
+        if (
+            use_session
+            and not _refresh_attempted
+            and self.session
+            and (
+                self.session.is_expired()
+                or self.session.expires_at < self._now_utc()
+            )
+        ):
+            self.clear_session()
+            if self._can_auto_login():
+                self.ensure_authenticated()
+                return self._request(
+                    method,
+                    path,
+                    json=json,
+                    params=params,
+                    use_session=False,  # avoid loop during refresh
+                    retry_auth=retry_auth,
+                    extra_headers=extra_headers,
+                    _refresh_attempted=True,
+                )
+
+        url = self._resolve_url(path)
+        headers = dict(self.headers)
+        if extra_headers:
+            headers.update(extra_headers)
         response = request_with_retry_sync(
             method=method,
             url=url,
-            headers=self.headers,
+            headers=headers,
             json=json,
             params=params,
             cookies=self._cookies(use_session=use_session),
             timeout=30.0,
         )
-        if response.status_code == 401 and self.session and not self.api_key:
+        if response.status_code == 401 and self.session and not self.token:
             self.clear_session()
+            if retry_auth and self._can_auto_login():
+                self.ensure_authenticated()
+                return self._request(
+                    method,
+                    path,
+                    json=json,
+                    params=params,
+                    use_session=use_session,
+                    retry_auth=False,
+                    extra_headers=extra_headers,
+                    _refresh_attempted=True,
+                )
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -269,6 +310,18 @@ class PoundCakeClient:
                 raise NotFoundError(message) from exc
             raise PoundCakeClientError(message) from exc
         return self._decode_body(response)
+
+    def _resolve_url(self, path: str) -> str:
+        normalized = str(path or "").strip()
+        if not normalized:
+            raise PoundCakeClientError("Request path is required")
+        if normalized.startswith("http://") or normalized.startswith("https://"):
+            return normalized
+        if normalized.startswith("/api/"):
+            return f"{self.base_url}{normalized}"
+        if normalized.startswith("/"):
+            return f"{self.base_url}/api/v1{normalized}"
+        return f"{self.base_url}/api/v1/{normalized}"
 
     def clear_session(self) -> None:
         """Remove any stored session for this base URL."""
@@ -324,14 +377,34 @@ class PoundCakeClient:
 
     def logout(self) -> bool:
         """Attempt remote logout when a session exists, then clear the local session."""
-        had_session = self.session is not None
-        if self.session and not self.api_key:
+        had_session = self.session is not None or self.token is not None
+        if had_session:
             try:
-                self._request("POST", "/api/v1/auth/logout")
+                self._request("POST", "/api/v1/auth/logout", retry_auth=False)
             except PoundCakeClientError:
                 pass
         self.clear_session()
         return had_session
+
+    def api_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Optional[JSONObject] = None,
+        params: Optional[JSONObject] = None,
+        use_session: bool = True,
+        extra_headers: Optional[dict[str, str]] = None,
+    ) -> Any:
+        """Perform a direct API request through the authenticated CLI session."""
+        return self._request(
+            method.upper(),
+            path,
+            json=json,
+            params=params,
+            use_session=use_session,
+            extra_headers=extra_headers,
+        )
 
     def get_settings(self) -> SettingsResponse:
         payload = self._request("GET", "/api/v1/settings")
@@ -436,7 +509,7 @@ class PoundCakeClient:
         limit: int = 100,
         offset: int = 0,
     ) -> list[AuthPrincipalResponse]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        params: JSONObject = {"limit": limit, "offset": offset}
         if provider:
             params["provider"] = provider
         if search:
@@ -449,7 +522,7 @@ class PoundCakeClient:
         )
 
     def list_auth_bindings(self, *, provider: str | None = None) -> list[AuthRoleBindingResponse]:
-        params: dict[str, Any] | None = None
+        params: JSONObject | None = None
         if provider:
             params = {"provider": provider}
         payload = self._request("GET", "/api/v1/auth/bindings", params=params)
@@ -459,7 +532,7 @@ class PoundCakeClient:
             "Unexpected auth bindings response format",
         )
 
-    def create_auth_binding(self, payload: dict[str, Any]) -> AuthRoleBindingResponse:
+    def create_auth_binding(self, payload: JSONObject) -> AuthRoleBindingResponse:
         request_payload = self._validate_request_payload(
             payload,
             AuthRoleBindingCreate,
@@ -472,9 +545,7 @@ class PoundCakeClient:
             "Unexpected auth binding response format",
         )
 
-    def update_auth_binding(
-        self, binding_id: int, payload: dict[str, Any]
-    ) -> AuthRoleBindingResponse:
+    def update_auth_binding(self, binding_id: int, payload: JSONObject) -> AuthRoleBindingResponse:
         request_payload = self._validate_request_payload(
             payload,
             AuthRoleBindingUpdate,
@@ -501,10 +572,6 @@ class PoundCakeClient:
     def ready(self) -> HealthResponse:
         return self.health()
 
-    def stats(self) -> StatsResponse:
-        payload = self._request("GET", "/api/v1/stats")
-        return self._validate_model(payload, StatsResponse, "Unexpected stats response format")
-
     def observability_overview(self) -> ObservabilityOverviewResponse:
         payload = self._request("GET", "/api/v1/observability/overview")
         return self._validate_model(
@@ -519,19 +586,19 @@ class PoundCakeClient:
         activity_type: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[ObservabilityActivityRecord]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+    ) -> list[ObservabilityActivityStatusRecord]:
+        params: JSONObject = {"limit": limit, "offset": offset}
         if activity_type:
             params["type"] = activity_type
-        payload = self._request("GET", "/api/v1/observability/activity", params=params)
+        payload = self._request("GET", "/api/v1/observability/activity/status", params=params)
         return self._validate_list(
             payload,
-            ObservabilityActivityRecord,
+            ObservabilityActivityStatusRecord,
             "Unexpected observability activity response format",
         )
 
     # Incidents / orders
-    def list_orders(
+    def list_order_statuses(
         self,
         *,
         processing_status: Optional[str] = None,
@@ -540,8 +607,8 @@ class PoundCakeClient:
         req_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> list[OrderResponse]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+    ) -> list[OrderStatusResponse]:
+        params: JSONObject = {"limit": limit, "offset": offset}
         if processing_status:
             params["processing_status"] = processing_status
         if alert_status:
@@ -550,12 +617,20 @@ class PoundCakeClient:
             params["alert_group_name"] = alert_group_name
         if req_id:
             params["req_id"] = req_id
-        payload = self._request("GET", "/api/v1/orders", params=params)
-        return self._validate_list(payload, OrderResponse, "Unexpected orders response format")
+        payload = self._request("GET", "/api/v1/orders/status", params=params)
+        return self._validate_list(
+            payload,
+            OrderStatusResponse,
+            "Unexpected order status response format",
+        )
 
-    def get_order(self, order_id: int) -> OrderResponse:
-        payload = self._request("GET", f"/api/v1/orders/{order_id}")
-        return self._validate_model(payload, OrderResponse, "Unexpected order response format")
+    def get_order_status(self, order_id: int) -> OrderStatusResponse:
+        payload = self._request("GET", f"/api/v1/orders/{order_id}/status")
+        return self._validate_model(
+            payload,
+            OrderStatusResponse,
+            "Unexpected order status response format",
+        )
 
     def get_order_timeline(self, order_id: int) -> IncidentTimelineResponse:
         payload = self._request("GET", f"/api/v1/orders/{order_id}/timeline")
@@ -573,22 +648,22 @@ class PoundCakeClient:
         channel: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> list[CommunicationActivityRecord]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+    ) -> list[CommunicationActivityStatusRecord]:
+        params: JSONObject = {"limit": limit, "offset": offset}
         if status:
             params["status"] = status
         if channel:
             params["channel"] = channel
-        payload = self._request("GET", "/api/v1/communications/activity", params=params)
+        payload = self._request("GET", "/api/v1/communications/activity/status", params=params)
         return self._validate_list(
             payload,
-            CommunicationActivityRecord,
+            CommunicationActivityStatusRecord,
             "Unexpected communications activity response format",
         )
 
     def get_communication(
         self, communication_id: str, *, limit: int = 1000
-    ) -> CommunicationActivityRecord:
+    ) -> CommunicationActivityStatusRecord:
         for item in self.list_communications(limit=limit):
             if str(item.communication_id) == str(communication_id):
                 return item
@@ -604,7 +679,7 @@ class PoundCakeClient:
         limit: int = 100,
         offset: int = 0,
     ) -> list[SuppressionResponse]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        params: JSONObject = {"limit": limit, "offset": offset}
         if status:
             params["status"] = status
         if enabled is not None:
@@ -626,7 +701,7 @@ class PoundCakeClient:
             "Unexpected suppression response format",
         )
 
-    def create_suppression(self, payload: dict[str, Any]) -> SuppressionResponse:
+    def create_suppression(self, payload: JSONObject) -> SuppressionResponse:
         request_payload = self._validate_request_payload(
             payload,
             SuppressionCreate,
@@ -648,49 +723,57 @@ class PoundCakeClient:
         )
 
     # Workflow activity / dishes
-    def list_dishes(
+    def list_dish_statuses(
         self,
         *,
         processing_status: Optional[str] = None,
-        req_id: Optional[str] = None,
         order_id: Optional[int] = None,
-        execution_ref: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> list[DishDetailResponse]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+    ) -> list[DishStatusResponse]:
+        params: JSONObject = {"limit": limit, "offset": offset}
         if processing_status:
             params["processing_status"] = processing_status
-        if req_id:
-            params["req_id"] = req_id
         if order_id is not None:
             params["order_id"] = order_id
-        if execution_ref:
-            params["execution_ref"] = execution_ref
-        payload = self._request("GET", "/api/v1/dishes", params=params)
-        return self._validate_list(payload, DishDetailResponse, "Unexpected dishes response format")
+        payload = self._request("GET", "/api/v1/dishes/status", params=params)
+        return self._validate_list(
+            payload,
+            DishStatusResponse,
+            "Unexpected dish status response format",
+        )
 
-    def get_dish(self, dish_id: int, *, limit: int = 1000) -> DishDetailResponse:
-        for item in self.list_dishes(limit=limit):
+    def get_dish_status(self, dish_id: int, *, limit: int = 1000) -> DishStatusResponse:
+        for item in self.list_dish_statuses(limit=limit):
             if int(item.id) == dish_id:
                 return item
         raise NotFoundError(f"Workflow run '{dish_id}' not found")
+
+    def get_dish_ingredient_status(self, dish_id: int) -> list[DishIngredientStatusResponse]:
+        payload = self._request("GET", f"/api/v1/dishes/{dish_id}/ingredient-status")
+        return self._validate_list(
+            payload,
+            DishIngredientStatusResponse,
+            "Unexpected dish ingredient status response format",
+        )
 
     # Actions / ingredients
     def list_ingredients(
         self,
         *,
+        service_type: Optional[str] = None,
         execution_target: Optional[str] = None,
         task_key_template: Optional[str] = None,
         limit: int = 500,
         offset: int = 0,
     ) -> list[IngredientResponse]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
-        if execution_target:
-            params["execution_target"] = execution_target
+        params: JSONObject = {"limit": limit, "offset": offset}
+        resolved_service_type = service_type or execution_target
+        if resolved_service_type:
+            params["service_type"] = resolved_service_type
         if task_key_template:
             params["task_key_template"] = task_key_template
-        payload = self._request("GET", "/api/v1/ingredients/", params=params)
+        payload = self._request("GET", "/api/v1/service-registry/ingredients", params=params)
         return self._validate_list(
             payload,
             IngredientResponse,
@@ -698,45 +781,11 @@ class PoundCakeClient:
         )
 
     def get_ingredient(self, ingredient_id: int) -> IngredientResponse:
-        payload = self._request("GET", f"/api/v1/ingredients/{ingredient_id}")
+        payload = self._request("GET", f"/api/v1/service-registry/ingredients/{ingredient_id}")
         return self._validate_model(
             payload,
             IngredientResponse,
             "Unexpected ingredient response format",
-        )
-
-    def create_ingredient(self, payload: dict[str, Any]) -> IngredientResponse:
-        request_payload = self._validate_request_payload(
-            payload,
-            IngredientCreate,
-            "Invalid create ingredient payload",
-        )
-        response = self._request("POST", "/api/v1/ingredients/", json=request_payload)
-        return self._validate_model(
-            response,
-            IngredientResponse,
-            "Unexpected create ingredient response format",
-        )
-
-    def update_ingredient(self, ingredient_id: int, payload: dict[str, Any]) -> IngredientResponse:
-        request_payload = self._validate_request_payload(
-            payload,
-            IngredientUpdate,
-            "Invalid update ingredient payload",
-        )
-        response = self._request(
-            "PUT", f"/api/v1/ingredients/{ingredient_id}", json=request_payload
-        )
-        return self._validate_model(
-            response,
-            IngredientResponse,
-            "Unexpected update ingredient response format",
-        )
-
-    def delete_ingredient(self, ingredient_id: int) -> DeleteResponse:
-        response = self._request("DELETE", f"/api/v1/ingredients/{ingredient_id}")
-        return self._validate_model(
-            response, DeleteResponse, "Unexpected delete ingredient response format"
         )
 
     # Workflows / recipes
@@ -748,7 +797,7 @@ class PoundCakeClient:
         limit: int = 500,
         offset: int = 0,
     ) -> list[RecipeDetailResponse]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        params: JSONObject = {"limit": limit, "offset": offset}
         if name:
             params["name"] = name
         if enabled is not None:
@@ -764,7 +813,7 @@ class PoundCakeClient:
             payload, RecipeDetailResponse, "Unexpected recipe response format"
         )
 
-    def create_recipe(self, payload: dict[str, Any]) -> RecipeDetailResponse:
+    def create_recipe(self, payload: JSONObject) -> RecipeDetailResponse:
         request_payload = self._validate_request_payload(
             payload,
             RecipeCreate,
@@ -777,7 +826,7 @@ class PoundCakeClient:
             "Unexpected create recipe response format",
         )
 
-    def update_recipe(self, recipe_id: int, payload: dict[str, Any]) -> RecipeDetailResponse:
+    def update_recipe(self, recipe_id: int, payload: JSONObject) -> RecipeDetailResponse:
         request_payload = self._validate_request_payload(
             payload,
             RecipeUpdate,
@@ -805,9 +854,7 @@ class PoundCakeClient:
             "Unexpected communications policy response format",
         )
 
-    def set_global_communications_policy(
-        self, payload: dict[str, Any]
-    ) -> CommunicationPolicyResponse:
+    def set_global_communications_policy(self, payload: JSONObject) -> CommunicationPolicyResponse:
         request_payload = self._validate_request_payload(
             payload,
             CommunicationPolicyUpdate,
@@ -820,102 +867,48 @@ class PoundCakeClient:
             "Unexpected communications policy update response format",
         )
 
-    # Prometheus rules
-    def list_rules(self) -> PrometheusRuleListResponse:
-        payload = self._request("GET", "/api/v1/prometheus/rules")
-        return self._validate_model(
-            payload,
-            PrometheusRuleListResponse,
-            "Unexpected rule list response format",
-        )
+    # --- Helper methods for E2E tests ---
 
-    def get_rule(self, source_name: str, group_name: str, rule_name: str) -> PrometheusRuleResponse:
-        payload = self.list_rules()
-        requested_sources = _canonical_rule_source(source_name)
-        for rule in payload.rules:
-            available_sources = _canonical_rule_source(rule.crd or rule.file)
-            if requested_sources.isdisjoint(available_sources):
-                continue
-            if str(rule.group or "") != group_name:
-                continue
-            if str(rule.name or "") != rule_name:
-                continue
-            return rule
-        raise NotFoundError(
-            f"Rule not found: source={source_name!r}, group={group_name!r}, rule={rule_name!r}"
-        )
+    def post_webhook(self, payload: JSONObject) -> Any:
+        """POST /webhook with webhook bearer auth.
 
-    def create_rule(
-        self,
-        source_name: str,
-        group_name: str,
-        rule_name: str,
-        rule_data: dict[str, Any],
-    ) -> PrometheusRuleMutationResponse:
-        request_payload = self._validate_request_payload(
-            rule_data,
-            PrometheusRuleWriteRequest,
-            "Invalid create rule payload",
-        )
-        payload = self._request(
+        Uses webhook_token (set via --webhook-token / POUNDCAKE_WEBHOOK_TOKEN).
+        No session required — the route is auto-auth exempt.
+        """
+        if not self.webhook_token:
+            raise PoundCakeClientError(
+                "webhook_token required; set --webhook-token or POUNDCAKE_WEBHOOK_TOKEN"
+            )
+        return self._request(
             "POST",
-            "/api/v1/prometheus/rules",
-            json=request_payload,
-            params={
-                "rule_name": rule_name,
-                "group_name": group_name,
-                "file_name": source_name,
-            },
-        )
-        return self._validate_model(
-            payload,
-            PrometheusRuleMutationResponse,
-            "Unexpected create rule response format",
+            "/webhook",
+            json=payload,
+            use_session=False,
+            extra_headers={"Authorization": f"Bearer {self.webhook_token}"},
         )
 
-    def update_rule(
-        self,
-        source_name: str,
-        group_name: str,
-        rule_name: str,
-        rule_data: dict[str, Any],
-    ) -> PrometheusRuleMutationResponse:
-        request_payload = self._validate_request_payload(
-            rule_data,
-            PrometheusRuleWriteRequest,
-            "Invalid update rule payload",
-        )
-        payload = self._request(
+    def configure_plugin_config(
+        self, plugin_type: str, config: JSONObject
+    ) -> JSONObject:
+        """PUT /plugins/{service_type}/configuration — update plugin config."""
+        response = self._request(
             "PUT",
-            f"/api/v1/prometheus/rules/{rule_name}",
-            json=request_payload,
-            params={
-                "group_name": group_name,
-                "file_name": source_name,
-            },
+            f"/plugins/{plugin_type}/configuration",
+            json=config,
         )
-        return self._validate_model(
-            payload,
-            PrometheusRuleMutationResponse,
-            "Unexpected update rule response format",
-        )
+        if isinstance(response, PydanticModel):
+            return cast(
+                JSONObject, response.model_dump(mode="json", by_alias=True)
+            )
+        return cast(JSONObject, response)
 
-    def delete_rule(
-        self,
-        source_name: str,
-        group_name: str,
-        rule_name: str,
-    ) -> PrometheusRuleMutationResponse:
-        payload = self._request(
-            "DELETE",
-            f"/api/v1/prometheus/rules/{rule_name}",
-            params={
-                "group_name": group_name,
-                "file_name": source_name,
-            },
-        )
-        return self._validate_model(
-            payload,
-            PrometheusRuleMutationResponse,
-            "Unexpected delete rule response format",
+    def get_activity_suppressed(self, suppression_id: int) -> Any:
+        """GET /activity/suppressed?suppression_id={id}.
+
+        Returns list of suppressed activity records.
+        """
+        return self._request(
+            "GET",
+            "/activity/suppressed",
+            params={"suppression_id": suppression_id},
         )

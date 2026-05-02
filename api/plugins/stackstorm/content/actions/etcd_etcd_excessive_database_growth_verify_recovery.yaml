@@ -1,0 +1,52 @@
+name: etcd_etcd_excessive_database_growth_verify_recovery
+runner_type: orquesta
+entry_point: workflows/etcd_etcd_excessive_database_growth_verify_recovery.yaml
+enabled: true
+description: Gather post-remediation etcd recovery evidence for etcd-excessive-database-growth.
+parameters:
+  alert_name:
+    type: string
+    required: true
+    description: Alertmanager alert name.
+  alert_group_name:
+    type: string
+    required: false
+    description: PoundCake alert group name.
+  severity:
+    type: string
+    required: false
+    description: Alert severity label.
+  labels:
+    type: object
+    required: true
+    description: Alert labels from Alertmanager.
+  annotations:
+    type: object
+    required: false
+    default: {}
+    description: Alert annotations from Alertmanager.
+  instance:
+    type: string
+    required: false
+    description: Etcd instance label from Alertmanager.
+  job:
+    type: string
+    required: false
+    description: Etcd scrape job label.
+  cluster:
+    type: string
+    required: false
+    description: Cluster label from Alertmanager.
+  order_id:
+    type: integer
+    required: false
+    description: PoundCake order id.
+  req_id:
+    type: string
+    required: false
+    description: PoundCake request id.
+  evidence:
+    type: object
+    required: false
+    default: {}
+    description: Evidence gathered by PoundCake before this workflow.

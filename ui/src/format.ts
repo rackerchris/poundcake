@@ -50,7 +50,7 @@ export function statusTone(value?: string | null): string {
   if (["failed", "error", "canceled", "unhealthy"].includes(normalized)) {
     return "bad";
   }
-  if (["processing", "pending", "new", "warning", "degraded", "running", "created", "reused"].includes(normalized)) {
+  if (["processing", "pending", "new", "warning", "degraded", "running", "created", "reused", "initializing"].includes(normalized)) {
     return "warn";
   }
   return "neutral";

@@ -2,15 +2,18 @@ suite: poundcake-prometheus-rbac
 templates:
   - templates/poundcake-prometheus-rbac.yaml
 tests:
-  - it: renders ClusterRole and ClusterRoleBinding when CRD mode is enabled
+  - it: renders PrometheusRule and pod action RBAC when both are enabled
     set:
       poundcake.enabled: true
-      prometheus.useCrds: true
+      servicePluginRbac.prometheusRules.enabled: true
+      servicePluginRbac.podActions.enabled: true
+      servicePluginRbac.workloadTriage.enabled: true
+      servicePluginRbac.nodeTriage.enabled: true
       serviceAccount.create: true
       serviceAccount.name: ""
     asserts:
       - hasDocuments:
-          count: 2
+          count: 8
       - equal:
           path: kind
           value: ClusterRole
@@ -43,11 +46,118 @@ tests:
           path: subjects[0].name
           value: RELEASE-NAME-poundcake
         documentIndex: 1
+      - equal:
+          path: subjects[1].kind
+          value: ServiceAccount
+        documentIndex: 1
+      - equal:
+          path: subjects[1].name
+          value: poundcake-startup
+        documentIndex: 1
+      - equal:
+          path: subjects[1].namespace
+          value: NAMESPACE
+        documentIndex: 1
+      - equal:
+          path: kind
+          value: Role
+        documentIndex: 2
+      - equal:
+          path: kind
+          value: RoleBinding
+        documentIndex: 3
+      - equal:
+          path: rules[0].resources[0]
+          value: pods
+        documentIndex: 2
+      - contains:
+          path: rules[0].verbs
+          content: delete
+        documentIndex: 2
+      - equal:
+          path: rules[1].resources[0]
+          value: pods/log
+        documentIndex: 2
+      - contains:
+          path: rules[1].verbs
+          content: get
+        documentIndex: 2
+      - equal:
+          path: rules[2].resources[0]
+          value: events
+        documentIndex: 2
+      - equal:
+          path: subjects[0].name
+          value: RELEASE-NAME-poundcake
+        documentIndex: 3
+      - equal:
+          path: roleRef.kind
+          value: Role
+        documentIndex: 3
+      - equal:
+          path: kind
+          value: ClusterRole
+        documentIndex: 4
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-poundcake-workload-triage
+        documentIndex: 4
+      - contains:
+          path: rules[0].resources
+          content: nodes
+        documentIndex: 4
+      - contains:
+          path: rules[0].resources
+          content: persistentvolumes
+        documentIndex: 4
+      - notContains:
+          path: rules[0].verbs
+          content: delete
+        documentIndex: 4
+      - equal:
+          path: kind
+          value: ClusterRoleBinding
+        documentIndex: 5
+      - equal:
+          path: roleRef.name
+          value: RELEASE-NAME-poundcake-workload-triage
+        documentIndex: 5
+      - equal:
+          path: kind
+          value: ClusterRole
+        documentIndex: 6
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-poundcake-node-triage
+        documentIndex: 6
+      - contains:
+          path: rules[0].resources
+          content: nodes
+        documentIndex: 6
+      - contains:
+          path: rules[0].resources
+          content: pods
+        documentIndex: 6
+      - notContains:
+          path: rules[0].verbs
+          content: patch
+        documentIndex: 6
+      - equal:
+          path: kind
+          value: ClusterRoleBinding
+        documentIndex: 7
+      - equal:
+          path: roleRef.name
+          value: RELEASE-NAME-poundcake-node-triage
+        documentIndex: 7
 
   - it: does not render when CRD mode is disabled
     set:
       poundcake.enabled: true
-      prometheus.useCrds: false
+      servicePluginRbac.prometheusRules.enabled: false
+      servicePluginRbac.podActions.enabled: false
+      servicePluginRbac.workloadTriage.enabled: false
+      servicePluginRbac.nodeTriage.enabled: false
     asserts:
       - hasDocuments:
           count: 0
@@ -55,7 +165,143 @@ tests:
   - it: does not render when poundcake resources are disabled
     set:
       poundcake.enabled: false
-      prometheus.useCrds: true
+      servicePluginRbac.prometheusRules.enabled: true
+      servicePluginRbac.podActions.enabled: true
+      servicePluginRbac.workloadTriage.enabled: true
+      servicePluginRbac.nodeTriage.enabled: true
     asserts:
       - hasDocuments:
           count: 0
+
+  - it: renders pod action permissions without PrometheusRule permissions
+    set:
+      poundcake.enabled: true
+      servicePluginRbac.prometheusRules.enabled: false
+      servicePluginRbac.podActions.enabled: true
+      servicePluginRbac.workloadTriage.enabled: false
+      servicePluginRbac.nodeTriage.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 2
+      - equal:
+          path: kind
+          value: Role
+        documentIndex: 0
+      - equal:
+          path: rules[0].resources[0]
+          value: pods
+        documentIndex: 0
+      - equal:
+          path: rules[1].resources[0]
+          value: pods/log
+        documentIndex: 0
+      - equal:
+          path: rules[2].resources[0]
+          value: events
+        documentIndex: 0
+      - equal:
+          path: kind
+          value: RoleBinding
+        documentIndex: 1
+      - equal:
+          path: roleRef.kind
+          value: Role
+        documentIndex: 1
+
+  - it: renders workload triage read-only permissions without mutation grants
+    set:
+      poundcake.enabled: true
+      servicePluginRbac.prometheusRules.enabled: false
+      servicePluginRbac.podActions.enabled: false
+      servicePluginRbac.workloadTriage.enabled: true
+      servicePluginRbac.nodeTriage.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 2
+      - equal:
+          path: kind
+          value: ClusterRole
+        documentIndex: 0
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-poundcake-workload-triage
+        documentIndex: 0
+      - contains:
+          path: rules[0].resources
+          content: configmaps
+        documentIndex: 0
+      - contains:
+          path: rules[0].resources
+          content: pods/log
+        documentIndex: 0
+      - contains:
+          path: rules[1].resources
+          content: deployments
+        documentIndex: 0
+      - contains:
+          path: rules[3].resources
+          content: jobs
+        documentIndex: 0
+      - contains:
+          path: rules[5].resources
+          content: poddisruptionbudgets
+        documentIndex: 0
+      - notContains:
+          path: rules[0].verbs
+          content: delete
+        documentIndex: 0
+      - notContains:
+          path: rules[1].verbs
+          content: patch
+        documentIndex: 0
+      - equal:
+          path: kind
+          value: ClusterRoleBinding
+        documentIndex: 1
+
+  - it: renders node triage read-only permissions without mutation grants
+    set:
+      poundcake.enabled: true
+      servicePluginRbac.prometheusRules.enabled: false
+      servicePluginRbac.podActions.enabled: false
+      servicePluginRbac.workloadTriage.enabled: false
+      servicePluginRbac.nodeTriage.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 2
+      - equal:
+          path: kind
+          value: ClusterRole
+        documentIndex: 0
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-poundcake-node-triage
+        documentIndex: 0
+      - contains:
+          path: rules[0].resources
+          content: nodes
+        documentIndex: 0
+      - contains:
+          path: rules[0].resources
+          content: pods
+        documentIndex: 0
+      - contains:
+          path: rules[0].resources
+          content: events
+        documentIndex: 0
+      - notContains:
+          path: rules[0].verbs
+          content: delete
+        documentIndex: 0
+      - notContains:
+          path: rules[0].verbs
+          content: patch
+        documentIndex: 0
+      - equal:
+          path: kind
+          value: ClusterRoleBinding
+        documentIndex: 1
+      - equal:
+          path: roleRef.name
+          value: RELEASE-NAME-poundcake-node-triage
+        documentIndex: 1

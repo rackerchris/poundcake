@@ -1,0 +1,66 @@
+# Production-shaped kind verification profile.
+#
+# PoundCake is installed in its own namespace by helm/devstack/create.sh.
+# Prometheus and Alertmanager are installed separately by
+# helm/devstack/install-prometheus.sh in the monitoring namespace, matching the
+# production pattern where monitoring backends already exist outside the
+# PoundCake release. The adapter plugins consume those backends through
+# operator-facing service URLs only; credentials, when needed, belong in
+# adapter_credentials via credential-manager rather than Helm values.
+
+poundcake:
+  enabled: true
+
+poundcakeImage:
+  repository: poundcake
+  tag: local
+  pullPolicy: IfNotPresent
+
+uiImage:
+  repository: poundcake-ui
+  tag: local
+  pullPolicy: IfNotPresent
+
+database:
+  mode: embedded
+
+nodeSelector: null
+
+servicePluginRbac:
+  prometheusRules:
+    enabled: true
+  podActions:
+    enabled: true
+  workloadTriage:
+    enabled: true
+  nodeTriage:
+    enabled: true
+
+monitoring:
+  enabled: true
+  prometheus:
+    # prometheus-community/kube-prometheus-stack release: poundcake-prometheus
+    # namespace: monitoring
+    # service: kube-prometheus-stack-prometheus
+    url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+    crdNamespace: monitoring
+  alertmanager:
+    # prometheus-community/kube-prometheus-stack release: poundcake-prometheus
+    # namespace: monitoring
+    # service: kube-prometheus-stack-alertmanager
+    url: http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093
+
+config:
+  enabledPlugins: k8s,git,github,prometheus,alertmanager,bakery,stackstorm,genestack_monitoring
+
+# Enable authentication for devstack
+auth:
+  enabled: true
+  sessionTimeout: 900
+  absoluteMaxSession: 28800
+  local:
+    enabled: true
+
+# Set a known root password so MariaDB and the init scripts agree
+mariadb:
+  rootPassword: "devstack123"

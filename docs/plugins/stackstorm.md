@@ -1,0 +1,53 @@
+# StackStorm Plugin
+
+## Status
+
+- Service type: `stackstorm`
+- Tier: `community`
+- External service: StackStorm
+
+## Purpose
+
+`stackstorm` executes StackStorm actions and workflows from PoundCake orders and
+syncs PoundCake-owned StackStorm content.
+
+## Requirements
+
+- A reachable StackStorm API endpoint.
+- StackStorm content installed or synced for PoundCake-owned actions.
+- A StackStorm API key or auth token stored through the credential-manager
+  boundary.
+
+## Credentials
+
+The required credential is:
+
+- `credential_type=stackstorm_api_key`
+- `credential_key_id=default`
+
+Credential payloads may include `api_key`, `st2_api_key`, or `auth_token`.
+
+## Operator configuration
+
+The operator config requires:
+
+- `url`: StackStorm API URL
+- `verify_ssl`: whether PoundCake verifies the StackStorm API certificate
+
+## Enabled behavior
+
+- `health_check`
+- `action_execution`
+- `workflow_execution`
+- `content_sync`
+
+`content_sync` runs as a normal service-execution ingredient/order. The plugin
+router does not expose a direct StackStorm content-sync action. The sync
+implementation lives in `api/plugins/stackstorm/content_sync.py`, matching the
+standard adapter layout for plugin-owned recurring import/sync work.
+
+## Devstack
+
+The devstack installs StackStorm from
+`https://github.com/rackerlabs/poundcake-stackstorm` into the `stackstorm`
+namespace when `INSTALL_STACKSTORM=true`.

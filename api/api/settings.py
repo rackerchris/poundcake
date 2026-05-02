@@ -53,7 +53,6 @@ async def get_application_settings(
             "git_rules_path": settings.git_rules_path if settings.git_enabled else None,
             "git_workflows_path": settings.git_workflows_path if settings.git_enabled else None,
             "git_actions_path": settings.git_actions_path if settings.git_enabled else None,
-            "stackstorm_enabled": True,
             "version": settings.app_version,
             "global_communications_configured": communications_configured,
         }

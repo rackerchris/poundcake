@@ -6,16 +6,80 @@
 #
 """Middleware for request ID tracking."""
 
+import logging
 import time
 import uuid
 import os
-from typing import Callable
+from typing import Any, Callable
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from api.core.logging import get_logger
 
 logger = get_logger(__name__)
 INSTANCE_ID = os.getenv("POD_NAME") or os.getenv("HOSTNAME") or "local"
+INTERNAL_QUIET_SUCCESS_LATENCY_MS = 1000
+PROBE_PATHS = frozenset(
+    {
+        "/livez",
+        "/readyz",
+    }
+)
+INTERNAL_QUIET_PATH_PREFIXES = (
+    "/api/v1/cook/",
+    "/api/v1/dish-ingredients/",
+    "/api/v1/dishes/",
+    "/api/v1/expediter/",
+    "/api/v1/plugins/",
+    "/api/v1/scheduled-tasks",
+    "/api/v1/service-registry",
+    "/api/v1/recipes/by-name/",
+    "/api/v1/communications/policy",
+)
+
+
+def _is_internal_req_id(req_id: str) -> bool:
+    return req_id.startswith("SYSTEM-")
+
+
+def _is_internal_control_plane_path(path: str) -> bool:
+    return any(path.startswith(prefix) for prefix in INTERNAL_QUIET_PATH_PREFIXES)
+
+
+def _is_probe_path(path: str) -> bool:
+    return path in PROBE_PATHS
+
+
+def request_completion_log_level(
+    *,
+    req_id: str,
+    path: str,
+    status_code: int,
+    latency_ms: int,
+) -> int:
+    """Return the log level for request completion access logs."""
+    if _is_probe_path(path) and status_code < 400:
+        return logging.DEBUG
+    if (
+        (_is_internal_req_id(req_id) or _is_internal_control_plane_path(path))
+        and status_code < 400
+        and latency_ms < INTERNAL_QUIET_SUCCESS_LATENCY_MS
+    ):
+        return logging.DEBUG
+    return logging.INFO
+
+
+def request_auth_log_context(auth_context: Any) -> dict[str, object]:
+    """Return safe authenticated-principal fields for request completion logs."""
+    if auth_context is None:
+        return {}
+
+    return {
+        "auth_principal_type": getattr(auth_context, "principal_type", None),
+        "auth_username": getattr(auth_context, "username", None),
+        "auth_role": getattr(auth_context, "role", None),
+        "auth_service_type": getattr(auth_context, "service_type", None),
+        "auth_principal_id": getattr(auth_context, "principal_id", None),
+    }
 
 
 class PreHeatMiddleware(BaseHTTPMiddleware):
@@ -54,16 +118,25 @@ class PreHeatMiddleware(BaseHTTPMiddleware):
         response.headers["X-Instance-ID"] = instance_id
 
         # Log request
-        logger.info(
+        log_level = request_completion_log_level(
+            req_id=req_id,
+            path=str(request.url.path),
+            status_code=response.status_code,
+            latency_ms=latency_ms,
+        )
+        log_context = {
+            "req_id": req_id,
+            "instance_id": instance_id,
+            "method": request.method,
+            "path": str(request.url.path),
+            "status_code": response.status_code,
+            "latency_ms": latency_ms,
+        }
+        log_context.update(request_auth_log_context(getattr(request.state, "auth_context", None)))
+        logger.log(
+            log_level,
             "Request completed",
-            extra={
-                "req_id": req_id,
-                "instance_id": instance_id,
-                "method": request.method,
-                "path": str(request.url.path),
-                "status_code": response.status_code,
-                "latency_ms": latency_ms,
-            },
+            extra=log_context,
         )
 
         return response

@@ -18,6 +18,14 @@
 {{- fail "auth.auth0.ui.clientId is required when auth.auth0.ui.enabled=true." -}}
 {{- end -}}
 
+{{- if and .Values.auth.enabled .Values.auth.auth0.enabled .Values.auth.auth0.ui.enabled (eq (len .Values.auth.allowedOrigins) 0) -}}
+{{- fail "auth.allowedOrigins must include explicit browser UI origin(s) when auth.auth0.ui.enabled=true." -}}
+{{- end -}}
+
+{{- if and .Values.auth.enabled .Values.auth.auth0.enabled .Values.auth.auth0.ui.enabled (has "*" .Values.auth.allowedOrigins) -}}
+{{- fail "auth.allowedOrigins must not include '*' when auth.auth0.ui.enabled=true." -}}
+{{- end -}}
+
 {{- if and .Values.auth.enabled .Values.auth.auth0.enabled .Values.auth.auth0.cli.enabled (not .Values.auth.auth0.cli.clientId) -}}
 {{- fail "auth.auth0.cli.clientId is required when auth.auth0.cli.enabled=true." -}}
 {{- end -}}
@@ -34,10 +42,14 @@
 {{- fail "auth.azureAd.ui.clientId is required when auth.azureAd.ui.enabled=true." -}}
 {{- end -}}
 
-{{- if and .Values.auth.enabled .Values.auth.azureAd.enabled .Values.auth.azureAd.cli.enabled (not .Values.auth.azureAd.cli.clientId) -}}
-{{- fail "auth.azureAd.cli.clientId is required when auth.azureAd.cli.enabled=true." -}}
+{{- if and .Values.auth.enabled .Values.auth.azureAd.enabled .Values.auth.azureAd.ui.enabled (eq (len .Values.auth.allowedOrigins) 0) -}}
+{{- fail "auth.allowedOrigins must include explicit browser UI origin(s) when auth.azureAd.ui.enabled=true." -}}
 {{- end -}}
 
-{{- if and .Values.git.enabled (not .Values.git.repoUrl) -}}
-{{- fail "git.repoUrl is required when git.enabled=true." -}}
+{{- if and .Values.auth.enabled .Values.auth.azureAd.enabled .Values.auth.azureAd.ui.enabled (has "*" .Values.auth.allowedOrigins) -}}
+{{- fail "auth.allowedOrigins must not include '*' when auth.azureAd.ui.enabled=true." -}}
+{{- end -}}
+
+{{- if and .Values.auth.enabled .Values.auth.azureAd.enabled .Values.auth.azureAd.cli.enabled (not .Values.auth.azureAd.cli.clientId) -}}
+{{- fail "auth.azureAd.cli.clientId is required when auth.azureAd.cli.enabled=true." -}}
 {{- end -}}

@@ -2,10 +2,10 @@ suite: poddisruptionbudgets
 templates:
   - templates/poundcake-poddisruptionbudgets.yaml
 tests:
-  - it: renders PDBs by default with maxUnavailable policy
+  - it: renders PoundCake PDBs by default with maxUnavailable policy
     asserts:
       - hasDocuments:
-          count: 6
+          count: 2
       - equal:
           path: spec.maxUnavailable
           value: 1
@@ -13,7 +13,7 @@ tests:
       - equal:
           path: spec.maxUnavailable
           value: 1
-        documentIndex: 5
+        documentIndex: 1
 
   - it: does not render any PDB when disabled
     set:

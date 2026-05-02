@@ -8,9 +8,8 @@ remote Bakery deployment.
 
 - PoundCake API, workers, UI, and StackStorm stay in this repo.
 - Bakery now lives in its own repo: [rackerlabs/bakery](https://github.com/rackerlabs/bakery).
-- PoundCake talks to Bakery through a monitor registration, route-sync, heartbeat, and per-monitor
-  HMAC client contract in `api/services/bakery_client.py`, `api/services/bakery_monitor.py`, and
-  `shared/bakery_contract.py`.
+- PoundCake talks to Bakery through the `bakery` service plugin, its
+  adapter-owned configuration contract, and its monitor HMAC credential.
 
 ## Local Validation
 
@@ -22,6 +21,32 @@ helm unittest ./helm --file 'tests/unittest/*_test.yaml'
 ./.venv/bin/pytest -m 'not integration' tests/ -v --cov=api --cov-report=xml
 ```
 
+## CLI Auth
+
+PoundCake CLI human auth is session-based. Operators authenticate with a
+username/password or device flow, PoundCake returns a session token, and the
+CLI stores that session for later API calls. This is distinct from internal
+service HMAC auth and from external plugin credentials.
+
+The preferred executable name is `cakectl`. The legacy `poundcake` entrypoint
+still points at the same CLI.
+
+Operator flow:
+
+```bash
+# Admin grants the user an operator role binding first.
+cakectl auth bindings create --provider local --type user --principal-id 42 --role operator
+
+# Operator runs a normal CLI command with username/password once.
+cakectl --url http://localhost:8080 --username alice --password secret auth me
+
+# Later commands reuse the stored PoundCake session automatically.
+cakectl --url http://localhost:8080 recipes list
+```
+
+You can also pass an explicit session token with `--token` or
+`POUNDCAKE_TOKEN`.
+
 ## Deployment
 
 PoundCake now installs only PoundCake:
@@ -30,19 +55,13 @@ PoundCake now installs only PoundCake:
 ./install/install-poundcake-helm.sh
 ```
 
-If you need communications, deploy Bakery separately from its standalone repo and point PoundCake at
-it with `bakery.client.*` values:
+If you need communications, deploy Bakery separately from its standalone repo,
+enable the `bakery` plugin, and configure the remote Bakery URL and monitor
+HMAC credential through PoundCake's Plugins UI/API:
 
 ```yaml
-bakery:
-  config:
-    activeProvider: rackspace_core
-  client:
-    enabled: true
-    enforceRemoteBaseUrl: true
-    baseUrl: https://bakery.example.com
-    auth:
-      existingSecret: bakery-monitor-bootstrap
+config:
+  enabledPlugins: dummy,k8s,git,github,prometheus,alertmanager,bakery,stackstorm,genestack_monitoring
 ```
 
 The corresponding Bakery deployment and install flow live in

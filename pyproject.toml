@@ -22,29 +22,29 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "sqlalchemy>=2.0.36",
-    "GitPython>=3.1.46",
+    "GitPython>=3.1.47",
     "greenlet>=3.0.3",
     "alembic>=1.14.0",
     "pymysql>=1.1.1",
     "aiomysql>=0.2.0",
-    "cryptography>=44.0.0",
+    "cryptography>=46.0.7",
     "ldap3>=2.9.1",
-    "requests>=2.32.0",
+    "requests>=2.33.0",
     "httpx>=0.28.0",
+    "jsonschema>=4.23.0",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
     "python-jose[cryptography]>=3.5.0",
     "python-json-logger>=3.2.0",
-    "python-multipart>=0.0.18",
+    "python-multipart>=0.0.26",
     "python-dateutil>=2.9.0",
     "PyYAML>=6.0.2",
     "prometheus-client>=0.21.0",
-    "redis>=5.2.1",
 ]
 
 [project.scripts]
 poundcake = "cli.main:main"
-poundcake-cli = "cli.main:main"
+cakectl = "cli.main:main"
 
 [project.optional-dependencies]
 dev = [
@@ -109,7 +109,6 @@ module = [
     "api.api.recipes",
     "api.api.auth",
     "api.api.dishes",
-    "api.api.ingredients",
     "api.api.v1.*",
     "api.models.models",
     "api.validation.query_params",

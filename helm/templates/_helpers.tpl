@@ -36,78 +36,34 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
-{{- define "poundcake.stackstormActionrunnerServiceAccountName" -}}
-{{- $cfg := .Values.stackstormActionrunner | default dict -}}
-{{- $serviceAccount := $cfg.serviceAccount | default dict -}}
-{{- $name := $serviceAccount.name | default "" -}}
-{{- $create := $serviceAccount.create | default true -}}
-{{- if $create -}}
-{{- default (printf "%s-stackstorm-actionrunner" (include "poundcake.fullname" .) | trunc 63 | trimSuffix "-") $name -}}
-{{- else -}}
-{{- default "default" $name -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "poundcake.stackstormSubchartPrefix" -}}
-{{- default "stackstorm" .Values.stackstorm.releaseName -}}
-{{- end -}}
-
-{{- define "poundcake.stackstormApiUrl" -}}
-{{- if .Values.stackstorm.url -}}
-{{- .Values.stackstorm.url -}}
-{{- else if .Values.stackstorm.releaseName -}}
-{{- printf "http://%s-st2api:9101" (include "poundcake.stackstormSubchartPrefix" .) -}}
-{{- else -}}
-{{- printf "http://stackstorm-api:%v" .Values.services.stackstormApi.port -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "poundcake.stackstormAuthUrl" -}}
-{{- if .Values.stackstorm.authUrl -}}
-{{- .Values.stackstorm.authUrl -}}
-{{- else if .Values.stackstorm.releaseName -}}
-{{- printf "http://%s-st2auth:9100" (include "poundcake.stackstormSubchartPrefix" .) -}}
-{{- else -}}
-{{- printf "http://stackstorm-auth:%v" .Values.services.stackstormAuth.port -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "poundcake.stackstormStreamUrl" -}}
-{{- if .Values.stackstorm.streamUrl -}}
-{{- .Values.stackstorm.streamUrl -}}
-{{- else if .Values.stackstorm.releaseName -}}
-{{- printf "http://%s-st2stream:9102" (include "poundcake.stackstormSubchartPrefix" .) -}}
-{{- else -}}
-{{- printf "http://stackstorm-stream:%v" .Values.services.stackstormStream.port -}}
-{{- end -}}
-{{- end -}}
-
 {{- define "poundcake.apiServiceUrl" -}}
-{{- printf "http://poundcake-api:%v" .Values.services.api.port -}}
+{{- printf "http://poundcake-api.%s.svc.cluster.local:%v" .Release.Namespace .Values.services.api.port -}}
 {{- end -}}
 
-{{- define "poundcake.stackstormPodSecurityContext" -}}
-{{- $base := deepCopy (.Values.podSecurityContext | default dict) -}}
-{{- $override := .Values.stackstormPodSecurityContext | default dict -}}
-{{- $merged := mergeOverwrite $base $override -}}
-{{- if gt (len $merged) 0 -}}
-{{- toYaml $merged -}}
+{{- define "poundcake.prometheusServiceUrl" -}}
+{{- required "monitoring.prometheus.url is required when monitoring.enabled=true" .Values.monitoring.prometheus.url -}}
 {{- end -}}
+
+{{- define "poundcake.alertmanagerServiceUrl" -}}
+{{- required "monitoring.alertmanager.url is required when monitoring.enabled=true" .Values.monitoring.alertmanager.url -}}
+{{- end -}}
+
+{{- define "poundcake.monitoringEnv" -}}
+{{- if .Values.monitoring.enabled }}
+- name: POUNDCAKE_PROMETHEUS_URL
+  value: {{ include "poundcake.prometheusServiceUrl" . | quote }}
+- name: POUNDCAKE_PROMETHEUS_CRD_NAMESPACE
+  value: {{ .Values.monitoring.prometheus.crdNamespace | quote }}
+- name: POUNDCAKE_ALERTMANAGER_URL
+  value: {{ include "poundcake.alertmanagerServiceUrl" . | quote }}
+{{- end }}
 {{- end -}}
 
 {{- define "poundcake.validateUniqueUrlServicePorts" -}}
 {{- $urlServices := list
   (dict "name" "services.api.port" "port" (int .Values.services.api.port))
   (dict "name" "services.ui.port" "port" (int .Values.services.ui.port))
-  (dict "name" "services.stackstormApi.port" "port" (int .Values.services.stackstormApi.port))
-  (dict "name" "services.stackstormAuth.port" "port" (int .Values.services.stackstormAuth.port))
 -}}
-{{- if eq (include "poundcake.stackstormServiceEnabled" (dict "root" . "name" "stream")) "true" -}}
-{{- $urlServices = append $urlServices (dict "name" "services.stackstormStream.port" "port" (int .Values.services.stackstormStream.port)) -}}
-{{- end -}}
-{{- if eq (include "poundcake.stackstormServiceEnabled" (dict "root" . "name" "web")) "true" -}}
-{{- $urlServices = append $urlServices (dict "name" "services.stackstormWeb.port" "port" (int .Values.services.stackstormWeb.port)) -}}
-{{- end -}}
 {{- $seen := dict -}}
 {{- range $service := $urlServices -}}
 {{- $name := get $service "name" -}}
@@ -120,146 +76,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
-{{- define "poundcake.stackstormAuthSecretName" -}}
-{{- if .Values.stackstorm.adminPasswordSecret -}}
-{{- .Values.stackstorm.adminPasswordSecret -}}
-{{- else if .Values.stackstorm.releaseName -}}
-{{- printf "%s-st2-auth" (include "poundcake.stackstormSubchartPrefix" .) -}}
-{{- else -}}
-{{- printf "stackstorm-secrets" -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "poundcake.stackstormApiKeySecret" -}}
-{{- if .Values.stackstorm.apiKeySecretName -}}
-{{- .Values.stackstorm.apiKeySecretName -}}
-{{- else if .Values.stackstorm.releaseName -}}
-{{- printf "%s-st2-apikeys" (include "poundcake.stackstormSubchartPrefix" .) -}}
-{{- else -}}
-{{- printf "stackstorm-apikeys" -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "poundcake.stackstormApiKeySecretKey" -}}
-{{- if .Values.stackstorm.apiKeySecretKey -}}
-{{- .Values.stackstorm.apiKeySecretKey -}}
-{{- else if .Values.stackstorm.releaseName -}}
-{{- printf "api-key" -}}
-{{- else -}}
-{{- printf "st2_api_key" -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "poundcake.stackstormPackConfigSecretName" -}}
-{{- printf "stackstorm-pack-configs" -}}
-{{- end -}}
-
-{{- define "poundcake.stackstormThirdPartyPacksEnabled" -}}
-{{- $bootstrap := .Values.stackstorm.bootstrap | default dict -}}
-{{- $packs := $bootstrap.packs | default dict -}}
-{{- $kubernetes := $packs.kubernetes | default dict -}}
-{{- $openstack := $packs.openstack | default dict -}}
-{{- ternary "true" "false" (or ($kubernetes.enabled | default false) ($openstack.enabled | default false)) -}}
-{{- end -}}
-
-{{- define "poundcake.stackstormSharedStorageEnabled" -}}
-{{- ternary "true" "false" (.Values.persistence.stackstormSharedStorage.enabled | default false) -}}
-{{- end -}}
-
-{{- define "poundcake.stackstormSharedStorageClassName" -}}
-{{- $shared := .Values.persistence.stackstormSharedStorage | default dict -}}
-{{- if ($shared.storageClassName | default "") -}}
-{{- $shared.storageClassName -}}
-{{- else if and (.Values.longhorn) (.Values.longhorn.rwxStorageClass) (.Values.longhorn.rwxStorageClass.create | default false) -}}
-{{- .Values.longhorn.rwxStorageClass.name -}}
-{{- else if .Values.persistence.storageClassName -}}
-{{- .Values.persistence.storageClassName -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "poundcake.stackstormThirdPartyPackConfigSecretEnabled" -}}
-{{- $bootstrap := .Values.stackstorm.bootstrap | default dict -}}
-{{- $packs := $bootstrap.packs | default dict -}}
-{{- $openstack := $packs.openstack | default dict -}}
-{{- $openstackConfig := $openstack.config | default dict -}}
-{{- ternary "true" "false" (or (ne ($openstackConfig.cloudsYaml | default "") "") (ne ($openstackConfig.caCert | default "") "")) -}}
-{{- end -}}
-
-{{- define "poundcake.stackstormThirdPartyPackInitContainer" -}}
-- name: seed-stackstorm-pack-content
-  image: {{ .Values.stackstormImage.repository }}:{{ .Values.stackstormImage.tag }}
-  imagePullPolicy: {{ .Values.stackstormImage.pullPolicy }}
-  securityContext:
-    {{- toYaml .Values.utilitySecurityContext | nindent 4 }}
-  command:
-    - /bin/bash
-    - -ec
-    - |
-      set -euo pipefail
-      mkdir -p /mnt/stackstorm-shared/packs /mnt/stackstorm-shared/virtualenvs
-      cp -Rn /opt/stackstorm/packs/. /mnt/stackstorm-shared/packs/
-      if [ -d /opt/stackstorm/virtualenvs ]; then
-        cp -Rn /opt/stackstorm/virtualenvs/. /mnt/stackstorm-shared/virtualenvs/ || true
-      fi
-  volumeMounts:
-    - name: stackstorm-packs
-      mountPath: /mnt/stackstorm-shared/packs
-    - name: stackstorm-virtualenvs
-      mountPath: /mnt/stackstorm-shared/virtualenvs
-{{- end -}}
-
-{{- define "poundcake.stackstormThirdPartyPackVolumeMounts" -}}
-- name: stackstorm-pack-configs
-  mountPath: /opt/stackstorm/configs
-  readOnly: true
-- name: stackstorm-packs
-  mountPath: /opt/stackstorm/packs
-- name: stackstorm-virtualenvs
-  mountPath: /opt/stackstorm/virtualenvs
-{{- end -}}
-
-{{- define "poundcake.stackstormThirdPartyPackVolumes" -}}
-- name: stackstorm-pack-configs
-  secret:
-    secretName: {{ include "poundcake.stackstormPackConfigSecretName" . }}
-    optional: true
-{{- if eq (include "poundcake.stackstormSharedStorageEnabled" .) "true" }}
-- name: stackstorm-packs
-  persistentVolumeClaim:
-    claimName: stackstorm-packs
-- name: stackstorm-virtualenvs
-  persistentVolumeClaim:
-    claimName: stackstorm-virtualenvs
-{{- else }}
-- name: stackstorm-packs
-  emptyDir: {}
-- name: stackstorm-virtualenvs
-  emptyDir: {}
-{{- end }}
-{{- end -}}
-
-{{- define "poundcake.stackstormMongoName" -}}
-{{- if .Values.stackstorm.resourceNames.mongodb -}}
-{{- .Values.stackstorm.resourceNames.mongodb -}}
-{{- else -}}
-{{- printf "stackstorm-mongodb" -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "poundcake.rabbitmqSecretName" -}}
-{{- if .Values.rabbitmq.existingSecret -}}
-{{- .Values.rabbitmq.existingSecret -}}
-{{- else -}}
-{{- printf "stackstorm-rabbitmq" -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "poundcake.bakeryBaseUrl" -}}
-{{- .Values.bakery.client.baseUrl | default "" -}}
-{{- end -}}
-
-{{- define "poundcake.bakerySecretName" -}}
-{{- printf "%s-bakery-secret" (include "poundcake.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- define "poundcake.enabledPlugins" -}}
+{{- $configured := .Values.config.enabledPlugins | default "dummy" -}}
+{{- $configured -}}
 {{- end -}}
 
 {{- define "poundcake.databaseMode" -}}
@@ -304,21 +123,17 @@ poundcake-mariadb
 {{- end -}}
 
 {{- define "poundcake.secretChecksumMaterial" -}}
-{{- $bakery := .Values.bakery | default dict -}}
 {{- $material := dict
   "databaseMode" (include "poundcake.databaseMode" .)
   "databaseHost" (include "poundcake.databaseHost" .)
   "secrets" (.Values.secrets | default dict)
   "auth" (.Values.auth | default dict)
-  "stackstorm" (.Values.stackstorm | default dict)
-  "stackstormServices" (.Values.stackstormServices | default dict)
-  "bakeryClient" ($bakery.client | default dict)
 -}}
 {{ toYaml $material }}
 {{- end -}}
 
 {{- define "poundcake.logGroupLabel" -}}
-poundcake.io/log-group: "bakery"
+poundcake.io/log-group: "poundcake"
 {{- end -}}
 
 {{- define "poundcake.logRoleApi" -}}
@@ -410,54 +225,6 @@ storageClassName: {{ $root.Values.persistence.storageClassName | quote }}
 {{- join "," $policies -}}
 {{- end -}}
 
-{{- define "poundcake.stackstormServiceEnabled" -}}
-{{- $root := .root -}}
-{{- $name := .name -}}
-{{- $services := $root.Values.stackstormServices | default dict -}}
-{{- $legacy := $root.Values.stackstormComponents | default dict -}}
-{{- $defaults := dict
-  "mongodb" true
-  "rabbitmq" true
-  "redis" true
-  "auth" true
-  "api" true
-  "actionrunner" true
-  "rulesengine" true
-  "workflowengine" true
-  "scheduler" true
-  "notifier" false
-  "garbagecollector" true
-  "timersengine" false
-  "sensorcontainer" false
-  "register" false
-  "stream" true
-  "web" false
-  "client" true
--}}
-{{- if hasKey $services $name -}}
-{{- $serviceCfg := index $services $name | default dict -}}
-{{- ternary "true" "false" ($serviceCfg.enabled | default false) -}}
-{{- else if hasKey $legacy $name -}}
-{{- $legacyCfg := index $legacy $name | default dict -}}
-{{- ternary "true" "false" ($legacyCfg.enabled | default false) -}}
-{{- else -}}
-{{- ternary "true" "false" (index $defaults $name | default false) -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "poundcake.validateStackstormServiceSet" -}}
-{{- $required := list "mongodb" "rabbitmq" "redis" "auth" "api" "actionrunner" "rulesengine" "workflowengine" "scheduler" "garbagecollector" -}}
-{{- $errors := list -}}
-{{- range $svc := $required -}}
-  {{- if ne (include "poundcake.stackstormServiceEnabled" (dict "root" $ "name" $svc)) "true" -}}
-    {{- $errors = append $errors (printf "stackstormServices.%s.enabled must be true for Poundcake operations" $svc) -}}
-  {{- end -}}
-{{- end -}}
-{{- if gt (len $errors) 0 -}}
-{{- fail (printf "invalid stackstorm service profile: %s" (join "; " $errors)) -}}
-{{- end -}}
-{{- end -}}
-
 {{- define "poundcake.logLabels" -}}
 {{- $group := .group | default "other" -}}
 {{- $subgroup := .subgroup | default "general" -}}
@@ -473,7 +240,7 @@ poundcake.io/log-role: {{ $role | quote }}
 {{- $subgroup := "general" -}}
 {{- $role := $component -}}
 
-{{- if has $component (list "api" "ui" "chef" "prep-chef" "timer" "dishwasher") -}}
+{{- if has $component (list "api" "ui" "prep-chef" "expediter-runner" "timer" "dishwasher") -}}
   {{- $group = "poundcake" -}}
   {{- $subgroup = "app" -}}
   {{- if eq $component "api" -}}
@@ -483,25 +250,9 @@ poundcake.io/log-role: {{ $role | quote }}
   {{- else -}}
     {{- $role = "worker" -}}
   {{- end -}}
-{{- else if has $component (list "mariadb" "stackstorm-mongodb" "stackstorm-rabbitmq" "stackstorm-redis") -}}
+{{- else if eq $component "mariadb" -}}
   {{- $group = "infra" -}}
   {{- $subgroup = "data" -}}
-  {{- if hasPrefix "stackstorm-" $component -}}
-    {{- $role = trimPrefix "stackstorm-" $component -}}
-  {{- end -}}
-{{- else if hasPrefix "stackstorm-" $component -}}
-  {{- $role = trimPrefix "stackstorm-" $component -}}
-  {{- if has $component (list "stackstorm-auth" "stackstorm-api" "stackstorm-stream" "stackstorm-web") -}}
-    {{- $group = "stackstorm-edge" -}}
-    {{- $subgroup = "control-api" -}}
-  {{- else if has $component (list "stackstorm-actionrunner" "stackstorm-rulesengine" "stackstorm-workflowengine" "stackstorm-scheduler" "stackstorm-register" "stackstorm-garbagecollector" "stackstorm-client" "stackstorm-notifier" "stackstorm-timersengine" "stackstorm-sensorcontainer") -}}
-    {{- $group = "stackstorm-exec" -}}
-    {{- $subgroup = "control-exec" -}}
-  {{- else if has $component (list "stackstorm-startup-markers-reset" "stackstorm-mongodb-user-sync" "stackstorm-infra-ready" "stackstorm-controlplane-ready" "stackstorm-workers-ready" "stackstorm-edge-ready" "stackstorm-bootstrap") -}}
-    {{- $group = "startup-hooks" -}}
-    {{- $subgroup = "orchestration" -}}
-    {{- $role = $component -}}
-  {{- end -}}
 {{- else if hasPrefix "poundcake-" $component -}}
   {{- $group = "startup-hooks" -}}
   {{- $subgroup = "orchestration" -}}

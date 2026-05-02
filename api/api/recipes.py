@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from api.types import JSONObject
+
 from datetime import datetime, timezone
 from typing import Any, List
 
@@ -16,11 +18,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from api.api.auth import require_operator, require_reader
 from api.core.database import get_db
+from api.core.config import get_settings
 from api.core.logging import get_logger
+from api.core.rate_limit import limiter
 from api.models.models import Ingredient, Recipe, RecipeIngredient
 from api.schemas.query_params import RecipeQueryParams, validate_query_params
-from api.schemas.schemas import DeleteResponse, RecipeCreate, RecipeDetailResponse, RecipeUpdate
+from api.schemas.schemas import (
+    DeleteResponse,
+    RecipeCreate,
+    RecipeDetailResponse,
+    RecipeIngredientStatusResponse,
+    RecipeStatusResponse,
+    RecipeUpdate,
+)
 from api.services.communications_policy import (
     build_recipe_local_policy_step_specs,
     get_global_policy_routes,
@@ -33,9 +45,14 @@ from api.services.communications_policy import (
     normalize_routes,
     policy_has_enabled_routes,
     route_payloads_for_response,
+    replace_recipe_communication_steps,
 )
-from api.services.bakery_monitor import mark_route_catalog_dirty, sync_monitor_route_catalog
 from api.services.recipe_ingredient_cleanup import delete_recipe_ingredients_safely
+from api.plugins.contract import (
+    ServicePluginContractError,
+    validate_service_operation,
+    validate_service_payload,
+)
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -47,17 +64,18 @@ def _recipe_query():
     )
 
 
-def _recipe_to_step_spec(step: RecipeIngredient) -> dict[str, Any]:
+def _recipe_to_step_spec(step: RecipeIngredient) -> JSONObject:
     return {
         "ingredient_id": step.ingredient_id,
         "step_order": step.step_order,
         "on_success": step.on_success,
         "parallel_group": step.parallel_group,
         "depth": step.depth,
-        "execution_payload_override": step.execution_payload_override,
-        "execution_parameters_override": step.execution_parameters_override,
-        "expected_duration_sec_override": step.expected_duration_sec_override,
-        "timeout_duration_sec_override": step.timeout_duration_sec_override,
+        "service_payload": step.service_payload,
+        "service_exec_parameters_override": step.service_exec_parameters_override,
+        "service_exec_expected_secs": step.service_exec_expected_secs,
+        "service_exec_timeout": step.service_exec_timeout,
+        "service_exec_expected_outcome": step.service_exec_expected_outcome,
         "run_phase": step.run_phase,
         "run_condition": step.run_condition,
     }
@@ -66,7 +84,7 @@ def _recipe_to_step_spec(step: RecipeIngredient) -> dict[str, Any]:
 def _recipe_ingredient_row(
     *,
     recipe_id: int,
-    spec: dict[str, Any],
+    spec: JSONObject,
     ingredient_id: int | None = None,
 ) -> RecipeIngredient:
     resolved_ingredient_id = ingredient_id or spec.get("ingredient_id")
@@ -79,24 +97,23 @@ def _recipe_ingredient_row(
         on_success=spec.get("on_success", "continue"),
         parallel_group=spec.get("parallel_group", 0),
         depth=spec.get("depth", 0),
-        execution_payload_override=spec.get("execution_payload_override"),
-        execution_parameters_override=spec.get("execution_parameters_override"),
-        expected_duration_sec_override=spec.get("expected_duration_sec_override"),
-        timeout_duration_sec_override=spec.get("timeout_duration_sec_override"),
+        service_payload=spec.get("service_payload"),
+        service_exec_parameters_override=spec.get("service_exec_parameters_override"),
+        service_exec_expected_secs=spec.get("service_exec_expected_secs"),
+        service_exec_timeout=spec.get("service_exec_timeout"),
+        service_exec_expected_outcome=spec.get("service_exec_expected_outcome"),
         run_phase=spec.get("run_phase", "both"),
         run_condition=spec.get("run_condition", "always"),
     )
 
 
-def _queue_recipe_steps(
-    db: AsyncSession, *, recipe_id: int, step_specs: list[dict[str, Any]]
-) -> None:
+def _queue_recipe_steps(db: AsyncSession, *, recipe_id: int, step_specs: list[JSONObject]) -> None:
     for spec in step_specs:
         db.add(_recipe_ingredient_row(recipe_id=recipe_id, spec=spec))
 
 
 async def _validate_ingredient_ids(
-    db: AsyncSession, *, step_specs: list[dict[str, Any]]
+    db: AsyncSession, *, step_specs: list[JSONObject]
 ) -> dict[int, Ingredient]:
     ingredient_ids = [int(item["ingredient_id"]) for item in step_specs]
     if not ingredient_ids:
@@ -154,7 +171,66 @@ def _validate_non_communication_ingredients(ingredients_by_id: dict[int, Ingredi
         )
 
 
-async def _serialize_recipe(db: AsyncSession, recipe: Recipe) -> dict[str, Any]:
+def _resolved_service_payload(ingredient: Ingredient, spec: JSONObject) -> JSONObject:
+    base = dict(getattr(ingredient, "service_payload_template", None) or {})
+    form_payload = spec.get("service_payload")
+    if isinstance(form_payload, dict):
+        base.update(form_payload)
+    return base
+
+
+def _resolved_service_exec_parameters(
+    ingredient: Ingredient, spec: JSONObject
+) -> JSONObject | None:
+    base = dict(getattr(ingredient, "service_exec_parameters", None) or {})
+    overrides = spec.get("service_exec_parameters_override")
+    if isinstance(overrides, dict):
+        base.update(overrides)
+    return base or None
+
+
+def _validate_service_payloads(
+    ingredients_by_id: dict[int, Ingredient], *, step_specs: list[JSONObject]
+) -> None:
+    for spec in step_specs:
+        ingredient = ingredients_by_id.get(int(spec["ingredient_id"]))
+        if ingredient is None:
+            continue
+        schema = getattr(ingredient, "payload_schema", None)
+        if schema is None:
+            continue
+        try:
+            validate_service_payload(_resolved_service_payload(ingredient, spec), schema)
+        except ServicePluginContractError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"recipe_ingredient ingredient_id={spec['ingredient_id']} "
+                    f"service_payload invalid: {exc}"
+                ),
+            ) from exc
+
+
+def _validate_service_operations(
+    ingredients_by_id: dict[int, Ingredient], *, step_specs: list[JSONObject]
+) -> None:
+    for spec in step_specs:
+        ingredient = ingredients_by_id.get(int(spec["ingredient_id"]))
+        if ingredient is None:
+            continue
+        try:
+            validate_service_operation(_resolved_service_exec_parameters(ingredient, spec))
+        except ServicePluginContractError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"recipe_ingredient ingredient_id={spec['ingredient_id']} "
+                    f"service_exec_parameters_override invalid: {exc}"
+                ),
+            ) from exc
+
+
+async def _serialize_recipe(db: AsyncSession, recipe: Recipe) -> JSONObject:
     visible_steps = get_visible_recipe_steps(recipe)
     local_routes = get_recipe_local_routes(recipe)
     if local_routes:
@@ -187,6 +263,58 @@ async def _serialize_recipe(db: AsyncSession, recipe: Recipe) -> dict[str, Any]:
         "can_execute": len(inactive_ingredient_ids) == 0,
         "inactive_ingredient_ids": inactive_ingredient_ids,
     }
+
+
+async def _serialize_recipe_status(db: AsyncSession, recipe: Recipe) -> RecipeStatusResponse:
+    visible_steps = get_visible_recipe_steps(recipe)
+    local_routes = get_recipe_local_routes(recipe)
+    if local_routes:
+        route_count = len(local_routes)
+    else:
+        route_count = len(await get_global_policy_routes(db))
+    inactive_ingredient_ids = _inactive_ingredient_ids(recipe)
+    return RecipeStatusResponse.model_validate(
+        {
+            "id": recipe.id,
+            "name": recipe.name,
+            "description": recipe.description,
+            "enabled": recipe.enabled,
+            "clear_timeout_sec": recipe.clear_timeout_sec,
+            "can_execute": len(inactive_ingredient_ids) == 0,
+            "inactive_ingredient_count": len(inactive_ingredient_ids),
+            "step_count": len(visible_steps),
+            "communication_route_count": route_count,
+            "created_at": recipe.created_at,
+            "updated_at": recipe.updated_at,
+        }
+    )
+
+
+def _serialize_recipe_ingredient_status(step: RecipeIngredient) -> RecipeIngredientStatusResponse:
+    ingredient = getattr(step, "ingredient", None)
+    return RecipeIngredientStatusResponse.model_validate(
+        {
+            "id": step.id,
+            "recipe_id": step.recipe_id,
+            "ingredient_id": step.ingredient_id,
+            "step_order": step.step_order,
+            "on_success": step.on_success,
+            "parallel_group": step.parallel_group,
+            "depth": step.depth,
+            "run_phase": step.run_phase,
+            "run_condition": step.run_condition,
+            "service_type": getattr(ingredient, "service_type", None),
+            "service_exec": getattr(ingredient, "service_exec", None),
+            "task_key_template": getattr(ingredient, "task_key_template", None),
+            "ingredient_purpose": getattr(ingredient, "ingredient_purpose", None),
+            "ingredient_is_active": bool(getattr(ingredient, "is_active", True)),
+            "ingredient_is_blocking": bool(getattr(ingredient, "is_blocking", True)),
+            "expected_secs": step.service_exec_expected_secs
+            or getattr(ingredient, "default_expected_secs", None),
+            "timeout_secs": step.service_exec_timeout
+            or getattr(ingredient, "default_timeout", None),
+        }
+    )
 
 
 async def _validate_effective_communications(
@@ -230,7 +358,7 @@ def _communications_payload_mode(payload: RecipeCreate | RecipeUpdate | None) ->
 
 def _communications_payload_routes(
     payload: RecipeCreate | RecipeUpdate | None,
-) -> list[dict[str, Any]] | None:
+) -> list[JSONObject] | None:
     if payload is None:
         return None
     communications = getattr(payload, "communications", None)
@@ -239,7 +367,7 @@ def _communications_payload_routes(
     return [item.model_dump() for item in communications.routes]
 
 
-def _step_specs_from_payload(step_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _step_specs_from_payload(step_items: list[JSONObject]) -> list[JSONObject]:
     return [
         {
             "ingredient_id": item["ingredient_id"],
@@ -247,10 +375,11 @@ def _step_specs_from_payload(step_items: list[dict[str, Any]]) -> list[dict[str,
             "on_success": item.get("on_success", "continue"),
             "parallel_group": item.get("parallel_group", 0),
             "depth": item.get("depth", 0),
-            "execution_payload_override": item.get("execution_payload_override"),
-            "execution_parameters_override": item.get("execution_parameters_override"),
-            "expected_duration_sec_override": item.get("expected_duration_sec_override"),
-            "timeout_duration_sec_override": item.get("timeout_duration_sec_override"),
+            "service_payload": item.get("service_payload"),
+            "service_exec_parameters_override": item.get("service_exec_parameters_override"),
+            "service_exec_expected_secs": item.get("service_exec_expected_secs"),
+            "service_exec_timeout": item.get("service_exec_timeout"),
+            "service_exec_expected_outcome": item.get("service_exec_expected_outcome"),
             "run_phase": item.get("run_phase", "both"),
             "run_condition": item.get("run_condition", "always"),
         }
@@ -260,7 +389,10 @@ def _step_specs_from_payload(step_items: list[dict[str, Any]]) -> list[dict[str,
 
 @router.post("/recipes/", response_model=RecipeDetailResponse, status_code=201)
 async def create_recipe(
-    request: Request, recipe: RecipeCreate, db: AsyncSession = Depends(get_db)
+    request: Request,
+    recipe: RecipeCreate,
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_operator),
 ) -> RecipeDetailResponse:
     """Create a new recipe with remediation/utility steps and optional local comms."""
     req_id = request.state.req_id
@@ -276,6 +408,8 @@ async def create_recipe(
         ingredients_by_id = await _validate_ingredient_ids(db, step_specs=visible_step_specs)
         _validate_active_ingredients(ingredients_by_id, allow_inactive=False)
         _validate_non_communication_ingredients(ingredients_by_id)
+        _validate_service_payloads(ingredients_by_id, step_specs=visible_step_specs)
+        _validate_service_operations(ingredients_by_id, step_specs=visible_step_specs)
         await _validate_effective_communications(
             db,
             enabled=recipe.enabled,
@@ -302,53 +436,26 @@ async def create_recipe(
                 recipe_id=db_recipe.id,
                 routes=local_routes,
             )
-            for spec in managed_specs:
-                ingredient = Ingredient(
-                    execution_target=spec["execution_target"],
-                    destination_target=spec["destination_target"],
-                    task_key_template=spec["task_key_template"],
-                    execution_engine=spec["execution_engine"],
-                    execution_purpose=spec["execution_purpose"],
-                    execution_payload=spec["execution_payload"],
-                    execution_parameters=spec["execution_parameters"],
-                    is_default=spec["is_default"],
-                    is_blocking=spec["is_blocking"],
-                    expected_duration_sec=spec["expected_duration_sec"],
-                    timeout_duration_sec=spec["timeout_duration_sec"],
-                    retry_count=spec["retry_count"],
-                    retry_delay=spec["retry_delay"],
-                    on_failure=spec["on_failure"],
-                )
-                db.add(ingredient)
-                await db.flush()
-                db.add(
-                    _recipe_ingredient_row(
-                        recipe_id=db_recipe.id,
-                        spec=spec,
-                        ingredient_id=ingredient.id,
-                    )
-                )
+            await replace_recipe_communication_steps(
+                db,
+                recipe=db_recipe,
+                step_specs=managed_specs,
+            )
 
     result = await db.execute(_recipe_query().where(Recipe.name == recipe.name))
     db_recipe = result.unique().scalars().first()
     if db_recipe is None:
         raise HTTPException(status_code=500, detail="Recipe retrieval failed after create")
-    try:
-        await sync_monitor_route_catalog(force=True)
-    except Exception as exc:  # noqa: BLE001
-        await mark_route_catalog_dirty()
-        logger.warning(
-            "Failed to refresh Bakery monitor route catalog after recipe create",
-            extra={"req_id": req_id, "recipe_name": recipe.name, "error": str(exc)},
-        )
     return await _serialize_recipe(db, db_recipe)
 
 
+@limiter.limit(get_settings().rate_limit_default)
 @router.get("/recipes/", response_model=List[RecipeDetailResponse])
 async def list_recipes(
     request: Request,
     params: RecipeQueryParams = Depends(validate_query_params(RecipeQueryParams)),
     db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_reader),
 ):
     """List user-facing workflows with communications summary."""
     _ = request.state.req_id
@@ -367,8 +474,71 @@ async def list_recipes(
     return [await _serialize_recipe(db, recipe) for recipe in recipes]
 
 
+@limiter.limit(get_settings().rate_limit_default)
+@router.get("/recipes/status", response_model=List[RecipeStatusResponse])
+async def list_recipe_statuses(
+    request: Request,
+    params: RecipeQueryParams = Depends(validate_query_params(RecipeQueryParams)),
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_reader),
+) -> list[RecipeStatusResponse]:
+    """List redacted recipe statuses for reporting and selection views."""
+    _ = request.state.req_id
+    query = _recipe_query()
+    if params.name is not None:
+        query = query.where(Recipe.name == params.name)
+    if params.enabled is not None:
+        query = query.where(Recipe.enabled == params.enabled)
+    query = query.limit(params.limit).offset(params.offset)
+    result = await db.execute(query)
+    recipes = [
+        recipe
+        for recipe in result.unique().scalars().all()
+        if not is_hidden_workflow_recipe(recipe)
+    ]
+    return [await _serialize_recipe_status(db, recipe) for recipe in recipes]
+
+
+@limiter.limit(get_settings().rate_limit_default)
+@router.get("/recipes/{recipe_id}/status", response_model=RecipeStatusResponse)
+async def get_recipe_status(
+    recipe_id: int,
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_reader),
+):
+    """Get redacted status for a workflow."""
+    result = await db.execute(_recipe_query().where(Recipe.id == recipe_id))
+    recipe = result.unique().scalars().first()
+    if not recipe or is_hidden_workflow_recipe(recipe):
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    return await _serialize_recipe_status(db, recipe)
+
+
+@limiter.limit(get_settings().rate_limit_default)
+@router.get(
+    "/recipes/{recipe_id}/ingredient-status",
+    response_model=List[RecipeIngredientStatusResponse],
+)
+async def list_recipe_ingredient_statuses(
+    recipe_id: int,
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_reader),
+) -> list[RecipeIngredientStatusResponse]:
+    """List redacted recipe step topology/status for reporting views."""
+    result = await db.execute(_recipe_query().where(Recipe.id == recipe_id))
+    recipe = result.unique().scalars().first()
+    if not recipe or is_hidden_workflow_recipe(recipe):
+        raise HTTPException(status_code=404, detail="Recipe not found")
+    visible_steps = get_visible_recipe_steps(recipe)
+    return [_serialize_recipe_ingredient_status(step) for step in visible_steps]
+
+
 @router.get("/recipes/{recipe_id}", response_model=RecipeDetailResponse)
-async def get_recipe(recipe_id: int, db: AsyncSession = Depends(get_db)):
+async def get_recipe(
+    recipe_id: int,
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_operator),
+):
     """Get a workflow with non-communications steps and effective communications settings."""
     result = await db.execute(_recipe_query().where(Recipe.id == recipe_id))
     recipe = result.unique().scalars().first()
@@ -378,7 +548,11 @@ async def get_recipe(recipe_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/recipes/by-name/{recipe_name}", response_model=RecipeDetailResponse)
-async def get_recipe_by_name(recipe_name: str, db: AsyncSession = Depends(get_db)):
+async def get_recipe_by_name(
+    recipe_name: str,
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_operator),
+):
     """Get a workflow by name."""
     result = await db.execute(_recipe_query().where(Recipe.name == recipe_name))
     recipe = result.unique().scalars().first()
@@ -389,11 +563,14 @@ async def get_recipe_by_name(recipe_name: str, db: AsyncSession = Depends(get_db
 
 @router.delete("/recipes/{recipe_id}", response_model=DeleteResponse)
 async def delete_recipe(
-    request: Request, recipe_id: int, db: AsyncSession = Depends(get_db)
+    request: Request,
+    recipe_id: int,
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_operator),
 ) -> DeleteResponse:
-    """Delete a recipe and its recipe_ingredients."""
+    """Disable a workflow while preserving recipe steps and historical dish links."""
     req_id = request.state.req_id
-    logger.info("Deleting recipe", extra={"req_id": req_id, "recipe_id": recipe_id})
+    logger.info("Disabling recipe", extra={"req_id": req_id, "recipe_id": recipe_id})
 
     async with db.begin():
         result = await db.execute(select(Recipe).where(Recipe.id == recipe_id).with_for_update())
@@ -401,19 +578,12 @@ async def delete_recipe(
         if not recipe or is_hidden_workflow_recipe(recipe):
             raise HTTPException(status_code=404, detail="Recipe not found")
         recipe_name = recipe.name
-        await delete_recipe_ingredients_safely(db, recipe_id=recipe.id)
-        await db.delete(recipe)
-    try:
-        await sync_monitor_route_catalog(force=True)
-    except Exception as exc:  # noqa: BLE001
-        await mark_route_catalog_dirty()
-        logger.warning(
-            "Failed to refresh Bakery monitor route catalog after recipe delete",
-            extra={"req_id": req_id, "recipe_id": recipe_id, "error": str(exc)},
-        )
-
+        recipe.enabled = False
+        recipe.deleted = False
+        recipe.deleted_at = None
+        recipe.updated_at = datetime.now(timezone.utc)
     return DeleteResponse(
-        status="deleted", id=recipe_id, message=f"Recipe '{recipe_name}' deleted successfully"
+        status="disabled", id=recipe_id, message=f"Recipe '{recipe_name}' disabled successfully"
     )
 
 
@@ -424,9 +594,9 @@ async def update_recipe(
     recipe_id: int,
     payload: RecipeUpdate,
     db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_operator),
 ):
     """Update a workflow, preserving comms when omitted and normalizing local comms when supplied."""
-    req_id = request.state.req_id
     recipe: Recipe | None = None
     async with db.begin():
         result = await db.execute(_recipe_query().where(Recipe.id == recipe_id).with_for_update())
@@ -456,6 +626,8 @@ async def update_recipe(
             ingredients_by_id = await _validate_ingredient_ids(db, step_specs=final_visible_specs)
             _validate_active_ingredients(ingredients_by_id, allow_inactive=False)
             _validate_non_communication_ingredients(ingredients_by_id)
+            _validate_service_payloads(ingredients_by_id, step_specs=final_visible_specs)
+            _validate_service_operations(ingredients_by_id, step_specs=final_visible_specs)
 
         final_communications_mode = "local" if current_local_routes else "inherit"
         final_local_routes = current_local_routes
@@ -488,36 +660,20 @@ async def update_recipe(
             await delete_recipe_ingredients_safely(db, recipe_id=recipe.id)
             recipe.recipe_ingredients = []
             _queue_recipe_steps(db, recipe_id=recipe.id, step_specs=final_visible_specs)
-            for spec in final_comm_specs:
-                if "managed_spec" in spec:
-                    managed = spec["managed_spec"]
-                    ingredient = Ingredient(
-                        execution_target=managed["execution_target"],
-                        destination_target=managed["destination_target"],
-                        task_key_template=managed["task_key_template"],
-                        execution_engine=managed["execution_engine"],
-                        execution_purpose=managed["execution_purpose"],
-                        execution_payload=managed["execution_payload"],
-                        execution_parameters=managed["execution_parameters"],
-                        is_default=managed["is_default"],
-                        is_blocking=managed["is_blocking"],
-                        expected_duration_sec=managed["expected_duration_sec"],
-                        timeout_duration_sec=managed["timeout_duration_sec"],
-                        retry_count=managed["retry_count"],
-                        retry_delay=managed["retry_delay"],
-                        on_failure=managed["on_failure"],
-                    )
-                    db.add(ingredient)
-                    await db.flush()
-                    db.add(
-                        _recipe_ingredient_row(
-                            recipe_id=recipe.id,
-                            spec=managed,
-                            ingredient_id=ingredient.id,
-                        )
-                    )
-                    continue
-                db.add(_recipe_ingredient_row(recipe_id=recipe.id, spec=spec))
+            managed_specs = [
+                spec["managed_spec"]
+                for spec in final_comm_specs
+                if isinstance(spec, dict) and "managed_spec" in spec
+            ]
+            if managed_specs:
+                await replace_recipe_communication_steps(
+                    db,
+                    recipe=recipe,
+                    step_specs=managed_specs,
+                )
+            else:
+                for spec in final_comm_specs:
+                    db.add(_recipe_ingredient_row(recipe_id=recipe.id, spec=spec))
             await db.flush()
 
         recipe.updated_at = datetime.now(timezone.utc)
@@ -531,12 +687,4 @@ async def update_recipe(
     updated_recipe = result.unique().scalars().first()
     if updated_recipe is None:
         raise HTTPException(status_code=500, detail="Recipe update failed")
-    try:
-        await sync_monitor_route_catalog(force=True)
-    except Exception as exc:  # noqa: BLE001
-        await mark_route_catalog_dirty()
-        logger.warning(
-            "Failed to refresh Bakery monitor route catalog after recipe update",
-            extra={"req_id": req_id, "recipe_id": recipe_id, "error": str(exc)},
-        )
     return await _serialize_recipe(db, updated_recipe)

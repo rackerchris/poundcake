@@ -1,667 +1,261 @@
 suite: startup-order-jobs
 templates:
-  - templates/stackstorm-startup-order-jobs.yaml
+  - templates/poundcake-startup-jobs.yaml
 tests:
-  - it: renders full startup job sequence
+  - it: renders the PoundCake startup job sequence
     asserts:
       - hasDocuments:
-          count: 9
+          count: 7
       - equal:
           path: metadata.name
-          value: stackstorm-startup-markers-reset
+          value: poundcake-mariadb-ready
         documentIndex: 0
       - equal:
           path: metadata.name
-          value: stackstorm-controlplane-ready
+          value: poundcake-mariadb-users
+        documentIndex: 1
+      - equal:
+          path: metadata.name
+          value: poundcake-migrate
+        documentIndex: 2
+      - equal:
+          path: metadata.name
+          value: poundcake-mariadb-grants
         documentIndex: 3
       - equal:
           path: metadata.name
-          value: poundcake-bootstrap
-        documentIndex: 8
+          value: poundcake-bootstrap-plugin-registry
+        documentIndex: 4
       - equal:
-          path: metadata.annotations["helm.sh/hook"]
-          value: post-install,post-upgrade
+          path: metadata.name
+          value: poundcake-bootstrap-service-identity
+        documentIndex: 5
+      - equal:
+          path: metadata.name
+          value: poundcake-bootstrap-adapter-credentials
+        documentIndex: 6
+      - equal:
+          path: spec.ttlSecondsAfterFinished
+          value: 300
         documentIndex: 0
       - equal:
-          path: metadata.annotations["helm.sh/hook-delete-policy"]
-          value: before-hook-creation,hook-succeeded
-        documentIndex: 0
+          path: spec.ttlSecondsAfterFinished
+          value: 300
+        documentIndex: 4
       - equal:
-          path: metadata.annotations["helm.sh/hook"]
-          value: post-install,post-upgrade
-        documentIndex: 8
+          path: spec.ttlSecondsAfterFinished
+          value: 300
+        documentIndex: 5
       - equal:
-          path: metadata.annotations["helm.sh/hook-delete-policy"]
-          value: before-hook-creation,hook-succeeded
-        documentIndex: 8
+          path: spec.ttlSecondsAfterFinished
+          value: 300
+        documentIndex: 6
+
+  - it: runs PoundCake migrations and split bootstrap stages with isolated personas
+    asserts:
       - matchRegex:
           path: spec.template.spec.containers[0].command[2]
-          pattern: "deployment/stackstorm-auth"
-        documentIndex: 3
+          pattern: "alembic upgrade head"
+        documentIndex: 2
       - matchRegex:
           path: spec.template.spec.containers[0].command[2]
-          pattern: "PARALLEL_ENABLED=\"true\""
-        documentIndex: 3
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "wait_for_deployment.*&"
+          pattern: "api.scripts.bootstrap_plugin_registry"
+        documentIndex: 4
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_ENABLED_PLUGINS
+            value: dummy
         documentIndex: 4
       - matchRegex:
           path: spec.template.spec.containers[0].command[2]
-          pattern: "deployment/stackstorm-client"
-        documentIndex: 4
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "wait \"\\$\\{pid\\}\""
+          pattern: "api.scripts.bootstrap_service_identities"
         documentIndex: 5
       - matchRegex:
           path: spec.template.spec.containers[0].command[2]
-          pattern: "stackstorm_controlplane_ready"
-        documentIndex: 3
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "GATE_LOG_ENABLED=\\\"true\\\""
-        documentIndex: 3
-      - matchRegex:
-          path: spec.template.spec.initContainers[1].command[2]
-          pattern: "PACK_SYNC_ENDPOINT=\\\"http://poundcake-api:8000/api/v1/cook/packs\\\""
-        documentIndex: 8
-      - matchRegex:
-          path: spec.template.spec.initContainers[1].command[2]
-          pattern: "status=waiting"
-        documentIndex: 8
-      - matchRegex:
-          path: spec.template.spec.initContainers[1].command[2]
-          pattern: "\\*\\\" 200 \\\"\\*\\|\\*\\\" 304 \\\"\\*\\|\\*\\\" 401 \\\"\\*\\|\\*\\\" 503 \\\"\\*"
-        documentIndex: 8
-      - matchRegex:
-          path: spec.template.spec.initContainers[1].command[2]
-          pattern: "\\|\\| true"
-        documentIndex: 8
-      - matchRegex:
-          path: spec.template.spec.initContainers[1].command[2]
-          pattern: "required endpoint missing: \\$\\{PACK_SYNC_ENDPOINT\\}"
-        documentIndex: 8
-
-  - it: allows overriding bootstrap wait-api pack sync endpoint
-    set:
-      stackstormPackSync.endpoint: "http://poundcake-api:8000/api/v1/internal/stackstorm/pack.tgz"
-    asserts:
-      - matchRegex:
-          path: spec.template.spec.initContainers[1].command[2]
-          pattern: "PACK_SYNC_ENDPOINT=\\\"http://poundcake-api:8000/api/v1/internal/stackstorm/pack.tgz\\\""
-        documentIndex: 8
-
-  - it: applies startup hook log-streaming labels
-    asserts:
-      - equal:
-          path: spec.template.metadata.labels["poundcake.io/log-group"]
-          value: startup-hooks
-        documentIndex: 0
-      - equal:
-          path: spec.template.metadata.labels["poundcake.io/log-subgroup"]
-          value: orchestration
-        documentIndex: 0
-      - equal:
-          path: spec.template.metadata.labels["poundcake.io/log-role"]
-          value: stackstorm-startup-markers-reset
-        documentIndex: 0
-      - equal:
-          path: spec.template.metadata.labels["poundcake.io/log-role"]
-          value: poundcake-bootstrap
-        documentIndex: 8
-
-  - it: defaults startup hook jobs to worker nodes
-    asserts:
-      - equal:
-          path: spec.template.spec.nodeSelector["node-role.kubernetes.io/worker"]
-          value: worker
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.nodeSelector["node-role.kubernetes.io/worker"]
-          value: worker
-        documentIndex: 8
-
-  - it: creates API key only in stackstorm-bootstrap
-    asserts:
-      - notMatchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "create secret generic stackstorm-apikeys"
-        documentIndex: 3
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "create secret generic stackstorm-apikeys"
-        documentIndex: 6
-
-  - it: applies image values and startup service account wiring
-    set:
-      stackstormImage.repository: custom/st2
-      stackstormImage.tag: "9.9.9"
-      stackstormImage.pullPolicy: Always
-      poundcakeImage.pullPolicy: Always
-      images.kubectl: custom/kubectl:1.30
-    asserts:
-      - equal:
-          path: spec.template.spec.containers[0].image
-          value: custom/kubectl:1.30
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.initContainers[1].image
-          value: custom/st2:9.9.9
-        documentIndex: 6
-      - equal:
-          path: spec.template.spec.initContainers[1].imagePullPolicy
-          value: Always
+          pattern: "api.scripts.bootstrap_adapter_credentials"
         documentIndex: 6
       - equal:
           path: spec.template.spec.serviceAccountName
-          value: stackstorm-startup
-        documentIndex: 7
-      - equal:
-          path: spec.template.spec.initContainers[2].imagePullPolicy
-          value: Always
-        documentIndex: 8
-
-  - it: defaults poundcake-bootstrap image tag to chart appVersion when unset
-    set:
-      poundcakeImage.tag: ""
-    asserts:
-      - matchRegex:
-          path: spec.template.spec.initContainers[2].image
-          pattern: '^ghcr\.io/rackerlabs/poundcake:[0-9]+\.[0-9]+\.[0-9]+$'
-        documentIndex: 8
-
-  - it: supports immutable digest image references for poundcake-bootstrap job
-    set:
-      poundcakeImage.repository: ghcr.io/example/poundcake
-      poundcakeImage.tag: ""
-      poundcakeImage.digest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-    asserts:
-      - equal:
-          path: spec.template.spec.initContainers[2].image
-          value: ghcr.io/example/poundcake@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-        documentIndex: 8
-
-  - it: wires runtime auth flag for startup bootstrap when auth is enabled
-    set:
-      auth.enabled: true
-    asserts:
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: POUNDCAKE_AUTH_ENABLED
-            value: "true"
-        documentIndex: 8
-
-  - it: wires stackstorm third-party pack install into stackstorm-bootstrap
-    set:
-      stackstorm.bootstrap.packs.kubernetes.enabled: true
-      stackstorm.bootstrap.packs.kubernetes.version: "1.2.3"
-      stackstorm.bootstrap.packs.openstack.enabled: true
-      stackstorm.bootstrap.packs.openstack.version: "2.3.4"
-    asserts:
-      - equal:
-          path: spec.template.spec.initContainers[1].name
-          value: seed-stackstorm-pack-content
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_KUBERNETES_PACK
-            value: "true"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_KUBERNETES_PACK_SOURCE_TYPE
-            value: "exchange"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_KUBERNETES_PACK_SOURCE_NAME
-            value: "kubernetes"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_KUBERNETES_PACK_VERSION
-            value: "1.2.3"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_KUBERNETES_PACK_REPO_URL
-            value: ""
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_KUBERNETES_RUNTIME_SEED_DATASTORE
-            value: "true"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_KUBERNETES_RUNTIME_HOST
-            value: "https://cluster.local"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_KUBERNETES_RUNTIME_VERIFY_SSL
-            value: "false"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_OPENSTACK_PACK
-            value: "true"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_OPENSTACK_PACK_SOURCE_TYPE
-            value: "exchange"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_OPENSTACK_PACK_SOURCE_NAME
-            value: "openstack"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_OPENSTACK_PACK_VERSION
-            value: "2.3.4"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_OPENSTACK_PACK_REPO_URL
-            value: ""
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_STREAM_URL
-            value: "http://stackstorm-stream:9102"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[1].volumeMounts
-          content:
-            name: stackstorm-packs
-            mountPath: /mnt/stackstorm-shared/packs
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].volumeMounts
-          content:
-            name: stackstorm-pack-configs
-            mountPath: /opt/stackstorm/configs
-            readOnly: true
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].volumeMounts
-          content:
-            name: stackstorm-packs
-            mountPath: /opt/stackstorm/packs
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].volumeMounts
-          content:
-            name: stackstorm-virtualenvs
-            mountPath: /opt/stackstorm/virtualenvs
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.volumes
-          content:
-            name: stackstorm-pack-configs
-            secret:
-              secretName: stackstorm-pack-configs
-              optional: true
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.volumes
-          content:
-            name: stackstorm-packs
-            emptyDir: {}
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.volumes
-          content:
-            name: stackstorm-virtualenvs
-            emptyDir: {}
-        documentIndex: 6
-
-  - it: supports git-sourced third-party pack bootstrap overrides
-    set:
-      stackstorm.bootstrap.packs.kubernetes.enabled: true
-      stackstorm.bootstrap.packs.kubernetes.source.type: git
-      stackstorm.bootstrap.packs.kubernetes.source.repoUrl: https://github.com/example/custom-kubernetes-pack.git
-      stackstorm.bootstrap.packs.kubernetes.version: main
-      stackstorm.bootstrap.packs.kubernetes.runtime.seedDatastore: false
-      stackstorm.bootstrap.packs.kubernetes.runtime.host: https://custom.cluster.local
-      stackstorm.bootstrap.packs.kubernetes.runtime.verifySsl: true
-    asserts:
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_KUBERNETES_PACK_SOURCE_TYPE
-            value: "git"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_KUBERNETES_PACK_REPO_URL
-            value: "https://github.com/example/custom-kubernetes-pack.git"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_INSTALL_KUBERNETES_PACK_VERSION
-            value: "main"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_KUBERNETES_RUNTIME_SEED_DATASTORE
-            value: "false"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_KUBERNETES_RUNTIME_HOST
-            value: "https://custom.cluster.local"
-        documentIndex: 6
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: ST2_KUBERNETES_RUNTIME_VERIFY_SSL
-            value: "true"
-        documentIndex: 6
-
-  - it: applies stackstorm-specific pod security context overrides to startup jobs
-    set:
-      stackstormPodSecurityContext.fsGroup: 1001
-      stackstormPodSecurityContext.fsGroupChangePolicy: OnRootMismatch
-      stackstormPodSecurityContext.supplementalGroups[0]: 1001
-    asserts:
-      - equal:
-          path: spec.template.spec.securityContext.fsGroup
-          value: 1001
-        documentIndex: 6
-      - equal:
-          path: spec.template.spec.securityContext.fsGroupChangePolicy
-          value: OnRootMismatch
-        documentIndex: 6
-      - equal:
-          path: spec.template.spec.securityContext.supplementalGroups[0]
-          value: 1001
-        documentIndex: 6
-
-  - it: wires bootstrap remote sync env for poundcake-bootstrap from helm values
-    set:
-      bootstrap.ingredientsDir: /custom/bootstrap/ingredients
-      bootstrap.recipesDir: /custom/bootstrap/recipes
-      bootstrap.remoteSyncEnabled: true
-      bootstrap.rulesRepoUrl: https://github.com/example/monitoring.git
-      bootstrap.rulesBranch: release-1
-      bootstrap.rulesPath: alerts/team-a
-      git.enabled: true
-      git.repoUrl: https://github.com/example/config.git
-      git.branch: main
-      git.provider: github
-      git.existingSecret: poundcake-git
-    asserts:
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_INGREDIENTS_DIR
-            value: "/custom/bootstrap/ingredients"
-        documentIndex: 8
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_RECIPES_DIR
-            value: "/custom/bootstrap/recipes"
-        documentIndex: 8
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_RULES_REPO_URL
-            value: "https://github.com/example/monitoring.git"
-        documentIndex: 8
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_RULES_BRANCH
-            value: "release-1"
-        documentIndex: 8
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: POUNDCAKE_BOOTSTRAP_RULES_PATH
-            value: "alerts/team-a"
-        documentIndex: 8
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: POUNDCAKE_GIT_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: poundcake-git
-                key: git-token
-                optional: true
-        documentIndex: 8
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: POUNDCAKE_GIT_SSH_KEY_PATH
-            value: "/run/secrets/poundcake-git/git-ssh-key"
-        documentIndex: 8
-      - contains:
-          path: spec.template.spec.initContainers[2].volumeMounts
-          content:
-            name: poundcake-git
-            mountPath: /run/secrets/poundcake-git
-            readOnly: true
-        documentIndex: 8
-      - contains:
-          path: spec.template.spec.volumes
-          content:
-            name: poundcake-git
-            secret:
-              secretName: poundcake-git
-              optional: true
-        documentIndex: 8
-
-  - it: wires runtime auth flag for startup bootstrap when auth is disabled
-    set:
-      auth.enabled: false
-    asserts:
-      - contains:
-          path: spec.template.spec.initContainers[2].env
-          content:
-            name: POUNDCAKE_AUTH_ENABLED
-            value: "false"
-        documentIndex: 8
-
-  - it: applies pod and utility security contexts to startup jobs
-    asserts:
-      - equal:
-          path: spec.template.spec.securityContext.runAsNonRoot
-          value: true
+          value: poundcake-startup
         documentIndex: 0
+
+  - it: disables Kubernetes service environment variable injection
+    asserts:
       - equal:
-          path: spec.template.spec.containers[0].securityContext.runAsNonRoot
-          value: true
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].securityContext.runAsUser
-          value: 1000
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          path: spec.template.spec.enableServiceLinks
           value: false
         documentIndex: 0
       - equal:
-          path: spec.template.spec.initContainers[0].securityContext.runAsUser
-          value: 1000
-        documentIndex: 1
-      - equal:
-          path: spec.template.spec.initContainers[0].securityContext.readOnlyRootFilesystem
+          path: spec.template.spec.enableServiceLinks
           value: false
         documentIndex: 1
       - equal:
-          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          path: spec.template.spec.enableServiceLinks
           value: false
-        documentIndex: 8
+        documentIndex: 2
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+        documentIndex: 3
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+        documentIndex: 4
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+        documentIndex: 5
+      - equal:
+          path: spec.template.spec.enableServiceLinks
+          value: false
+        documentIndex: 6
 
-  - it: does not render pull secrets on startup jobs by default
-    asserts:
-      - isNull:
-          path: spec.template.spec.imagePullSecrets
-        documentIndex: 0
-      - isNull:
-          path: spec.template.spec.imagePullSecrets
-        documentIndex: 8
-
-  - it: renders pull secret only on poundcake-bootstrap startup job
+  - it: applies startup image and pull-secret wiring
     set:
-      poundcakeImage.pullSecrets[0]: ghcr-pull
+      poundcakeImage.repository: example/poundcake
+      poundcakeImage.tag: test
+      poundcakeImage.pullSecrets:
+        - name: regcred
     asserts:
-      - isNull:
-          path: spec.template.spec.imagePullSecrets
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: example/poundcake:test
+        documentIndex: 2
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: example/poundcake:test
+        documentIndex: 4
+      - equal:
+          path: spec.template.spec.imagePullSecrets[0].name
+          value: regcred
+        documentIndex: 4
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: example/poundcake:test
+        documentIndex: 5
+      - equal:
+          path: spec.template.spec.imagePullSecrets[0].name
+          value: regcred
+        documentIndex: 5
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: example/poundcake:test
         documentIndex: 6
       - equal:
           path: spec.template.spec.imagePullSecrets[0].name
-          value: ghcr-pull
-        documentIndex: 8
+          value: regcred
+        documentIndex: 6
 
-  - it: supports hardened override for utility security context
+  - it: allows startup hook ttl override
     set:
-      utilitySecurityContext.readOnlyRootFilesystem: true
+      startupHooks.cleanup.ttlSecondsAfterFinished: 60
     asserts:
       - equal:
-          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
-          value: true
+          path: spec.ttlSecondsAfterFinished
+          value: 60
         documentIndex: 0
       - equal:
-          path: spec.template.spec.initContainers[0].securityContext.readOnlyRootFilesystem
-          value: true
-        documentIndex: 8
-
-  - it: keeps only before-hook-creation when successful cleanup is disabled
-    set:
-      startupHooks.cleanup.deleteSuccessful: false
-    asserts:
+          path: spec.ttlSecondsAfterFinished
+          value: 60
+        documentIndex: 4
       - equal:
-          path: metadata.annotations["helm.sh/hook-delete-policy"]
-          value: before-hook-creation
-        documentIndex: 0
-
-  - it: includes hook-failed cleanup when enabled
-    set:
-      startupHooks.cleanup.deleteFailed: true
-    asserts:
+          path: spec.ttlSecondsAfterFinished
+          value: 60
+        documentIndex: 5
       - equal:
-          path: metadata.annotations["helm.sh/hook-delete-policy"]
-          value: before-hook-creation,hook-succeeded,hook-failed
-        documentIndex: 8
+          path: spec.ttlSecondsAfterFinished
+          value: 60
+        documentIndex: 6
 
-  - it: skips disabled optional waits in workers and edge jobs
+  - it: injects monitoring backend urls only into plugin-registry and adapter-credential bootstrap stages
     set:
-      stackstormServices.notifier.enabled: false
-      stackstormServices.timersengine.enabled: false
-      stackstormServices.sensorcontainer.enabled: false
-      stackstormServices.stream.enabled: false
-      stackstormServices.web.enabled: false
+      monitoring.enabled: true
+      monitoring.prometheus.url: http://prometheus.example.test:9090
+      monitoring.prometheus.crdNamespace: monitoring
+      monitoring.alertmanager.url: http://alertmanager.example.test:9093
     asserts:
-      - notMatchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "deployment/stackstorm-notifier"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_PROMETHEUS_URL
+            value: http://prometheus.example.test:9090
         documentIndex: 4
-      - notMatchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "deployment/stackstorm-timersengine"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_ALERTMANAGER_URL
+            value: http://alertmanager.example.test:9093
         documentIndex: 4
-      - notMatchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "deployment/stackstorm-sensorcontainer"
-        documentIndex: 5
-      - notMatchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "deployment/stackstorm-stream"
-        documentIndex: 5
-      - notMatchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "deployment/stackstorm-web"
-        documentIndex: 5
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_PROMETHEUS_CRD_NAMESPACE
+            value: monitoring
+        documentIndex: 4
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_PROMETHEUS_URL
+            value: http://prometheus.example.test:9090
+        documentIndex: 6
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_ALERTMANAGER_URL
+            value: http://alertmanager.example.test:9093
+        documentIndex: 6
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_PROMETHEUS_CRD_NAMESPACE
+            value: monitoring
+        documentIndex: 6
 
-  - it: includes workers and edge waits when optional components are enabled
-    set:
-      stackstormServices.notifier.enabled: true
-      stackstormServices.timersengine.enabled: true
-      stackstormServices.sensorcontainer.enabled: true
-      stackstormServices.stream.enabled: true
-      stackstormServices.web.enabled: true
+  - it: isolates bootstrap encryption keys and startup database users by stage
     asserts:
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "deployment/stackstorm-notifier"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DB_PLUGIN_REGISTRY_USER
         documentIndex: 4
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "deployment/stackstorm-timersengine"
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 4
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "deployment/stackstorm-sensorcontainer"
-        documentIndex: 5
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "deployment/stackstorm-stream"
-        documentIndex: 5
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "deployment/stackstorm-web"
-        documentIndex: 5
-
-  - it: applies parallel wait controls to startup gate jobs
-    set:
-      startupHooks.parallelWait.enabled: false
-      startupHooks.parallelWait.failFast: false
-      startupHooks.parallelWait.timeout: 2m
-    asserts:
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "PARALLEL_ENABLED=\"false\""
-        documentIndex: 3
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "FAIL_FAST=\"false\""
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 4
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "WAIT_TIMEOUT=\"2m\""
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DB_SERVICE_IDENTITY_MANAGER_USER
         documentIndex: 5
-
-  - it: supports gate logging overrides for startup waits
-    set:
-      startupHooks.gateLogging.enabled: false
-      startupHooks.gateLogging.intervalSeconds: 9
-      startupHooks.gateLogging.prefix: "[custom-gate]"
-    asserts:
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "GATE_LOG_ENABLED=\\\"false\\\""
-        documentIndex: 3
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "GATE_LOG_INTERVAL=\\\"9\\\""
-        documentIndex: 3
-      - matchRegex:
-          path: spec.template.spec.containers[0].command[2]
-          pattern: "GATE_LOG_PREFIX=\\\"\\[custom-gate\\]\\\""
-        documentIndex: 3
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
+        documentIndex: 5
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
+        documentIndex: 5
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DB_CREDENTIAL_MANAGER_USER
+        documentIndex: 6
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
+        documentIndex: 6
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
+        documentIndex: 6

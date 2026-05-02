@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -20,17 +21,23 @@ if __package__ is None or __package__ == "":
 
 from cli.client import PoundCakeClient
 from cli.commands import (
-    actions,
-    activity,
-    alert_rules,
+    api,
     auth,
+    comm_policy,
     communications,
-    global_communications,
-    incidents,
+    dishes,
+    ingredients,
+    orders,
     overview,
     suppressions,
-    workflows,
+    recipes,
 )
+
+# New command modules for E2E test support
+from cli.commands import webhook as webhook_cmd
+from cli.commands import plugin as plugin_cmd
+from cli.commands import health as health_cmd
+from cli.commands import activity as activity_cmd
 
 
 @click.group()
@@ -42,10 +49,20 @@ from cli.commands import (
     help="PoundCake API URL",
 )
 @click.option(
-    "--api-key",
-    "-k",
-    envvar="POUNDCAKE_API_KEY",
-    help="API key for authentication (if required)",
+    "--token",
+    "-t",
+    envvar="POUNDCAKE_TOKEN",
+    help="PoundCake session token for authentication",
+)
+@click.option(
+    "--username",
+    envvar="POUNDCAKE_USERNAME",
+    help="Username for password-based auto-login",
+)
+@click.option(
+    "--password",
+    envvar="POUNDCAKE_PASSWORD",
+    help="Password for password-based auto-login",
 )
 @click.option(
     "--format",
@@ -60,37 +77,55 @@ from cli.commands import (
     is_flag=True,
     help="Enable verbose output",
 )
+@click.option(
+    "--webhook-token",
+    envvar="POUNDCAKE_WEBHOOK_TOKEN",
+    default=None,
+    help="Bearer token for webhook POST endpoints",
+)
 @click.pass_context
 def cli(
     ctx: click.Context,
     url: str,
-    api_key: Optional[str],
+    token: Optional[str],
+    username: Optional[str],
+    password: Optional[str],
     format: str,
     verbose: bool,
+    webhook_token: Optional[str],
 ) -> None:
-    """PoundCake CLI - operate incidents, workflows, and communications."""
+    """PoundCake CLI - operate orders, recipes, and communications."""
     ctx.ensure_object(dict)
-    ctx.obj["client"] = PoundCakeClient(url, api_key)
+    legacy_api_key = os.getenv("POUNDCAKE_API_KEY")
+    if legacy_api_key:
+        raise click.UsageError("`POUNDCAKE_API_KEY` is no longer supported; use `POUNDCAKE_TOKEN`.")
+
+    ctx.obj["client"] = PoundCakeClient(
+        url,
+        token,
+        username=username,
+        password=password,
+        webhook_token=webhook_token,
+    )
     ctx.obj["format"] = format
     ctx.obj["verbose"] = verbose
 
 
 cli.add_command(auth.auth)
+cli.add_command(api.api)
 cli.add_command(overview.overview)
-cli.add_command(incidents.incidents)
+cli.add_command(orders.orders)
 cli.add_command(communications.communications)
 cli.add_command(suppressions.suppressions)
-cli.add_command(activity.activity)
-cli.add_command(alert_rules.alert_rules)
-cli.add_command(global_communications.global_communications)
-cli.add_command(workflows.workflows)
-cli.add_command(actions.actions)
-
-# Backward-compatible aliases
-cli.add_command(incidents.incidents, name="orders")
-cli.add_command(alert_rules.alert_rules, name="rules")
-cli.add_command(workflows.workflows, name="recipes")
-cli.add_command(actions.actions, name="ingredients")
+cli.add_command(dishes.dishes)
+cli.add_command(comm_policy.comm_policy)
+cli.add_command(recipes.recipes)
+cli.add_command(ingredients.ingredients)
+cli.add_command(health_cmd.ready_cmd)
+cli.add_command(health_cmd.health_cmd)
+cli.add_command(webhook_cmd.webhook)
+cli.add_command(plugin_cmd.plugin)
+cli.add_command(activity_cmd.activity)
 
 
 def main() -> None:

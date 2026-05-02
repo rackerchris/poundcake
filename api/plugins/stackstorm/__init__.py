@@ -1,0 +1,1 @@
+"""StackStorm service plugin."""

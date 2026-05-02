@@ -7,15 +7,17 @@ PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 cd "$PROJECT_ROOT"
 
-echo "Installing PoundCake with Docker Compose from: $PROJECT_ROOT"
+COMPOSE="${COMPOSE:-docker compose}"
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "ERROR: docker is not installed or not in PATH"
+echo "Installing local dummy-only PoundCake with ${COMPOSE} from: $PROJECT_ROOT"
+
+if ! command -v "${COMPOSE%% *}" >/dev/null 2>&1; then
+  echo "ERROR: ${COMPOSE%% *} is not installed or not in PATH"
   exit 1
 fi
 
-if ! docker compose -f docker/docker-compose.yml version >/dev/null 2>&1; then
-  echo "ERROR: docker compose -f docker/docker-compose.yml is not available"
+if ! $COMPOSE -f docker/docker-compose.yml version >/dev/null 2>&1; then
+  echo "ERROR: ${COMPOSE} -f docker/docker-compose.yml is not available"
   exit 1
 fi
 
@@ -24,9 +26,9 @@ if [ ! -f .env ] && [ -f .env.example ]; then
   echo "Created .env from .env.example"
 fi
 
-docker compose -f docker/docker-compose.yml up -d "$@"
+$COMPOSE -f docker/docker-compose.yml up --build -d "$@"
 
 echo
 
 echo "Current service status:"
-docker compose -f docker/docker-compose.yml ps
+$COMPOSE -f docker/docker-compose.yml ps

@@ -1,0 +1,1 @@
+"""Git service plugin."""

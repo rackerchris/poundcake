@@ -1,117 +1,124 @@
-# Architecture
+# PoundCake Architecture
 
 ## Summary
 
-PoundCake is a stateless FastAPI service with background workers. The API accepts webhooks, stores orders in MariaDB, and workers orchestrate ingredient execution per dish across supported engines.
+PoundCake 2.0 is a FastAPI control plane for monitoring-driven remediation and communication workflows. The API accepts alert and control-plane input, stores orders in MariaDB, and routes all provider execution through service plugins.
 
-## Key Services
+The core architecture is intentionally singular: every executable unit of work becomes an `order`. Alertmanager alerts, plugin health checks, and scheduled plugin service executions all enter the same order pipeline.
 
-- **API**: Intake, CRUD, unified execution orchestration, and DB access.
-- **Prep Chef**: Converts new orders into dishes.
-- **Chef**: Claims dishes and triggers StackStorm workflows.
-- **Timer**: Monitors workflow executions and persists results.
-- **Dishwasher**: Syncs StackStorm actions/packs into Ingredients/Recipes.
+Production deployment is Helm based; see [OPERATOR.md](OPERATOR.md). Auth and internal RBAC behavior is covered in [AUTH_RBAC.md](AUTH_RBAC.md).
 
-## Data Model (Core)
+## Control Plane Actors
 
-- `orders`: Alert intake and processing status.
-- `recipes`: Workflow templates and metadata.
-- `ingredients`: StackStorm actions + default parameters.
-- `recipe_ingredients`: Ordered list of ingredients per recipe.
-- `dishes`: Execution instance of a recipe for an order.
-- `dish_ingredients`: Per-task execution results and timestamps.
+- **API**: Owns intake, CRUD, service registry, Cook, Expediter, timeline, health, and runtime state APIs.
+- **Prep Chef**: Claims dispatchable orders and calls Cook.
+- **Cook**: Creates phase dishes, seeds runtime rows through the core dish planner, dispatches ready work through Expediter, and finalizes dishes and orders.
+- **Expediter**: Sole runtime gateway from PoundCake to plugin adapters.
+- **Timer**: Claims in-flight runtime rows, observes provider state only through Expediter, reconciles outcomes, and asks Cook to advance.
+- **Dishwasher**: Syncs plugin manifests, ingredient templates, recipes, and scheduled tasks; injects due scheduled work as orders.
+- **Service Plugins**: Logical integration boundaries for external or internal systems. Their plugin adapters translate canonical PoundCake execution requests into provider-native operations.
 
-## Execution Flow
+## Core Data Model
 
-1. Alertmanager POSTs `/api/v1/webhook`.
-2. `prep-chef` claims orders and calls `/api/v1/orders/{order_id}/dispatch`.
-3. `chef` claims dishes, registers the workflow, and executes it via `/api/v1/cook/execute` (`execution_engine=stackstorm`).
-4. `timer` polls StackStorm and updates `dishes` and `dish_ingredients`.
-5. `dishwasher` syncs StackStorm actions/packs into the database.
+- `orders`: Singular unit of control-plane work. Tracks alert state, processing state, remediation outcome, activity, and timing.
+- `recipes`: Workflow templates selected by alert group or plugin-owned scheduled work.
+- `ingredients`: Immutable plugin-provided capability templates.
+- `recipe_ingredients`: Mutable recipe steps that use ingredients with overrides and phase/run-condition policy.
+- `dishes`: Per-order execution instances for `firing` or `resolving` phases.
+- `dish_ingredients`: Runtime execution rows with service execution ids, statuses, outcomes, errors, and timings.
+- `scheduled_tasks`: Durable recurring work definitions that are injected as orders when due.
+- `service_plugins`: Registered plugin metadata, health, credential, and capability state.
 
-## Unified Dispatch Order Diagram
+## Singular Order Workflow
 
-```mermaid
-flowchart TD
-  A["Alertmanager webhook (firing)"] --> B["API pre_heat upserts Order<br/>processing_status=new"]
-  B --> C["prep-chef polls Orders(new,resolving)"]
-  C --> D["POST /api/v1/orders/{order_id}/dispatch"]
+1. Intake creates or updates an `order`.
+2. Prep Chef claims dispatchable orders and calls `POST /api/v1/cook/orders/{order_id}`.
+3. Cook chooses the run phase:
+   - `new` orders dispatch a `firing` dish.
+   - `resolving` orders dispatch a `resolving` dish.
+   - terminal and otherwise non-dispatchable orders are rejected.
+4. Cook creates or reuses the phase dish and uses the core dish planner to seed phase-eligible `dish_ingredients`.
+5. Cook dispatches ready runtime rows through Expediter.
+6. Expediter calls the selected plugin adapter and owns provider health gating plus canonical execution envelopes.
+7. Timer polls in-flight runtime rows through Expediter and reconciles terminal execution results.
+8. Cook advances the dish until it is terminal.
+9. Final dish state rolls up to the order.
 
-  D --> E{"order.processing_status"}
-  E -->|new| F["Dispatch run_phase=firing"]
-  E -->|resolving| G["Dispatch run_phase=resolving"]
-  E -->|other| H["409 not dispatchable"]
+Scheduled plugin work follows the same path. Dishwasher injects due scheduled tasks as orders, Cook creates a dish, Expediter dispatches the plugin operation through the adapter, Timer reconciles it, and Cook finalizes the order and task state.
 
-  F --> I["Create/reuse firing Dish<br/>seed phase-eligible dish_ingredients<br/>(can include StackStorm + Bakery comms)"]
-  G --> J["Create/reuse resolving Dish<br/>seed Bakery comms only<br/>(inject fallback comms if recipe has none)"]
+## Core Planning And Provider Boundary
 
-  I --> K["Dish status=new"]
-  J --> K
+`api.services.dish_planner` is part of Cook's core decision engine. It chooses phase-eligible recipe ingredients, applies run conditions, hydrates payload templates from order context, validates service payload and operation contracts, resolves expected runtime and timeout values, copies expected outcomes, and creates `dish_ingredients`. Plugins can describe available work through immutable ingredient templates, but they do not decide global workflow semantics or seed runtime rows.
 
-  K --> L["chef claims dish -> processing"]
-  L --> M["chef loads dish_ingredients"]
-  M --> N{"stackstorm pending rows? (firing only)"}
+Expediter is the only component that invokes plugin adapter workload methods. Cook sends hydrated runtime rows to Expediter for dispatch; Timer sends status and cancellation requests to Expediter for reconciliation. Timer must not import plugin adapters or provider clients, and it must not dispatch new provider work. Its write authority is limited to runtime row claim, release, reconciliation, and Cook dish advancement after reconciliation.
 
-  N -->|yes| O["Filter recipe to stackstorm rows<br/>POST /cook/workflows/register<br/>POST /cook/execute (stackstorm)<br/>PATCH dish.execution_ref"]
-  N -->|no| P{"bakery pending rows?"}
+## Phases And Communication
 
-  O --> Q["timer polls /cook/executions*"]
-  Q --> R["POST /dishes/{id}/ingredients/bulk<br/>upsert stackstorm task status/result"]
-  R --> P
+Alert-driven orders can have two phases:
 
-  P -->|yes| S["Execute bakery rows via /cook/execute (per row)<br/>upsert each dish_ingredient in place"]
-  P -->|no| T["Finalize dish"]
+- `firing`: Remediation, utility, and firing communication work while the alert is active.
+- `resolving`: Communication and cleanup work after the alert resolves.
 
-  S --> T
+Recipe steps can run in `firing`, `resolving`, or `both` phases. Run conditions decide whether resolving work applies after successful remediation, failed remediation, no remediation, or timeout.
 
-  T --> U{"dish.run_phase"}
-  U -->|firing| V["Dish terminal -> order moves to resolving"]
-  U -->|resolving| W["Dish terminal -> order complete/failed"]
+Communication routes can be local to a recipe or inherited from the global communication policy. When a resolving phase needs communication and the recipe has no local route, Cook can seed global policy steps so the order still records a resolved-path communication outcome.
 
-  X["Alertmanager webhook (resolved)"] --> Y["pre_heat sets order.processing_status=resolving"]
-  Y --> C
-```
+## Status Vocabulary
 
-## Order Workflow Graph (States + Bakery Calls)
+Order processing statuses:
+
+- Non-terminal: `new`, `processing`, `resolving`
+- Terminal: `complete`, `failed`, `errored`, `timeout`, `canceled`
+
+Dish processing statuses:
+
+- Non-terminal: `new`, `processing`, `finalizing`
+- Terminal: `complete`, `failed`, `errored`, `timeout`, `canceled`
+
+Service execution statuses:
+
+- Non-terminal: `pending`, `dispatched`, `running`
+- Terminal: `succeeded`, `failed`, `errored`, `timeout`, `canceled`
+
+Terminal order and dish statuses are immutable in normal transition validation.
+
+## Order Terminal Status Updates
 
 ```mermaid
 stateDiagram-v2
-    [*] --> new: firing webhook\nPOST /api/v1/webhook -> pre_heat creates order
+    [*] --> new: order created
 
-    new --> processing: prep-chef cook\nPOST /api/v1/orders/{order_id}/dispatch
-    processing --> resolving: dish terminal (non-catch-all)\nPATCH /api/v1/dishes/{dish_id}
+    new --> processing: Cook dispatches firing phase
+    new --> resolving: Alertmanager resolved webhook
+    processing --> resolving: Alertmanager resolved webhook
+    processing --> resolving: firing dish terminal after alert resolved
+    resolving --> resolving: resolved webhook is idempotent
 
-    new --> resolving: resolved webhook\npre_heat transition check
-    processing --> resolving: resolved webhook\npre_heat transition check
-    resolving --> resolving: resolved webhook (idempotent)\npre_heat keeps resolving
-    resolving --> processing: re-fire while resolving\npre_heat sets processing
+    resolving --> complete: resolving dish complete
+    resolving --> failed: resolving dish failed
+    resolving --> errored: resolving dish errored
+    resolving --> timeout: resolving dish timeout
+    resolving --> canceled: resolving dish canceled
 
-    resolving --> complete: resolve success\nPOST /api/v1/orders/{order_id}/dispatch
-    resolving --> failed: resolve blocking failure\nPOST /api/v1/orders/{order_id}/dispatch
-    new --> canceled: manual order update\nPUT/PATCH /api/v1/orders/{order_id}
-    processing --> canceled: manual order update\nPUT/PATCH /api/v1/orders/{order_id}
-    resolving --> canceled: manual order update\nPUT/PATCH /api/v1/orders/{order_id}
+    complete --> complete: terminal
+    failed --> failed: terminal
+    errored --> errored: terminal
+    timeout --> timeout: terminal
+    canceled --> canceled: terminal
 
-    note right of processing
-      Dish-terminal communication sync:
-      - PoundCake executes Bakery communication actions through /api/v1/cook/execute
-      - canonical operations are open, notify, update, and close
-      - Bakery maps those provider-neutral actions to provider-native create/comment/update/close calls
-      - asynchronous Bakery operations are polled until terminal state
-    end note
-
-    note right of resolving
-      Resolved-webhook communication sync:
-      - resolve-phase dispatch seeds communication-only Bakery work in resolving
-      - if a recipe has no resolving communication route, fallback comms is injected
-      - successful auto-remediation communicates on the resolved path instead of opening a firing-phase ticket
-      - final remote communication state is refreshed back onto the PoundCake order
-    end note
-
-    note right of complete
-      Terminal order statuses:
-      complete | failed | canceled
-      - immutable in order update logic
-      - cannot transition to another terminal status
-    end note
+    state "Runtime Rollup" as rollup {
+        [*] --> execution_active
+        execution_active --> execution_terminal: service_exec_status terminal
+        execution_terminal --> dish_terminal: Cook computes dish terminal status
+        dish_terminal --> order_update: Cook updates order processing_status
+        order_update --> [*]
+    }
 ```
+
+## Execution Rollup Rules
+
+Plugin adapters return canonical execution status to Expediter. Timer writes terminal execution results onto `dish_ingredients`; Cook evaluates all runtime rows in the current dish.
+
+If any blocking runtime row fails, errors, times out, or is canceled, the dish becomes the corresponding terminal failure status. If all required runtime rows succeed or match their expected outcomes, the dish becomes `complete`.
+
+For firing-phase alert work, a complete dish records `remediation_outcome=succeeded`; a failure records `remediation_outcome=failed`; cancellation records `remediation_outcome=none`. If the alert has already resolved, the order moves to `resolving` so resolved-path communication can run. Resolving-phase terminal state becomes the final order terminal state.

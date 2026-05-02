@@ -11,6 +11,50 @@ export class ApiError extends Error {
   }
 }
 
+// Last session expiry timestamp (set from login response).
+let _sessionExpiresAt: string | null = null;
+
+/**
+ * Call POST /api/v1/auth/refresh to extend the session.
+ * Silently fails — the caller will get a 401 and be redirected to login anyway.
+ */
+async function _refreshSession(): Promise<boolean> {
+  try {
+    const resp = await fetch("/api/v1/auth/refresh", {
+      method: "POST",
+      credentials: "same-origin",
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Proactively refresh the session if it is within 5 minutes of expiring.
+ */
+async function _maybeRefresh(): Promise<void> {
+  if (!_sessionExpiresAt) return;
+  const expiresAt = new Date(_sessionExpiresAt);
+  const now = new Date();
+  const fiveMinutes = 5 * 60 * 1000;
+  if (expiresAt.getTime() - now.getTime() <= fiveMinutes) {
+    try {
+      const refreshed = await _refreshSession();
+      if (refreshed) {
+        // The refresh response sets a new cookie; we can read expires_at from
+        // the last successful /auth/me call, or simply keep our sentinel.
+      }
+    } catch {
+      // Silently ignored.
+    }
+  }
+}
+
+export function setSessionExpiresAt(expiresAt: string | null): void {
+  _sessionExpiresAt = expiresAt;
+}
+
 function buildNextUrl(): string {
   return `${window.location.pathname}${window.location.search}`;
 }
@@ -27,6 +71,8 @@ export async function apiFetch<T>(
   init: RequestInit = {},
   options: { allowUnauthorized?: boolean } = {},
 ): Promise<T> {
+  await _maybeRefresh();
+
   const response = await fetch(path, {
     credentials: "same-origin",
     headers: {

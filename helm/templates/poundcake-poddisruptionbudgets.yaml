@@ -22,57 +22,6 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: stackstorm-mongodb
-  labels:
-    {{- include "poundcake.labels" . | nindent 4 }}
-  annotations:
-    "helm.sh/release": {{ .Release.Name | quote }}
-    "helm.sh/chart": {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
-    "helm.sh/namespace": {{ .Release.Namespace | quote }}
-spec:
-  maxUnavailable: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/component: stackstorm-mongodb
-      {{- include "poundcake.selectorLabels" . | nindent 6 }}
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: stackstorm-rabbitmq
-  labels:
-    {{- include "poundcake.labels" . | nindent 4 }}
-  annotations:
-    "helm.sh/release": {{ .Release.Name | quote }}
-    "helm.sh/chart": {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
-    "helm.sh/namespace": {{ .Release.Namespace | quote }}
-spec:
-  maxUnavailable: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/component: stackstorm-rabbitmq
-      {{- include "poundcake.selectorLabels" . | nindent 6 }}
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: stackstorm-redis
-  labels:
-    {{- include "poundcake.labels" . | nindent 4 }}
-  annotations:
-    "helm.sh/release": {{ .Release.Name | quote }}
-    "helm.sh/chart": {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
-    "helm.sh/namespace": {{ .Release.Namespace | quote }}
-spec:
-  maxUnavailable: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/component: stackstorm-redis
-      {{- include "poundcake.selectorLabels" . | nindent 6 }}
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
   name: poundcake-api
   labels:
     {{- include "poundcake.labels" . | nindent 4 }}
@@ -85,23 +34,6 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/component: api
-      {{- include "poundcake.selectorLabels" . | nindent 6 }}
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: stackstorm-api
-  labels:
-    {{- include "poundcake.labels" . | nindent 4 }}
-  annotations:
-    "helm.sh/release": {{ .Release.Name | quote }}
-    "helm.sh/chart": {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
-    "helm.sh/namespace": {{ .Release.Namespace | quote }}
-spec:
-  maxUnavailable: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/component: stackstorm-api
       {{- include "poundcake.selectorLabels" . | nindent 6 }}
 {{- end }}
 {{- end }}

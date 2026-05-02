@@ -112,14 +112,8 @@ rotate_chart_secrets() {
   # These are chart-owned/default secret names that are safe to rotate.
   local secrets=(
     "${release_name}-poundcake-admin"
-    "${release_name}-poundcake-stackstorm"
-    "${release_name}-stackstorm-ha-st2-apikeys"
-    "st2-st2-apikeys"
-    "st2-mongodb-secret"
-    "st2-rabbitmq"
     "${release_name}-poundcake-mariadb-root"
     "${release_name}-poundcake-mariadb-user"
-    "poundcake-st2-auth"
   )
 
   echo "Rotating selected chart-managed secrets (if present)..."

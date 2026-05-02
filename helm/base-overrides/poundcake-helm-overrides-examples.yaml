@@ -2,9 +2,6 @@
 # Start by setting real FQDNs for Envoy Gateway listeners/routes.
 # Copy this file to /etc/poundcake/helm-configs/poundcake/poundcake-helm-overrides.yaml
 # (or another location consumed via -f/--values), then adjust values for your environment.
-#
-# Bakery is deployed separately from https://github.com/rackerlabs/bakery .
-# This file keeps only the PoundCake-side remote Bakery client settings.
 
 poundcake:
   enabled: true
@@ -21,16 +18,6 @@ uiImage:
   tag: latest
   pullPolicy: Always
 
-bakery:
-  config:
-    activeProvider: rackspace_core
-  client:
-    enabled: false
-    enforceRemoteBaseUrl: true
-    baseUrl: ""
-    auth:
-      existingSecret: bakery-monitor-bootstrap
-
 gateway:
   enabled: true
   className: envoyproxy
@@ -46,65 +33,3 @@ gateway:
       hostname: ui.example.yourdomain.com
       port: 80
       pathPrefix: /
-
-# Remote Bakery example for the PoundCake release:
-# bakery:
-#   client:
-#     enabled: true
-#     enforceRemoteBaseUrl: true
-#     baseUrl: https://bakery.example.com
-#     auth:
-#       existingSecret: bakery-monitor-bootstrap
-#
-# Optional StackStorm pack bootstrap example:
-# stackstorm:
-#   bootstrap:
-#     packs:
-#       kubernetes:
-#         enabled: true
-#         version: ""
-#         config:
-#           kubeconfig: |
-#             apiVersion: v1
-#             kind: Config
-#             current-context: admin@target-cluster
-#             clusters:
-#               - name: target-cluster
-#                 cluster:
-#                   server: https://kubernetes.example.com:6443
-#                   certificate-authority-data: <base64-cluster-ca>
-#             contexts:
-#               - name: admin@target-cluster
-#                 context:
-#                   cluster: target-cluster
-#                   user: admin-user
-#             users:
-#               - name: admin-user
-#                 user:
-#                   client-certificate-data: <base64-admin-client-certificate>
-#                   client-key-data: <base64-admin-client-key>
-#           caCert: ""
-#       openstack:
-#         enabled: true
-#         version: ""
-#         config:
-#           cloudsYaml: |
-#             clouds:
-#               target:
-#                 auth:
-#                   auth_url: https://keystone.example.com:5000/v3
-#                   username: <openstack-username>
-#                   password: <openstack-password>
-#                   project_name: <openstack-project>
-#                   user_domain_name: Default
-#                   project_domain_name: Default
-#                 region_name: RegionOne
-#           caCert: ""
-#
-# Keep real certificate data, kubeconfig contents, and OpenStack credentials only in secured
-# operator-managed override files, not in committed example files.
-#
-# Private GHCR example:
-# poundcakeImage:
-#   pullSecrets:
-#     - registry-creds

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from shared.types import JSONObject
+
 import hashlib
 import hmac
 import json
 from typing import Any
 
 
-def canonical_json_body(payload: dict[str, Any] | None) -> str:
+def canonical_json_body(payload: JSONObject | None) -> str:
     """Serialize JSON payload into a stable canonical representation."""
     if not payload:
         return ""

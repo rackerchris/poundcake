@@ -47,23 +47,21 @@ def upgrade() -> None:
     op.create_table(
         "ingredients",
         sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("execution_target", sa.String(length=100), nullable=False),
+        sa.Column("service_exec", sa.String(length=100), nullable=False),
         sa.Column("destination_target", sa.String(length=255), nullable=False, server_default=""),
         sa.Column("task_key_template", sa.String(length=255), nullable=False),
-        sa.Column("execution_id", sa.String(length=100), nullable=True),
-        sa.Column("execution_payload", mysql.JSON(), nullable=True),
-        sa.Column("execution_parameters", mysql.JSON(), nullable=True),
-        sa.Column("is_default", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column("service_payload_template", mysql.JSON(), nullable=True),
+        sa.Column("service_exec_parameters", mysql.JSON(), nullable=True),
+        sa.Column("payload_schema", mysql.JSON(), nullable=False),
+        sa.Column("service_exec_expected_outcome_default", mysql.JSON(), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("service_type", sa.String(length=50), nullable=False, server_default="undefined"),
         sa.Column(
-            "execution_engine", sa.String(length=50), nullable=False, server_default="undefined"
-        ),
-        sa.Column(
-            "execution_purpose", sa.String(length=32), nullable=False, server_default="utility"
+            "ingredient_purpose", sa.String(length=32), nullable=False, server_default="utility"
         ),
         sa.Column("is_blocking", sa.Boolean(), nullable=False),
-        sa.Column("expected_duration_sec", sa.Integer(), nullable=False),
-        sa.Column("timeout_duration_sec", sa.Integer(), nullable=False),
+        sa.Column("default_expected_secs", sa.Integer(), nullable=False),
+        sa.Column("default_timeout", sa.Integer(), nullable=False),
         sa.Column("retry_count", sa.Integer(), nullable=False),
         sa.Column("retry_delay", sa.Integer(), nullable=False),
         sa.Column("on_failure", sa.String(length=50), nullable=False),
@@ -71,18 +69,268 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.Column("deleted", sa.Boolean(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
+        sa.CheckConstraint("service_type <> ''", name="ck_ingredients_service_type_present"),
+        sa.CheckConstraint("service_exec <> ''", name="ck_ingredients_service_exec_present"),
+        sa.CheckConstraint(
+            "ingredient_purpose in ('remediation','comms','utility','plugin_health','suppression_sync','suppression_lifecycle')",
+            name="ck_ingredients_ingredient_purpose",
+        ),
+        sa.CheckConstraint(
+            "on_failure in ('continue','stop','retry')",
+            name="ck_ingredients_on_failure",
+        ),
+        sa.CheckConstraint(
+            "default_expected_secs > 0",
+            name="ck_ingredients_default_expected_secs_positive",
+        ),
+        sa.CheckConstraint("default_timeout > 0", name="ck_ingredients_default_timeout_positive"),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_ingredients_id"), "ingredients", ["id"], unique=False)
     op.create_index(
-        op.f("ix_ingredients_execution_target"), "ingredients", ["execution_target"], unique=False
+        op.f("ix_ingredients_service_exec"), "ingredients", ["service_exec"], unique=False
     )
     op.create_index(
-        "ux_ingredients_engine_target",
+        "idx_ingredients_service_template",
         "ingredients",
-        ["execution_engine", "execution_target", "destination_target", "task_key_template"],
-        unique=True,
+        ["service_type", "service_exec", "destination_target", "task_key_template"],
+        unique=False,
     )
+
+    op.create_table(
+        "service_plugins",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("service_type", sa.String(length=50), nullable=False),
+        sa.Column("plugin_short_id", sa.String(length=12), nullable=False),
+        sa.Column(
+            "plugin_type",
+            sa.String(length=32),
+            nullable=False,
+            server_default="external_plugin",
+        ),
+        sa.Column(
+            "plugin_tier",
+            sa.String(length=32),
+            nullable=False,
+            server_default="community",
+        ),
+        sa.Column("plugin_log_key", sa.String(length=32), nullable=True),
+        sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("run_interval_seconds", sa.Integer(), nullable=True),
+        sa.Column("query_limit", sa.Integer(), nullable=True),
+        sa.Column("status_message", sa.Text(), nullable=True),
+        sa.Column("plugin_config", mysql.JSON(), nullable=True),
+        sa.Column("capabilities_hash", sa.String(length=64), nullable=True),
+        sa.Column(
+            "registered_ingredient_count",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column(
+            "registered_recipe_count",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column(
+            "credential_status", sa.String(length=32), nullable=False, server_default="unknown"
+        ),
+        sa.Column("credential_error", sa.Text(), nullable=True),
+        sa.Column("last_credential_bootstrap_at", sa.DateTime(), nullable=True),
+        sa.Column("last_credential_rotation_at", sa.DateTime(), nullable=True),
+        sa.Column("health_status", sa.String(length=32), nullable=False, server_default="unknown"),
+        sa.Column("health_message", sa.Text(), nullable=True),
+        sa.Column("health_error_code", sa.String(length=100), nullable=True),
+        sa.Column("health_latency_ms", sa.Integer(), nullable=True),
+        sa.Column("health_details", mysql.JSON(), nullable=True),
+        sa.Column(
+            "consecutive_failures",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column("last_health_check_at", sa.DateTime(), nullable=True),
+        sa.Column("next_health_check_at", sa.DateTime(), nullable=True),
+        sa.Column("last_success_at", sa.DateTime(), nullable=True),
+        sa.Column(
+            "health_check_state", sa.String(length=32), nullable=False, server_default="idle"
+        ),
+        sa.Column("health_check_order_id", sa.Integer(), nullable=True),
+        sa.Column("health_check_started_at", sa.DateTime(), nullable=True),
+        sa.Column("health_check_grace_until", sa.DateTime(), nullable=True),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.CheckConstraint("service_type <> ''", name="ck_service_plugins_service_type_present"),
+        sa.CheckConstraint("plugin_short_id <> ''", name="ck_service_plugins_short_id_present"),
+        sa.CheckConstraint(
+            "plugin_type in ('internal_plugin','external_plugin')",
+            name="ck_service_plugins_plugin_type",
+        ),
+        sa.CheckConstraint(
+            "plugin_tier in ('community','supported')",
+            name="ck_service_plugins_plugin_tier",
+        ),
+        sa.CheckConstraint(
+            "plugin_log_key is null or plugin_log_key <> ''",
+            name="ck_service_plugins_plugin_log_key_present",
+        ),
+        sa.CheckConstraint(
+            "health_status in ('unknown','initializing','healthy','degraded','failed','disabled')",
+            name="ck_service_plugins_health_status",
+        ),
+        sa.CheckConstraint(
+            "health_check_state in ('idle','queued','running')",
+            name="ck_service_plugins_health_check_state",
+        ),
+        sa.CheckConstraint(
+            "query_limit is null or query_limit > 0",
+            name="ck_service_plugins_query_limit_positive",
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("plugin_log_key", name="ux_service_plugins_plugin_log_key"),
+        sa.UniqueConstraint("plugin_short_id", name="ux_service_plugins_plugin_short_id"),
+        sa.UniqueConstraint("service_type", name="ux_service_plugins_service_type"),
+    )
+    op.create_index("ix_service_plugins_id", "service_plugins", ["id"], unique=False)
+    op.create_index("ix_service_plugins_enabled", "service_plugins", ["enabled"], unique=False)
+    op.create_index(
+        "ix_service_plugins_plugin_type",
+        "service_plugins",
+        ["plugin_type"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_service_plugins_plugin_short_id",
+        "service_plugins",
+        ["plugin_short_id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_service_plugins_plugin_tier",
+        "service_plugins",
+        ["plugin_tier"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_service_plugins_health_status",
+        "service_plugins",
+        ["health_status"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_service_plugins_next_health_check_at",
+        "service_plugins",
+        ["next_health_check_at"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_service_plugins_health_check_order_id",
+        "service_plugins",
+        ["health_check_order_id"],
+        unique=False,
+    )
+
+    op.create_table(
+        "service_plugin_credentials",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("service_plugin_id", sa.Integer(), nullable=False),
+        sa.Column("credential_type", sa.String(length=64), nullable=False),
+        sa.Column("credential_key_id", sa.String(length=255), nullable=False),
+        sa.Column("encrypted_payload", sa.Text(), nullable=False),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.CheckConstraint("credential_type <> ''", name="ck_sp_credentials_type_present"),
+        sa.CheckConstraint("credential_key_id <> ''", name="ck_sp_credentials_key_present"),
+        sa.ForeignKeyConstraint(["service_plugin_id"], ["service_plugins.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "service_plugin_id",
+            "credential_type",
+            "credential_key_id",
+            name="ux_service_plugin_credentials_identity",
+        ),
+    )
+    op.create_index(
+        "ix_service_plugin_credentials_id",
+        "service_plugin_credentials",
+        ["id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_service_plugin_credentials_service_plugin_id",
+        "service_plugin_credentials",
+        ["service_plugin_id"],
+        unique=False,
+    )
+
+    op.create_table(
+        "scheduled_tasks",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("task_key", sa.String(length=255), nullable=False),
+        sa.Column("task_type", sa.String(length=64), nullable=False),
+        sa.Column("service_type", sa.String(length=50), nullable=True),
+        sa.Column("service_exec", sa.String(length=255), nullable=True),
+        sa.Column("source", sa.String(length=32), nullable=False, server_default="registered"),
+        sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column(
+            "run_interval_seconds",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("300"),
+        ),
+        sa.Column("next_run_at", sa.DateTime(), nullable=True),
+        sa.Column("priority", sa.Integer(), nullable=False, server_default=sa.text("100")),
+        sa.Column("timeout_seconds", sa.Integer(), nullable=False, server_default=sa.text("300")),
+        sa.Column("task_payload", mysql.JSON(), nullable=True),
+        sa.Column("task_parameters", mysql.JSON(), nullable=True),
+        sa.Column("expected_outcome", mysql.JSON(), nullable=True),
+        sa.Column("status", sa.String(length=32), nullable=False, server_default="idle"),
+        sa.Column("last_status", sa.String(length=32), nullable=True),
+        sa.Column("last_message", sa.Text(), nullable=True),
+        sa.Column("last_order_id", sa.Integer(), nullable=True),
+        sa.Column("last_order_req_id", sa.String(length=100), nullable=True),
+        sa.Column("last_started_at", sa.DateTime(), nullable=True),
+        sa.Column("last_completed_at", sa.DateTime(), nullable=True),
+        sa.Column(
+            "consecutive_failures",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column("created_at", sa.DateTime(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.CheckConstraint("task_key <> ''", name="ck_scheduled_tasks_task_key_present"),
+        sa.CheckConstraint("task_type <> ''", name="ck_scheduled_tasks_task_type_present"),
+        sa.CheckConstraint("run_interval_seconds > 0", name="ck_scheduled_tasks_interval_positive"),
+        sa.CheckConstraint("timeout_seconds > 0", name="ck_scheduled_tasks_timeout_positive"),
+        sa.CheckConstraint(
+            "source in ('core','plugin_manifest','registered')",
+            name="ck_scheduled_tasks_source",
+        ),
+        sa.CheckConstraint(
+            "task_type in ('plugin_health_check','service_execution')",
+            name="ck_scheduled_tasks_task_type",
+        ),
+        sa.CheckConstraint(
+            "status in ('idle','queued','running','disabled')",
+            name="ck_scheduled_tasks_status",
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("task_key", name="ux_scheduled_tasks_task_key"),
+    )
+    op.create_index("ix_scheduled_tasks_id", "scheduled_tasks", ["id"], unique=False)
+    op.create_index(
+        "ix_scheduled_tasks_enabled_next_run",
+        "scheduled_tasks",
+        ["is_enabled", "next_run_at"],
+        unique=False,
+    )
+    op.create_index("ix_scheduled_tasks_status", "scheduled_tasks", ["status"], unique=False)
+    op.create_index(
+        "ix_scheduled_tasks_service_type", "scheduled_tasks", ["service_type"], unique=False
+    )
+    op.create_index("ix_scheduled_tasks_task_type", "scheduled_tasks", ["task_type"], unique=False)
 
     # Recipe Ingredients (junction)
     op.create_table(
@@ -94,12 +342,28 @@ def upgrade() -> None:
         sa.Column("on_success", sa.String(length=50), nullable=False, server_default="continue"),
         sa.Column("parallel_group", sa.Integer(), nullable=False),
         sa.Column("depth", sa.Integer(), nullable=False),
-        sa.Column("execution_payload_override", mysql.JSON(), nullable=True),
-        sa.Column("execution_parameters_override", mysql.JSON(), nullable=True),
-        sa.Column("expected_duration_sec_override", sa.Integer(), nullable=True),
-        sa.Column("timeout_duration_sec_override", sa.Integer(), nullable=True),
+        sa.Column("service_payload", mysql.JSON(), nullable=True),
+        sa.Column("service_exec_parameters_override", mysql.JSON(), nullable=True),
+        sa.Column("service_exec_expected_secs", sa.Integer(), nullable=True),
+        sa.Column("service_exec_timeout", sa.Integer(), nullable=True),
+        sa.Column("service_exec_expected_outcome", mysql.JSON(), nullable=True),
         sa.Column("run_phase", sa.String(length=16), nullable=False, server_default="both"),
         sa.Column("run_condition", sa.String(length=40), nullable=False),
+        sa.CheckConstraint(
+            "on_success in ('continue','stop')", name="ck_recipe_ingredients_on_success"
+        ),
+        sa.CheckConstraint(
+            "run_phase in ('firing','resolving','both')",
+            name="ck_recipe_ingredients_run_phase",
+        ),
+        sa.CheckConstraint(
+            "service_exec_expected_secs is null or service_exec_expected_secs > 0",
+            name="ck_recipe_ingredients_expected_secs_positive",
+        ),
+        sa.CheckConstraint(
+            "service_exec_timeout is null or service_exec_timeout > 0",
+            name="ck_recipe_ingredients_timeout_positive",
+        ),
         sa.ForeignKeyConstraint(["ingredient_id"], ["ingredients.id"]),
         sa.ForeignKeyConstraint(["recipe_id"], ["recipes.id"]),
         sa.PrimaryKeyConstraint("id"),
@@ -131,12 +395,8 @@ def upgrade() -> None:
             alert_group_name VARCHAR(255) NOT NULL,
             severity VARCHAR(50),
             instance VARCHAR(255),
+            correlation_key VARCHAR(64),
             counter INTEGER NOT NULL,
-            bakery_ticket_id VARCHAR(36),
-            bakery_operation_id VARCHAR(36),
-            bakery_ticket_state VARCHAR(32),
-            bakery_permanent_failure BOOLEAN NOT NULL DEFAULT 0,
-            bakery_last_error TEXT,
             labels JSON NOT NULL,
             annotations JSON,
             raw_data JSON,
@@ -144,8 +404,9 @@ def upgrade() -> None:
             ends_at DATETIME,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
-            bakery_comms_id VARCHAR(36),
             fingerprint_when_active VARCHAR(255) GENERATED ALWAYS AS (IF(is_active = 1, fingerprint, NULL)) STORED,
+            CONSTRAINT ck_orders_processing_status CHECK (processing_status in ('new','processing','resolving','complete','failed','errored','timeout','canceled')),
+            CONSTRAINT ck_orders_remediation_outcome CHECK (remediation_outcome in ('pending','succeeded','failed','none')),
             PRIMARY KEY (id)
         )
         """)
@@ -193,55 +454,47 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_orders_severity"), "orders", ["severity"], unique=False)
     op.create_index(op.f("ix_orders_instance"), "orders", ["instance"], unique=False)
-    op.create_index(op.f("ix_orders_created_at"), "orders", ["created_at"], unique=False)
+    op.create_index(op.f("ix_orders_correlation_key"), "orders", ["correlation_key"], unique=False)
     op.create_index(
-        op.f("ix_orders_bakery_ticket_id"), "orders", ["bakery_ticket_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix_orders_bakery_operation_id"), "orders", ["bakery_operation_id"], unique=False
-    )
-    op.create_index(
-        op.f("ix_orders_bakery_ticket_state"), "orders", ["bakery_ticket_state"], unique=False
-    )
-    op.create_index(
-        op.f("ix_orders_bakery_permanent_failure"),
+        "ix_orders_fingerprint_severity_created_at",
         "orders",
-        ["bakery_permanent_failure"],
+        ["fingerprint", "severity", "created_at"],
         unique=False,
     )
-
+    op.create_index(op.f("ix_orders_created_at"), "orders", ["created_at"], unique=False)
     # Dishes
     op.create_table(
         "dishes",
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("req_id", sa.String(length=100), nullable=False),
-        sa.Column("execution_ref", sa.String(length=100), nullable=True),
         sa.Column("order_id", sa.Integer(), nullable=True),
         sa.Column("recipe_id", sa.Integer(), nullable=False),
         sa.Column("run_phase", sa.String(length=16), nullable=False, server_default="firing"),
         sa.Column("processing_status", sa.String(length=50), nullable=False),
-        sa.Column("execution_status", sa.String(length=50), nullable=True),
+        sa.Column("dish_exec_status", sa.String(length=50), nullable=True),
         sa.Column("started_at", sa.DateTime(), nullable=True),
         sa.Column("completed_at", sa.DateTime(), nullable=True),
-        sa.Column("expected_duration_sec", sa.Integer(), nullable=True),
-        sa.Column("actual_duration_sec", sa.Integer(), nullable=True),
-        sa.Column("result", mysql.JSON(), nullable=True),
+        sa.Column("expected_run_secs", sa.Integer(), nullable=True),
+        sa.Column("run_time_secs", sa.Integer(), nullable=True),
+        sa.Column("dish_actual_outcome", mysql.JSON(), nullable=True),
         sa.Column("error_message", sa.Text(), nullable=True),
-        sa.Column("retry_attempt", sa.Integer(), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.CheckConstraint(
+            "processing_status in ('new','processing','finalizing','complete','failed','errored','timeout','canceled')",
+            name="ck_dishes_processing_status",
+        ),
+        sa.CheckConstraint("run_phase in ('firing','resolving')", name="ck_dishes_run_phase"),
+        sa.CheckConstraint(
+            "dish_exec_status is null or dish_exec_status in ('pending','dispatched','running','succeeded','failed','errored','timeout','canceled')",
+            name="ck_dishes_dish_exec_status",
+        ),
         sa.ForeignKeyConstraint(["order_id"], ["orders.id"]),
         sa.ForeignKeyConstraint(["recipe_id"], ["recipes.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_dishes_id"), "dishes", ["id"], unique=False)
     op.create_index(op.f("ix_dishes_req_id"), "dishes", ["req_id"], unique=False)
-    op.create_index(
-        op.f("ix_dishes_execution_ref"),
-        "dishes",
-        ["execution_ref"],
-        unique=False,
-    )
     op.create_index(
         op.f("ix_dishes_processing_status"), "dishes", ["processing_status"], unique=False
     )
@@ -251,25 +504,39 @@ def upgrade() -> None:
     op.create_table(
         "dish_ingredients",
         sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("req_id", sa.String(length=100), nullable=False),
         sa.Column("dish_id", sa.Integer(), nullable=False),
         sa.Column("recipe_ingredient_id", sa.Integer(), nullable=True),
         sa.Column("task_key", sa.String(length=255), nullable=True),
-        sa.Column("execution_engine", sa.String(length=50), nullable=True),
-        sa.Column("execution_target", sa.String(length=255), nullable=True),
+        sa.Column("step_order", sa.Integer(), nullable=False, server_default=sa.text("1")),
+        sa.Column("parallel_group", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("depth", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("service_type", sa.String(length=50), nullable=False),
+        sa.Column("service_exec", sa.String(length=255), nullable=False),
         sa.Column("destination_target", sa.String(length=255), nullable=True),
-        sa.Column("execution_ref", sa.String(length=100), nullable=True),
-        sa.Column("execution_payload", mysql.JSON(), nullable=True),
-        sa.Column("execution_parameters", mysql.JSON(), nullable=True),
-        sa.Column("expected_duration_sec", sa.Integer(), nullable=True),
-        sa.Column("timeout_duration_sec", sa.Integer(), nullable=True),
+        sa.Column("service_exec_id", sa.String(length=100), nullable=True),
+        sa.Column("service_payload", mysql.JSON(), nullable=True),
+        sa.Column("service_exec_parameters", mysql.JSON(), nullable=True),
+        sa.Column("service_exec_expected_secs", sa.Integer(), nullable=True),
+        sa.Column("service_exec_timeout", sa.Integer(), nullable=True),
         sa.Column("retry_count", sa.Integer(), nullable=True),
         sa.Column("retry_delay", sa.Integer(), nullable=True),
         sa.Column("on_failure", sa.String(length=50), nullable=True),
+        sa.Column("service_exec_expected_outcome", mysql.JSON(), nullable=True),
+        sa.Column("service_exec_run_time", sa.Integer(), nullable=True),
+        sa.Column(
+            "service_exec_sla_exceeded",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.text("0"),
+        ),
+        sa.Column("service_exec_claimed_at", sa.DateTime(), nullable=True),
+        sa.Column("service_exec_claimed_by", sa.String(length=100), nullable=True),
         sa.Column("attempt", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column(
-            "execution_ref_norm",
+            "service_exec_id_norm",
             sa.String(length=100),
-            sa.Computed("IFNULL(execution_ref, '')", persisted=True),
+            sa.Computed("IFNULL(service_exec_id, '')", persisted=True),
         ),
         sa.Column(
             "recipe_ingredient_id_norm",
@@ -281,32 +548,56 @@ def upgrade() -> None:
             sa.String(length=255),
             sa.Computed("IFNULL(task_key, '')", persisted=True),
         ),
-        sa.Column("execution_status", sa.String(length=50), nullable=True),
-        sa.Column("started_at", sa.DateTime(), nullable=True),
-        sa.Column("completed_at", sa.DateTime(), nullable=True),
-        sa.Column("canceled_at", sa.DateTime(), nullable=True),
-        sa.Column("result", mysql.JSON(), nullable=True),
-        sa.Column("error_message", sa.Text(), nullable=True),
+        sa.Column(
+            "service_exec_status",
+            sa.String(length=50),
+            nullable=False,
+            server_default="pending",
+        ),
+        sa.Column("service_exec_start_time", sa.DateTime(), nullable=True),
+        sa.Column("service_exec_completed_time", sa.DateTime(), nullable=True),
+        sa.Column("service_exec_canceled_time", sa.DateTime(), nullable=True),
+        sa.Column("service_exec_actual_outcome", mysql.JSON(), nullable=True),
+        sa.Column("service_exec_error", sa.Text(), nullable=True),
         sa.Column("deleted", sa.Boolean(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.CheckConstraint("service_type <> ''", name="ck_dish_ingredients_service_type_present"),
+        sa.CheckConstraint("service_exec <> ''", name="ck_dish_ingredients_service_exec_present"),
+        sa.CheckConstraint(
+            "on_failure is null or on_failure in ('continue','stop','retry')",
+            name="ck_dish_ingredients_on_failure",
+        ),
+        sa.CheckConstraint(
+            "service_exec_expected_secs is null or service_exec_expected_secs > 0",
+            name="ck_dish_ingredients_expected_secs_positive",
+        ),
+        sa.CheckConstraint(
+            "service_exec_timeout is null or service_exec_timeout > 0",
+            name="ck_dish_ingredients_timeout_positive",
+        ),
+        sa.CheckConstraint(
+            "service_exec_status in ('pending','dispatched','running','succeeded','failed','errored','timeout','canceled')",
+            name="ck_dish_ingredients_service_exec_status",
+        ),
         sa.ForeignKeyConstraint(["dish_id"], ["dishes.id"]),
         sa.ForeignKeyConstraint(["recipe_ingredient_id"], ["recipe_ingredients.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
+    op.create_index("ix_dish_ingredients_req_id", "dish_ingredients", ["req_id"], unique=False)
     op.create_index("ix_dish_ingredients_dish_id", "dish_ingredients", ["dish_id"], unique=False)
     op.create_index("ix_dish_ingredients_task_key", "dish_ingredients", ["task_key"], unique=False)
     op.create_index(
-        "ix_dish_ingredients_execution_ref",
+        "ix_dish_ingredients_service_exec_id",
         "dish_ingredients",
-        ["execution_ref"],
+        ["service_exec_id"],
         unique=False,
     )
     op.create_index(
-        "ix_dish_ingredients_execution_engine",
+        "ix_dish_ingredients_service_type",
         "dish_ingredients",
-        ["execution_engine"],
+        ["service_type"],
         unique=False,
     )
     op.create_index(
@@ -314,107 +605,6 @@ def upgrade() -> None:
         "dish_ingredients",
         ["dish_id", "recipe_ingredient_id_norm", "task_key_norm"],
         unique=True,
-    )
-
-    op.create_table(
-        "order_communications",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("order_id", sa.Integer(), nullable=False),
-        sa.Column("execution_target", sa.String(length=100), nullable=False),
-        sa.Column("destination_target", sa.String(length=255), nullable=False, server_default=""),
-        sa.Column("bakery_ticket_id", sa.String(length=36), nullable=True),
-        sa.Column("bakery_operation_id", sa.String(length=36), nullable=True),
-        sa.Column("lifecycle_state", sa.String(length=32), nullable=False, server_default="pending"),
-        sa.Column("remote_state", sa.String(length=64), nullable=True),
-        sa.Column("writable", sa.Boolean(), nullable=False, server_default=sa.text("1")),
-        sa.Column("reopenable", sa.Boolean(), nullable=False, server_default=sa.text("0")),
-        sa.Column("reconcile_metadata", mysql.JSON(), nullable=True),
-        sa.Column("last_error", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.ForeignKeyConstraint(["order_id"], ["orders.id"]),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "order_id",
-            "execution_target",
-            "destination_target",
-            name="ux_order_communications_route",
-        ),
-    )
-    op.create_index("ix_order_communications_id", "order_communications", ["id"], unique=False)
-    op.create_index(
-        "ix_order_communications_order_id",
-        "order_communications",
-        ["order_id"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_order_communications_execution_target",
-        "order_communications",
-        ["execution_target"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_order_communications_bakery_ticket_id",
-        "order_communications",
-        ["bakery_ticket_id"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_order_communications_bakery_operation_id",
-        "order_communications",
-        ["bakery_operation_id"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_order_communications_remote_state",
-        "order_communications",
-        ["remote_state"],
-        unique=False,
-    )
-
-    op.create_table(
-        "bakery_monitor_state",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("monitor_id", sa.String(length=255), nullable=False),
-        sa.Column("monitor_uuid", sa.String(length=36), nullable=True),
-        sa.Column("hmac_key_id", sa.String(length=255), nullable=True),
-        sa.Column("encrypted_hmac_secret", sa.Text(), nullable=True),
-        sa.Column("installation_id", sa.String(length=255), nullable=True),
-        sa.Column("last_route_catalog_hash", sa.String(length=64), nullable=True),
-        sa.Column("route_sync_dirty", sa.Boolean(), nullable=False, server_default=sa.text("1")),
-        sa.Column("last_heartbeat_status", sa.String(length=64), nullable=True),
-        sa.Column("last_heartbeat_at", sa.DateTime(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("monitor_id", name="ux_bakery_monitor_state_monitor_id"),
-        sa.UniqueConstraint("monitor_uuid", name="ux_bakery_monitor_state_monitor_uuid"),
-    )
-    op.create_index("ix_bakery_monitor_state_id", "bakery_monitor_state", ["id"], unique=False)
-    op.create_index(
-        "ix_bakery_monitor_state_monitor_id",
-        "bakery_monitor_state",
-        ["monitor_id"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_bakery_monitor_state_monitor_uuid",
-        "bakery_monitor_state",
-        ["monitor_uuid"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_bakery_monitor_state_last_heartbeat_status",
-        "bakery_monitor_state",
-        ["last_heartbeat_status"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_bakery_monitor_state_last_heartbeat_at",
-        "bakery_monitor_state",
-        ["last_heartbeat_at"],
-        unique=False,
     )
 
     # Alert suppressions
@@ -430,9 +620,19 @@ def upgrade() -> None:
         sa.Column("canceled_at", sa.DateTime(), nullable=True),
         sa.Column("created_by", sa.String(length=255), nullable=True),
         sa.Column("summary_ticket_enabled", sa.Boolean(), nullable=False),
+        sa.Column("source", sa.String(length=32), nullable=False, server_default="local"),
+        sa.Column("source_service_type", sa.String(length=50), nullable=True),
+        sa.Column("source_ref", sa.String(length=255), nullable=True),
+        sa.Column("source_payload", mysql.JSON(), nullable=True),
+        sa.Column("last_synced_at", sa.DateTime(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "source_service_type",
+            "source_ref",
+            name="ux_alert_suppressions_source_ref",
+        ),
     )
     op.create_index("ix_alert_suppressions_id", "alert_suppressions", ["id"], unique=False)
     op.create_index("ix_alert_suppressions_name", "alert_suppressions", ["name"], unique=False)
@@ -563,9 +763,6 @@ def upgrade() -> None:
         sa.Column("first_seen_at", sa.DateTime(), nullable=True),
         sa.Column("last_seen_at", sa.DateTime(), nullable=True),
         sa.Column("summary_created_at", sa.DateTime(), nullable=True),
-        sa.Column("bakery_ticket_id", sa.String(length=36), nullable=True),
-        sa.Column("bakery_create_operation_id", sa.String(length=36), nullable=True),
-        sa.Column("bakery_close_operation_id", sa.String(length=36), nullable=True),
         sa.Column("summary_close_at", sa.DateTime(), nullable=True),
         sa.Column("state", sa.String(length=32), nullable=False),
         sa.Column("last_error", sa.Text(), nullable=True),
@@ -581,24 +778,6 @@ def upgrade() -> None:
         "suppression_summaries",
         ["suppression_id"],
         unique=True,
-    )
-    op.create_index(
-        "ix_suppression_summaries_bakery_ticket_id",
-        "suppression_summaries",
-        ["bakery_ticket_id"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_suppression_summaries_bakery_create_operation_id",
-        "suppression_summaries",
-        ["bakery_create_operation_id"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_suppression_summaries_bakery_close_operation_id",
-        "suppression_summaries",
-        ["bakery_close_operation_id"],
-        unique=False,
     )
     op.create_index(
         "ix_suppression_summaries_state",
@@ -706,143 +885,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_bakery_monitor_state_last_heartbeat_at",
-        table_name="bakery_monitor_state",
-    )
-    op.drop_index(
-        "ix_bakery_monitor_state_last_heartbeat_status",
-        table_name="bakery_monitor_state",
-    )
-    op.drop_index(
-        "ix_bakery_monitor_state_monitor_uuid",
-        table_name="bakery_monitor_state",
-    )
-    op.drop_index(
-        "ix_bakery_monitor_state_monitor_id",
-        table_name="bakery_monitor_state",
-    )
-    op.drop_index("ix_bakery_monitor_state_id", table_name="bakery_monitor_state")
-    op.drop_table("bakery_monitor_state")
-
-    op.drop_index("ix_auth_role_bindings_external_group", table_name="auth_role_bindings")
-    op.drop_index("ix_auth_role_bindings_principal_id", table_name="auth_role_bindings")
-    op.drop_index("ix_auth_role_bindings_role", table_name="auth_role_bindings")
-    op.drop_index("ix_auth_role_bindings_binding_type", table_name="auth_role_bindings")
-    op.drop_index("ix_auth_role_bindings_provider", table_name="auth_role_bindings")
-    op.drop_index("ix_auth_role_bindings_id", table_name="auth_role_bindings")
-    op.drop_table("auth_role_bindings")
-
-    op.drop_index("ix_auth_principals_provider_username", table_name="auth_principals")
-    op.drop_index("ix_auth_principals_username", table_name="auth_principals")
-    op.drop_index("ix_auth_principals_provider", table_name="auth_principals")
-    op.drop_index("ix_auth_principals_id", table_name="auth_principals")
-    op.drop_table("auth_principals")
-
-    op.drop_index("ix_suppression_summaries_state", table_name="suppression_summaries")
-    op.drop_index(
-        "ix_suppression_summaries_bakery_close_operation_id",
-        table_name="suppression_summaries",
-    )
-    op.drop_index(
-        "ix_suppression_summaries_bakery_create_operation_id",
-        table_name="suppression_summaries",
-    )
-    op.drop_index("ix_suppression_summaries_bakery_ticket_id", table_name="suppression_summaries")
-    op.drop_index("ix_suppression_summaries_suppression_id", table_name="suppression_summaries")
-    op.drop_index("ix_suppression_summaries_id", table_name="suppression_summaries")
-    op.drop_table("suppression_summaries")
-
-    op.drop_index("idx_suppressed_events_fingerprint", table_name="suppressed_events")
-    op.drop_index(
-        "idx_suppressed_events_suppression_received_at",
-        table_name="suppressed_events",
-    )
-    op.drop_index("ix_suppressed_events_req_id", table_name="suppressed_events")
-    op.drop_index("ix_suppressed_events_payload_hash", table_name="suppressed_events")
-    op.drop_index("ix_suppressed_events_severity", table_name="suppressed_events")
-    op.drop_index("ix_suppressed_events_alertname", table_name="suppressed_events")
-    op.drop_index("ix_suppressed_events_fingerprint", table_name="suppressed_events")
-    op.drop_index("ix_suppressed_events_received_at", table_name="suppressed_events")
-    op.drop_index("ix_suppressed_events_suppression_id", table_name="suppressed_events")
-    op.drop_index("ix_suppressed_events_id", table_name="suppressed_events")
-    op.drop_table("suppressed_events")
-
-    op.drop_index(
-        "ix_alert_suppression_matchers_suppression_id",
-        table_name="alert_suppression_matchers",
-    )
-    op.drop_index("ix_alert_suppression_matchers_id", table_name="alert_suppression_matchers")
-    op.drop_table("alert_suppression_matchers")
-
-    op.drop_index("idx_alert_suppressions_active_lookup", table_name="alert_suppressions")
-    op.drop_index("ix_alert_suppressions_canceled_at", table_name="alert_suppressions")
-    op.drop_index("ix_alert_suppressions_ends_at", table_name="alert_suppressions")
-    op.drop_index("ix_alert_suppressions_starts_at", table_name="alert_suppressions")
-    op.drop_index("ix_alert_suppressions_name", table_name="alert_suppressions")
-    op.drop_index("ix_alert_suppressions_id", table_name="alert_suppressions")
-    op.drop_table("alert_suppressions")
-
-    op.drop_index("ux_dish_ingredients_dish_step", table_name="dish_ingredients")
-    op.drop_index("ix_dish_ingredients_execution_engine", table_name="dish_ingredients")
-    op.drop_index("ix_dish_ingredients_execution_ref", table_name="dish_ingredients")
-    op.drop_index("ix_dish_ingredients_task_key", table_name="dish_ingredients")
-    op.drop_index("ix_dish_ingredients_dish_id", table_name="dish_ingredients")
-    op.drop_table("dish_ingredients")
-
-    op.drop_index("ix_order_communications_remote_state", table_name="order_communications")
-    op.drop_index("ix_order_communications_bakery_operation_id", table_name="order_communications")
-    op.drop_index("ix_order_communications_bakery_ticket_id", table_name="order_communications")
-    op.drop_index("ix_order_communications_execution_target", table_name="order_communications")
-    op.drop_index("ix_order_communications_order_id", table_name="order_communications")
-    op.drop_index("ix_order_communications_id", table_name="order_communications")
-    op.drop_table("order_communications")
-
-    op.drop_index(op.f("ix_dishes_run_phase"), table_name="dishes")
-    op.drop_index(op.f("ix_dishes_processing_status"), table_name="dishes")
-    op.drop_index(op.f("ix_dishes_execution_ref"), table_name="dishes")
-    op.drop_index(op.f("ix_dishes_req_id"), table_name="dishes")
-    op.drop_index(op.f("ix_dishes_id"), table_name="dishes")
-    op.drop_table("dishes")
-
-    op.drop_index("ix_orders_auto_close_eligible", table_name="orders")
-    op.drop_index("ix_orders_clear_timed_out_at", table_name="orders")
-    op.drop_index("ix_orders_clear_deadline_at", table_name="orders")
-    op.drop_index("ix_orders_remediation_outcome", table_name="orders")
-    op.drop_index(op.f("ix_orders_bakery_permanent_failure"), table_name="orders")
-    op.drop_index(op.f("ix_orders_bakery_ticket_state"), table_name="orders")
-    op.drop_index(op.f("ix_orders_bakery_operation_id"), table_name="orders")
-    op.drop_index(op.f("ix_orders_bakery_ticket_id"), table_name="orders")
-    op.drop_column("orders", "bakery_last_error")
-    op.drop_column("orders", "bakery_permanent_failure")
-    op.drop_column("orders", "bakery_ticket_state")
-    op.drop_column("orders", "bakery_operation_id")
-    op.drop_column("orders", "bakery_ticket_id")
-
-    op.drop_index(op.f("ix_orders_created_at"), table_name="orders")
-    op.drop_index(op.f("ix_orders_instance"), table_name="orders")
-    op.drop_index(op.f("ix_orders_severity"), table_name="orders")
-    op.drop_index(op.f("ix_orders_alert_group_name"), table_name="orders")
-    op.drop_index("ux_orders_fingerprint_active", table_name="orders")
-    op.drop_index(op.f("ix_orders_is_active"), table_name="orders")
-    op.drop_index(op.f("ix_orders_processing_status"), table_name="orders")
-    op.drop_index(op.f("ix_orders_alert_status"), table_name="orders")
-    op.drop_index(op.f("ix_orders_fingerprint"), table_name="orders")
-    op.drop_index(op.f("ix_orders_req_id"), table_name="orders")
-    op.drop_index(op.f("ix_orders_id"), table_name="orders")
-    # Drop the generated column
-    op.execute("ALTER TABLE orders DROP COLUMN fingerprint_when_active")
-    op.drop_table("orders")
-
-    op.drop_index("idx_recipe_ingredient_order", table_name="recipe_ingredients")
-    op.drop_index(op.f("ix_recipe_ingredients_id"), table_name="recipe_ingredients")
-    op.drop_table("recipe_ingredients")
-
-    op.drop_index("ux_ingredients_engine_target", table_name="ingredients")
-    op.drop_index(op.f("ix_ingredients_execution_target"), table_name="ingredients")
-    op.drop_index(op.f("ix_ingredients_id"), table_name="ingredients")
-    op.drop_table("ingredients")
-
-    op.drop_index(op.f("ix_recipes_name"), table_name="recipes")
-    op.drop_index(op.f("ix_recipes_id"), table_name="recipes")
-    op.drop_table("recipes")
+    # Greenfield-only schema: reset database state by recreating the database/volume.
+    pass

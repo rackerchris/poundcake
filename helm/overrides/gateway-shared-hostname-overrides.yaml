@@ -13,11 +13,6 @@ gateway:
   listener:
     name: "<gateway-listener-name>"
     hostname: "<poundcake-public-hostname>"
-    port: 443
-    protocol: "HTTPS"
-    tlsSecretName: "<gateway-tls-secret-name>"
-    allowedNamespaces: "All"
-    updateIfExists: true
 
   hostnames:
     - "<poundcake-public-hostname>"

@@ -10,15 +10,19 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import get_settings
-from api.core.database import get_db
+from api.core.database import auth_verifier_db_session, get_db
 from api.core.logging import get_logger
+from api.services.service_identity import internal_hmac_credential_for_key
 from api.schemas.schemas import (
     AuthLoginRequest,
     AuthLogoutResponse,
@@ -37,6 +41,7 @@ from api.schemas.schemas import (
 )
 from api.services.auth_service import (
     AccessDeniedError,
+    _require_service_credential_scope,
     AuthContext,
     AuthIdentity,
     DeviceAuthorizationExpired,
@@ -62,6 +67,7 @@ from api.services.auth_service import (
     is_request_public,
     list_principals,
     list_role_bindings,
+    permissions_for_role,
     provider_label,
     rehydrate_session_context,
     service_token_context,
@@ -69,13 +75,26 @@ from api.services.auth_service import (
     upsert_principal,
     update_role_binding,
 )
+from shared.hmac import hmac_sha256_hex
+from shared.internal_hmac import (
+    INTERNAL_HMAC_KEY_ID_HEADER,
+    INTERNAL_HMAC_NONCE_HEADER,
+    INTERNAL_HMAC_TIMESTAMP_HEADER,
+    build_internal_hmac_signing_payload,
+    canonical_request_path,
+    parse_internal_hmac_authorization,
+)
 
 logger = get_logger(__name__)
 router = APIRouter()
+_HMAC_REPLAY_PROTECTED_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_HMAC_NONCE_STATE_KIND = "internal-hmac-nonce"
 
 
 def _request_is_secure(request: Request) -> bool:
     """Determine if request should receive a Secure cookie."""
+    if get_settings().force_secure_cookie:
+        return True
     forwarded_proto = request.headers.get("x-forwarded-proto", "")
     if forwarded_proto:
         first = forwarded_proto.split(",", 1)[0].strip().lower()
@@ -89,7 +108,7 @@ def _set_session_cookie(request: Request, response: Response, session_id: str) -
         key="session_token",
         value=session_id,
         httponly=True,
-        samesite="lax",
+        samesite="strict",
         secure=_request_is_secure(request),
         path="/",
         max_age=get_settings().auth_session_timeout,
@@ -227,12 +246,26 @@ async def require_auth_if_enabled(
     db: AsyncSession = Depends(get_db),
 ) -> AuthContext | None:
     """Global dependency that authenticates and authorizes API requests."""
-    if os.getenv("TESTING", "").strip().lower() in {"1", "true", "yes"}:
-        return None
-
     settings = get_settings()
-    if settings.testing or not settings.auth_enabled:
-        return None
+    if (
+        os.getenv("TESTING", "").strip().lower() in {"1", "true", "yes"}
+        or settings.testing
+        or not settings.auth_enabled
+    ):
+        context = AuthContext(
+            provider="local",
+            subject_id="auth-disabled",
+            username="poundcake",
+            display_name="PoundCake Local",
+            groups=[],
+            role="admin",
+            principal_type="user",
+            is_superuser=True,
+            permissions=permissions_for_role("admin", is_superuser=True),
+            principal_id=None,
+        )
+        request.state.auth_context = context
+        return context
 
     existing = getattr(request.state, "auth_context", None)
     if isinstance(existing, AuthContext):
@@ -242,14 +275,7 @@ async def require_auth_if_enabled(
         return None
 
     context: AuthContext | None = None
-    bearer_value = request.headers.get("Authorization", "")
-    service_token = request.headers.get("X-Auth-Token")
-    if not service_token and bearer_value.lower().startswith("bearer "):
-        service_token = bearer_value[7:].strip()
-
-    if settings.auth_service_token and service_token:
-        if secrets.compare_digest(service_token, settings.auth_service_token):
-            context = service_token_context()
+    context = await _internal_hmac_context(request)
 
     if context is None:
         context, resolution_error = await rehydrate_session_context(db, session_token)
@@ -280,10 +306,129 @@ async def require_auth_if_enabled(
     return context
 
 
+async def _check_nonce_in_session(db: AsyncSession, nonce_key: str, ttl_seconds: int) -> bool:
+    """Atomically check-and-set a nonce using the auth-verifier DB session."""
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=ttl_seconds)
+    result = await db.execute(
+        text("""
+            INSERT INTO hmac_nonces (kind, `key`, created_at, expires_at)
+            SELECT :kind, :key, :created_at, :expires_at
+            FROM DUAL
+            WHERE NOT EXISTS (
+                SELECT 1 FROM hmac_nonces
+                WHERE kind = :kind AND `key` = :key AND expires_at > :now
+            )
+        """),
+        {
+            "kind": _HMAC_NONCE_STATE_KIND,
+            "key": nonce_key,
+            "created_at": now,
+            "expires_at": expires_at,
+            "now": now,
+        },
+    )
+    await db.commit()
+    return result.rowcount > 0
+
+
+async def _check_nonce(nonce_key: str, ttl_seconds: int) -> bool:
+    """Atomically check-and-set a nonce for HMAC replay protection."""
+    if get_settings().internal_hmac_nonce_store == "database":
+        async with auth_verifier_db_session() as auth_db:
+            return await _check_nonce_in_session(auth_db, nonce_key, ttl_seconds)
+    return await get_session_store().put_if_absent(
+        _HMAC_NONCE_STATE_KIND,
+        nonce_key,
+        {"key_id": nonce_key.split(":")[0]},
+        ttl_seconds=ttl_seconds,
+    )
+
+
+async def _internal_hmac_context(
+    request: Request,
+    db: AsyncSession | None = None,
+) -> AuthContext | None:
+    """Authenticate an internal control-plane request signed with PoundCake HMAC."""
+    settings = get_settings()
+
+    parsed = parse_internal_hmac_authorization(request.headers.get("Authorization", ""))
+    if parsed is None:
+        return None
+    key_id, signature = parsed
+    header_key_id = request.headers.get(INTERNAL_HMAC_KEY_ID_HEADER, "")
+    if header_key_id and not secrets.compare_digest(header_key_id, key_id):
+        return None
+
+    # Parse fields needed for verification before acquiring a DB session.
+    timestamp = request.headers.get(INTERNAL_HMAC_TIMESTAMP_HEADER, "")
+    try:
+        timestamp_seconds = int(timestamp)
+    except (TypeError, ValueError):
+        return None
+    clock_skew = max(1, int(settings.internal_hmac_clock_skew_seconds))
+    if abs(int(time.time()) - timestamp_seconds) > clock_skew:
+        return None
+
+    body = await request.body()
+    path = canonical_request_path(str(request.url))
+    nonce = request.headers.get(INTERNAL_HMAC_NONCE_HEADER, "").strip()
+    normalized_method = request.method.upper()
+    if normalized_method in _HMAC_REPLAY_PROTECTED_METHODS:
+        if not nonce or len(nonce) > 256:
+            return None
+
+    async def _verify(session: AsyncSession) -> AuthContext | None:
+        credential = await internal_hmac_credential_for_key(session, key_id)
+        if credential is None or not credential.enabled:
+            return None
+
+        signing_payload = build_internal_hmac_signing_payload(
+            timestamp,
+            request.method,
+            path,
+            body,
+            nonce=nonce,
+        )
+        expected_signature = hmac_sha256_hex(credential.secret, signing_payload)
+        if not secrets.compare_digest(signature, expected_signature):
+            return None
+
+        if normalized_method in _HMAC_REPLAY_PROTECTED_METHODS:
+            nonce_key = f"{key_id}:{nonce}"
+            if not await _check_nonce(nonce_key, clock_skew):
+                return None
+
+        context = service_token_context(
+            service_plugin_id=credential.service_plugin_id,
+            service_type=credential.service_type,
+            plugin_type=credential.plugin_type,
+            credential_scope=credential.auth_scope,
+        )
+        try:
+            _require_service_credential_scope(context, "poundcake_control_plane")
+        except AccessDeniedError:
+            return None
+        return context
+
+    if db is not None:
+        return await _verify(db)
+    async with auth_verifier_db_session() as auth_db:
+        return await _verify(auth_db)
+
+
 async def require_reader(
     context: AuthContext | None = Depends(require_auth_if_enabled),
 ) -> AuthContext:
-    if context is None or not is_authorized_for_role(context, "reader"):
+    if context is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Valid session required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if context.role == "service":
+        return context
+    if not is_authorized_for_role(context, "reader"):
         raise HTTPException(status_code=403, detail="Reader access required")
     return context
 
@@ -291,7 +436,15 @@ async def require_reader(
 async def require_operator(
     context: AuthContext | None = Depends(require_auth_if_enabled),
 ) -> AuthContext:
-    if context is None or not is_authorized_for_role(context, "operator"):
+    if context is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Valid session required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if context.role == "service":
+        return context
+    if not is_authorized_for_role(context, "operator"):
         raise HTTPException(status_code=403, detail="Operator access required")
     return context
 
@@ -299,7 +452,15 @@ async def require_operator(
 async def require_admin(
     context: AuthContext | None = Depends(require_auth_if_enabled),
 ) -> AuthContext:
-    if context is None or not is_authorized_for_role(context, "admin"):
+    if context is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Valid session required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if context.role == "service":
+        return context
+    if not is_authorized_for_role(context, "admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
     return context
 
@@ -307,6 +468,12 @@ async def require_admin(
 async def require_service(
     context: AuthContext | None = Depends(require_auth_if_enabled),
 ) -> AuthContext:
+    if context is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Valid session required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     if context is None or context.role != "service":
         raise HTTPException(status_code=403, detail="Service access required")
     return context
@@ -357,8 +524,8 @@ async def login(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except Exception as exc:
         await db.rollback()
-        logger.error("Login failed", extra={"req_id": req_id, "error": str(exc)}, exc_info=True)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.error("Login failed", extra={"req_id": req_id}, exc_info=True)
+        raise HTTPException(status_code=500, detail="an unexpected error occurred") from exc
 
 
 @router.get("/auth/me", response_model=AuthMeResponse)
@@ -390,6 +557,54 @@ async def logout(
     await get_session_store().delete_session(session_token)
     _clear_session_cookie(response)
     return AuthLogoutResponse(message="Logged out successfully")
+
+
+@router.post("/auth/refresh", response_model=SessionResponse)
+async def refresh_session(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> SessionResponse:
+    """Extend the current session if it has not reached its absolute maximum lifetime.
+
+    This endpoint does not require authentication (it reads the cookie directly)
+    so that a proactive client can renew before receiving a 401 on an arbitrary
+    API call.
+    """
+    session_token = request.cookies.get("session_token")
+    if not session_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No session cookie present")
+
+    settings = get_settings()
+    if settings.auth_session_timeout == 0:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session refresh disabled")
+
+    # Rehydrate without extending — we extend explicitly below.
+    # Manually rehydrate to avoid the implicit sliding TTL logic.
+    store = get_session_store()
+    stored_context_or_error, resolution_error = await rehydrate_session_context(db, session_token)
+
+    if stored_context_or_error is None:
+        if resolution_error:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=resolution_error)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
+
+    # Ensure context is a human context (service tokens should not touch this endpoint)
+    if not stored_context_or_error.is_human():
+        raise HTTPException(status_code=status.HTTP_403, detail="Service tokens cannot use this endpoint")
+
+    refresh_at = utc_now() + timedelta(seconds=settings.auth_session_timeout)
+    context = stored_context_or_error
+    context.expires_at = refresh_at.isoformat()
+
+    # Update stored session with new expiry and TTL, preserving _created_at
+    payload = context.to_session_payload() if hasattr(context, "to_session_payload") else {}
+    payload.setdefault("_created_at", (utc_now() - timedelta(seconds=settings.auth_session_timeout)).isoformat())
+    payload["expires_at"] = refresh_at.isoformat()
+    await store.set_value("session", session_token, payload, settings.auth_session_timeout)
+
+    _set_session_cookie(request, response, session_token)
+    return _session_response(context)
 
 
 @router.get("/auth/oidc/login")

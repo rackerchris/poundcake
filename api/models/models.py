@@ -8,11 +8,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from api.types import JSONObject
+
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Computed,
     DateTime,
     ForeignKey,
@@ -28,11 +31,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 # We use the explicit MariaDB/MySQL JSON type to ensure the dialect handles serialization properly
 from sqlalchemy.dialects.mysql import JSON as MYSQL_JSON
 from api.core.database import Base
+from api.core.time import utc_now_db
 
 
 def get_utc_now():
-    """Helper for timezone-aware UTC, as utcnow is deprecated."""
-    return datetime.now(timezone.utc)
+    """Return a UTC timestamp for database storage."""
+    return utc_now_db()
 
 
 class RecipeIngredient(Base):
@@ -46,24 +50,23 @@ class RecipeIngredient(Base):
     recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), nullable=False)
     ingredient_id: Mapped[int] = mapped_column(ForeignKey("ingredients.id"), nullable=False)
 
-    # Determines the position in the ST2 Orquesta workflow
+    # Determines the position in the recipe execution graph.
     step_order: Mapped[int] = mapped_column(default=1, nullable=False)
 
-    # Logic gates for Orquesta (e.g., "on-success", "on-failure")
+    # Logic gates for recipe graph execution.
     on_success: Mapped[str | None] = mapped_column(String(50), default="continue")
     # Parallel grouping (same depth implies parallel tasks)
     parallel_group: Mapped[int] = mapped_column(default=0, nullable=False)
     # Depth in the task graph (for parallel/linear ordering)
     depth: Mapped[int] = mapped_column(default=0, nullable=False)
     # Optional per-step execution parameter overrides.
-    execution_payload_override: Mapped[dict[str, Any] | None] = mapped_column(
+    service_payload: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    service_exec_parameters_override: Mapped[JSONObject | None] = mapped_column(
         MYSQL_JSON, nullable=True
     )
-    execution_parameters_override: Mapped[dict[str, Any] | None] = mapped_column(
-        MYSQL_JSON, nullable=True
-    )
-    expected_duration_sec_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    timeout_duration_sec_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    service_exec_expected_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    service_exec_timeout: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    service_exec_expected_outcome: Mapped[Any | None] = mapped_column(MYSQL_JSON, nullable=True)
     # Controls when this step is eligible to run in the order lifecycle.
     run_phase: Mapped[str] = mapped_column(String(16), default="both", nullable=False)
     # Optional lifecycle condition gate for the step.
@@ -72,7 +75,24 @@ class RecipeIngredient(Base):
     recipe: Mapped["Recipe"] = relationship(back_populates="recipe_ingredients")
     ingredient: Mapped["Ingredient"] = relationship()
 
-    __table_args__ = (Index("idx_recipe_ingredient_order", "recipe_id", "step_order"),)
+    __table_args__ = (
+        Index("idx_recipe_ingredient_order", "recipe_id", "step_order"),
+        CheckConstraint(
+            "on_success in ('continue','stop')", name="ck_recipe_ingredients_on_success"
+        ),
+        CheckConstraint(
+            "run_phase in ('firing','resolving','both')",
+            name="ck_recipe_ingredients_run_phase",
+        ),
+        CheckConstraint(
+            "service_exec_expected_secs is null or service_exec_expected_secs > 0",
+            name="ck_recipe_ingredients_expected_secs_positive",
+        ),
+        CheckConstraint(
+            "service_exec_timeout is null or service_exec_timeout > 0",
+            name="ck_recipe_ingredients_timeout_positive",
+        ),
+    )
 
 
 class Recipe(Base):
@@ -105,10 +125,10 @@ class Recipe(Base):
     dishes: Mapped[list["Dish"]] = relationship("Dish", back_populates="recipe")
 
     @hybrid_property
-    def total_expected_duration_sec(self):
+    def total_expected_run_secs(self):
         """Automatically sums the duration of all ingredients in this recipe."""
         return sum(
-            ri.ingredient.expected_duration_sec
+            ri.ingredient.default_expected_secs
             for ri in self.recipe_ingredients
             if ri.ingredient is not None
         )
@@ -121,31 +141,52 @@ class Ingredient(Base):
 
     __tablename__ = "ingredients"
     __table_args__ = (
-        UniqueConstraint(
-            "execution_engine",
-            "execution_target",
+        Index(
+            "idx_ingredients_service_template",
+            "service_type",
+            "service_exec",
             "destination_target",
             "task_key_template",
-            name="ux_ingredients_engine_target",
         ),
+        CheckConstraint("service_type <> ''", name="ck_ingredients_service_type_present"),
+        CheckConstraint("service_exec <> ''", name="ck_ingredients_service_exec_present"),
+        CheckConstraint(
+            "ingredient_purpose in ('remediation','comms','utility','plugin_health','suppression_sync','suppression_lifecycle')",
+            name="ck_ingredients_ingredient_purpose",
+        ),
+        CheckConstraint(
+            "on_failure in ('continue','stop','retry')",
+            name="ck_ingredients_on_failure",
+        ),
+        CheckConstraint(
+            "default_expected_secs > 0",
+            name="ck_ingredients_default_expected_secs_positive",
+        ),
+        CheckConstraint("default_timeout > 0", name="ck_ingredients_default_timeout_positive"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    execution_target: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    service_exec: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     destination_target: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     task_key_template: Mapped[str] = mapped_column(String(255), nullable=False)
-    execution_engine: Mapped[str] = mapped_column(String(50), default="undefined", nullable=False)
-    execution_purpose: Mapped[str] = mapped_column(String(32), default="utility", nullable=False)
+    service_type: Mapped[str] = mapped_column(String(50), default="undefined", nullable=False)
+    ingredient_purpose: Mapped[str] = mapped_column(String(32), default="utility", nullable=False)
 
-    execution_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    execution_payload: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True)
-    execution_parameters: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True)
-    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    service_payload_template: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    service_exec_parameters: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    payload_schema: Mapped[JSONObject] = mapped_column(
+        MYSQL_JSON,
+        nullable=False,
+        default=lambda: {"type": "object", "additionalProperties": True},
+    )
+    service_exec_expected_outcome_default: Mapped[Any | None] = mapped_column(
+        MYSQL_JSON, nullable=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     is_blocking: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    expected_duration_sec: Mapped[int] = mapped_column(Integer, nullable=False)
-    timeout_duration_sec: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
+    default_expected_secs: Mapped[int] = mapped_column(Integer, nullable=False)
+    default_timeout: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     retry_delay: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     on_failure: Mapped[str] = mapped_column(String(50), default="stop", nullable=False)
@@ -157,22 +198,227 @@ class Ingredient(Base):
     deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    # Backward-compat aliases for one release cycle.
-    @property
-    def action_id(self) -> str | None:
-        return self.execution_id
 
-    @action_id.setter
-    def action_id(self, value: str | None) -> None:
-        self.execution_id = value
+class ServicePlugin(Base):
+    """Persisted control-plane state for enabled service plugins."""
 
-    @property
-    def ingredient_kind(self) -> str:
-        return self.execution_purpose
+    __tablename__ = "service_plugins"
+    __table_args__ = (
+        UniqueConstraint("service_type", name="ux_service_plugins_service_type"),
+        UniqueConstraint("plugin_short_id", name="ux_service_plugins_plugin_short_id"),
+        UniqueConstraint("plugin_log_key", name="ux_service_plugins_plugin_log_key"),
+        Index("ix_service_plugins_enabled", "enabled"),
+        Index("ix_service_plugins_plugin_type", "plugin_type"),
+        Index("ix_service_plugins_plugin_short_id", "plugin_short_id"),
+        Index("ix_service_plugins_plugin_tier", "plugin_tier"),
+        Index("ix_service_plugins_health_status", "health_status"),
+        Index("ix_service_plugins_next_health_check_at", "next_health_check_at"),
+        CheckConstraint("service_type <> ''", name="ck_service_plugins_service_type_present"),
+        CheckConstraint("plugin_short_id <> ''", name="ck_service_plugins_short_id_present"),
+        CheckConstraint(
+            "plugin_type in ('internal_plugin','external_plugin')",
+            name="ck_service_plugins_plugin_type",
+        ),
+        CheckConstraint(
+            "plugin_tier in ('community','supported')",
+            name="ck_service_plugins_plugin_tier",
+        ),
+        CheckConstraint(
+            "plugin_log_key is null or plugin_log_key <> ''",
+            name="ck_service_plugins_plugin_log_key_present",
+        ),
+        CheckConstraint(
+            "health_status in ('unknown','initializing','healthy','degraded','failed','disabled')",
+            name="ck_service_plugins_health_status",
+        ),
+        CheckConstraint(
+            "health_check_state in ('idle','queued','running')",
+            name="ck_service_plugins_health_check_state",
+        ),
+        CheckConstraint(
+            "query_limit is null or query_limit > 0",
+            name="ck_service_plugins_query_limit_positive",
+        ),
+    )
 
-    @ingredient_kind.setter
-    def ingredient_kind(self, value: str) -> None:
-        self.execution_purpose = value
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    service_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    plugin_short_id: Mapped[str] = mapped_column(String(12), nullable=False)
+    plugin_type: Mapped[str] = mapped_column(String(32), default="external_plugin", nullable=False)
+    plugin_tier: Mapped[str] = mapped_column(String(32), default="community", nullable=False)
+    plugin_log_key: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    run_interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    query_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plugin_config: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    capabilities_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    registered_ingredient_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    registered_recipe_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    credential_status: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
+    credential_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_credential_bootstrap_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_credential_rotation_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    health_status: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
+    health_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    health_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    health_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    health_details: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_health_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_health_check_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    health_check_state: Mapped[str] = mapped_column(String(32), default="idle", nullable=False)
+    health_check_order_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    health_check_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    health_check_grace_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=get_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False
+    )
+
+
+class AdapterCredential(Base):
+    """Encrypted adapter/provider credential material owned by Credential Manager.
+
+    ``allow_public_read`` controls whether the credential manager permits the
+    owning adapter to use unauthenticated public read endpoints (e.g.
+    ``raw.githubusercontent.com``) when no token is configured.  The credential
+    manager is the **authoritative policy gate** — it stores this flag, returns
+    it alongside the decrypted payload, and the adapter must honour it.  Default
+    is ``false``; operators/bootstrap must explicitly set it to ``true`` during
+    credential write.
+    """
+
+    __tablename__ = "adapter_credentials"
+    __table_args__ = (
+        UniqueConstraint(
+            "service_plugin_id",
+            "credential_type",
+            "credential_key_id",
+            name="ux_adapter_credentials_identity",
+        ),
+        Index("ix_adapter_credentials_service_plugin_id", "service_plugin_id"),
+        CheckConstraint("credential_type <> ''", name="ck_adapter_credentials_type_present"),
+        CheckConstraint("credential_key_id <> ''", name="ck_adapter_credentials_key_present"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    service_plugin_id: Mapped[int] = mapped_column(
+        ForeignKey("service_plugins.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    credential_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    credential_key_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    encrypted_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    allow_public_read: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=get_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False
+    )
+
+
+class ServiceIdentityCredential(Base):
+    """Encrypted internal service identity material owned by Service Identity Manager."""
+
+    __tablename__ = "service_identity_credentials"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "service_plugin_id",
+            "credential_type",
+            "credential_key_id",
+            name="ux_service_identity_credentials_identity",
+        ),
+        UniqueConstraint(
+            "credential_type",
+            "credential_key_id",
+            name="ux_service_identity_credentials_key_identity",
+        ),
+        Index("ix_service_identity_credentials_service_plugin_id", "service_plugin_id"),
+        Index("ix_service_identity_credentials_key_id", "credential_key_id"),
+        CheckConstraint(
+            "credential_type <> ''", name="ck_service_identity_credentials_type_present"
+        ),
+        CheckConstraint(
+            "credential_key_id <> ''", name="ck_service_identity_credentials_key_present"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    service_plugin_id: Mapped[int] = mapped_column(
+        ForeignKey("service_plugins.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    credential_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    credential_key_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    encrypted_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=get_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False
+    )
+
+
+class ScheduledTask(Base):
+    """Recurring Dishwasher task definition and latest run summary."""
+
+    __tablename__ = "scheduled_tasks"
+    __table_args__ = (
+        UniqueConstraint("task_key", name="ux_scheduled_tasks_task_key"),
+        Index("ix_scheduled_tasks_enabled_next_run", "is_enabled", "next_run_at"),
+        Index("ix_scheduled_tasks_status", "status"),
+        Index("ix_scheduled_tasks_service_type", "service_type"),
+        Index("ix_scheduled_tasks_task_type", "task_type"),
+        CheckConstraint("task_key <> ''", name="ck_scheduled_tasks_task_key_present"),
+        CheckConstraint("task_type <> ''", name="ck_scheduled_tasks_task_type_present"),
+        CheckConstraint("run_interval_seconds > 0", name="ck_scheduled_tasks_interval_positive"),
+        CheckConstraint("timeout_seconds > 0", name="ck_scheduled_tasks_timeout_positive"),
+        CheckConstraint(
+            "source in ('core','plugin_manifest','registered')",
+            name="ck_scheduled_tasks_source",
+        ),
+        CheckConstraint(
+            "task_type in ('plugin_health_check','service_execution')",
+            name="ck_scheduled_tasks_task_type",
+        ),
+        CheckConstraint(
+            "status in ('idle','queued','running','disabled')",
+            name="ck_scheduled_tasks_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    task_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    task_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    service_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    service_exec: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), default="registered", nullable=False)
+
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    run_interval_seconds: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
+
+    task_payload: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    task_parameters: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    expected_outcome: Mapped[Any | None] = mapped_column(MYSQL_JSON, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(32), default="idle", nullable=False)
+    last_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_order_req_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    last_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=get_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False
+    )
 
 
 class Dish(Base):
@@ -181,14 +427,22 @@ class Dish(Base):
     """
 
     __tablename__ = "dishes"
+    __table_args__ = (
+        CheckConstraint(
+            "processing_status in ('new','processing','finalizing','complete','failed','errored','timeout','canceled')",
+            name="ck_dishes_processing_status",
+        ),
+        CheckConstraint("run_phase in ('firing','resolving')", name="ck_dishes_run_phase"),
+        CheckConstraint(
+            "dish_exec_status is null or dish_exec_status in ('pending','dispatched','running','succeeded','failed','errored','timeout','canceled')",
+            name="ck_dishes_dish_exec_status",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
 
     # Traceability ID from Middleware (X-Request-Id)
     req_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-
-    # Engine execution reference for this run
-    execution_ref: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
 
     order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), nullable=True)
     recipe_id: Mapped[int] = mapped_column(ForeignKey("recipes.id"), nullable=False)
@@ -197,21 +451,20 @@ class Dish(Base):
     processing_status: Mapped[str] = mapped_column(
         String(50), default="new", nullable=False, index=True
     )
-    execution_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    dish_exec_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Snapshot of the expected duration at the time of the order
-    expected_duration_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expected_run_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Calculation: completed_at - started_at
-    actual_duration_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    run_time_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Full output payload from ST2
-    result: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True)
+    # Rollup output payload for this dish.
+    dish_actual_outcome: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    retry_attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=get_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -227,6 +480,38 @@ class Dish(Base):
         cascade="all, delete-orphan",
     )
 
+    @property
+    def work_execution_time_secs(self) -> int | None:
+        total = 0
+        seen = False
+        for row in self.dish_ingredients or []:
+            run_time = row.service_exec_run_time
+            if run_time is None:
+                continue
+            total += int(run_time)
+            seen = True
+        return total if seen else None
+
+    @property
+    def work_execution_groups(self) -> list[dict[str, int]]:
+        groups: dict[tuple[int, int], dict[str, int]] = {}
+        for row in self.dish_ingredients or []:
+            depth = int(row.depth or 0)
+            parallel_group = int(row.parallel_group or 0)
+            key = (depth, parallel_group)
+            group = groups.setdefault(
+                key,
+                {
+                    "depth": depth,
+                    "parallel_group": parallel_group,
+                    "rows": 0,
+                    "total_seconds": 0,
+                },
+            )
+            group["rows"] += 1
+            group["total_seconds"] += int(row.service_exec_run_time or 0)
+        return [groups[key] for key in sorted(groups)]
+
 
 class DishIngredient(Base):
     """
@@ -234,34 +519,65 @@ class DishIngredient(Base):
     """
 
     __tablename__ = "dish_ingredients"
+    __table_args__ = (
+        CheckConstraint("service_type <> ''", name="ck_dish_ingredients_service_type_present"),
+        CheckConstraint("service_exec <> ''", name="ck_dish_ingredients_service_exec_present"),
+        CheckConstraint(
+            "on_failure is null or on_failure in ('continue','stop','retry')",
+            name="ck_dish_ingredients_on_failure",
+        ),
+        CheckConstraint(
+            "service_exec_expected_secs is null or service_exec_expected_secs > 0",
+            name="ck_dish_ingredients_expected_secs_positive",
+        ),
+        CheckConstraint(
+            "service_exec_timeout is null or service_exec_timeout > 0",
+            name="ck_dish_ingredients_timeout_positive",
+        ),
+        CheckConstraint(
+            "service_exec_status in ('pending','dispatched','running','succeeded','failed','errored','timeout','canceled')",
+            name="ck_dish_ingredients_service_exec_status",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    req_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     dish_id: Mapped[int] = mapped_column(ForeignKey("dishes.id"), nullable=False, index=True)
     recipe_ingredient_id: Mapped[int | None] = mapped_column(
         ForeignKey("recipe_ingredients.id"), nullable=True
     )
 
     task_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    execution_engine: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
-    execution_target: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    step_order: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    parallel_group: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    depth: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    service_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    service_exec: Mapped[str] = mapped_column(String(255), nullable=False)
     destination_target: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    execution_ref: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
-    execution_payload: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True)
-    execution_parameters: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True)
-    expected_duration_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    timeout_duration_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    service_exec_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    service_payload: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    service_exec_parameters: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    service_exec_expected_secs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    service_exec_timeout: Mapped[int | None] = mapped_column(Integer, nullable=True)
     retry_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     retry_delay: Mapped[int | None] = mapped_column(Integer, nullable=True)
     on_failure: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    service_exec_expected_outcome: Mapped[Any | None] = mapped_column(MYSQL_JSON, nullable=True)
+    service_exec_run_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    service_exec_sla_exceeded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    service_exec_claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    service_exec_claimed_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     attempt: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
-    execution_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    canceled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    service_exec_status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
+    service_exec_start_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    service_exec_completed_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    service_exec_canceled_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    result: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True)
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    service_exec_actual_outcome: Mapped[JSONObject | None] = mapped_column(
+        MYSQL_JSON, nullable=True
+    )
+    service_exec_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -281,6 +597,16 @@ class Order(Base):
     """
 
     __tablename__ = "orders"
+    __table_args__ = (
+        CheckConstraint(
+            "processing_status in ('new','processing','resolving','complete','failed','errored','timeout','canceled')",
+            name="ck_orders_processing_status",
+        ),
+        CheckConstraint(
+            "remediation_outcome in ('pending','succeeded','failed','none')",
+            name="ck_orders_remediation_outcome",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     req_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
@@ -303,24 +629,17 @@ class Order(Base):
     alert_group_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     severity: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     instance: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    correlation_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     counter: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    bakery_ticket_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    bakery_operation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    bakery_ticket_state: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
-    bakery_permanent_failure: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False, index=True
-    )
-    bakery_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    bakery_comms_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     fingerprint_when_active: Mapped[str | None] = mapped_column(
         String(255),
         Computed("IF(is_active = 1, fingerprint, NULL)", persisted=True),
         nullable=True,
     )
 
-    labels: Mapped[dict[str, Any]] = mapped_column(MYSQL_JSON, nullable=False)
-    annotations: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True)
-    raw_data: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True)
+    labels: Mapped[JSONObject] = mapped_column(MYSQL_JSON, nullable=False)
+    annotations: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    raw_data: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
 
     starts_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     ends_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -333,69 +652,14 @@ class Order(Base):
     )
 
     dishes: Mapped[list["Dish"]] = relationship("Dish", back_populates="order")
-    communications: Mapped[list["OrderCommunication"]] = relationship(
-        "OrderCommunication",
-        back_populates="order",
-        cascade="all, delete-orphan",
-    )
 
-
-class OrderCommunication(Base):
-    """Tracked external communication handle for an order destination route."""
-
-    __tablename__ = "order_communications"
-    __table_args__ = (
-        UniqueConstraint(
-            "order_id",
-            "execution_target",
-            "destination_target",
-            name="ux_order_communications_route",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), nullable=False, index=True)
-    execution_target: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    destination_target: Mapped[str] = mapped_column(String(255), default="", nullable=False)
-    bakery_ticket_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    bakery_operation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    lifecycle_state: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
-    remote_state: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    writable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    reopenable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    reconcile_metadata: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=get_utc_now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False
-    )
-
-    order: Mapped["Order"] = relationship("Order", back_populates="communications")
-
-
-class BakeryMonitorState(Base):
-    """Persisted Bakery monitor credentials and sync state for this installation."""
-
-    __tablename__ = "bakery_monitor_state"
-    __table_args__ = (
-        UniqueConstraint("monitor_id", name="ux_bakery_monitor_state_monitor_id"),
-        UniqueConstraint("monitor_uuid", name="ux_bakery_monitor_state_monitor_uuid"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    monitor_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    monitor_uuid: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    hmac_key_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    encrypted_hmac_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
-    installation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    last_route_catalog_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    route_sync_dirty: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    last_heartbeat_status: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=get_utc_now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False
-    )
+    @property
+    def order_lifetime_secs(self) -> int | None:
+        if self.processing_status not in {"complete", "failed", "errored", "timeout", "canceled"}:
+            return None
+        if self.created_at is None or self.updated_at is None:
+            return None
+        return max(0, int((self.updated_at - self.created_at).total_seconds()))
 
 
 class AlertSuppression(Base):
@@ -413,6 +677,11 @@ class AlertSuppression(Base):
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary_ticket_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="local")
+    source_service_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    source_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_payload: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=get_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False
@@ -444,6 +713,11 @@ class AlertSuppression(Base):
             "starts_at",
             "ends_at",
             "canceled_at",
+        ),
+        UniqueConstraint(
+            "source_service_type",
+            "source_ref",
+            name="ux_alert_suppressions_source_ref",
         ),
     )
 
@@ -484,8 +758,8 @@ class SuppressedEvent(Base):
     fingerprint: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     alertname: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     severity: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    labels_json: Mapped[dict[str, Any]] = mapped_column(MYSQL_JSON, nullable=False)
-    annotations_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True)
+    labels_json: Mapped[JSONObject] = mapped_column(MYSQL_JSON, nullable=False)
+    annotations_json: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="firing")
     payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     req_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
@@ -503,7 +777,7 @@ class SuppressedEvent(Base):
 
 
 class SuppressionSummary(Base):
-    """Aggregated suppression window summary and Bakery ticket refs."""
+    """Aggregated suppression window summary."""
 
     __tablename__ = "suppression_summaries"
 
@@ -517,21 +791,12 @@ class SuppressionSummary(Base):
     total_suppressed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_cleared: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_still_firing: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    by_alertname_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True)
-    by_severity_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True)
-    still_firing_alerts_json: Mapped[dict[str, Any] | None] = mapped_column(
-        MYSQL_JSON, nullable=True
-    )
+    by_alertname_json: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    by_severity_json: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
+    still_firing_alerts_json: Mapped[JSONObject | None] = mapped_column(MYSQL_JSON, nullable=True)
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     summary_created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    bakery_ticket_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    bakery_create_operation_id: Mapped[str | None] = mapped_column(
-        String(36), nullable=True, index=True
-    )
-    bakery_close_operation_id: Mapped[str | None] = mapped_column(
-        String(36), nullable=True, index=True
-    )
     summary_close_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -613,3 +878,24 @@ class AuthRoleBinding(Base):
         "AuthPrincipal",
         back_populates="role_bindings",
     )
+
+
+class HmacNonce(Base):
+    """Replay-protection nonce for internal HMAC-signed requests.
+
+    Used by ``database``-mode nonce store to share replay state across API
+    replicas.  Rows are inserted atomically with INSERT … SELECT WHERE NOT
+    EXISTS and TTL-enforced by the callers clock skew.
+    """
+
+    __tablename__ = "hmac_nonces"
+    __table_args__ = (
+        UniqueConstraint("kind", "key", name="ux_hmac_nonces_kind_key"),
+        Index("ix_hmac_nonces_kind_expires_at", "kind", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    key: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=get_utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)

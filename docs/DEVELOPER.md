@@ -1,389 +1,219 @@
-# Developer Runbook (Fork + Lab)
+# PoundCake Developer Guide
 
-This runbook covers local development, CI/CD behavior, fork-based package publishing, and lab deployment.
+## Summary
 
-For the current installer, CLI, and Helm value inventory, see [REFERENCE.md](REFERENCE.md).
+This guide is for developers changing PoundCake itself. It focuses on the local Python environment, plugin and plugin adapter development, and validation against local containers. Production Helm operations live in [OPERATOR.md](OPERATOR.md).
 
-## 1) Prerequisites
+For runtime architecture, see [ARCHITECTURE.md](ARCHITECTURE.md). For the service plugin contract, see [SERVICE_PLUGIN_CONTRACT.md](SERVICE_PLUGIN_CONTRACT.md). For per-plugin requirements and support tiers, see [plugins/README.md](plugins/README.md). For schema and migration work, see [DATABASE.md](DATABASE.md). For auth and internal RBAC, see [AUTH_RBAC.md](AUTH_RBAC.md).
 
-Required tools:
+## Development Prerequisites
 
+Recommended tools:
+
+- Python 3.11+
 - `git`
-- `python` 3.11+
-- `pip`
-- `docker` and `docker compose`
-- `kubectl`
-- `helm` 3.13+
-- `gh` (GitHub CLI)
+- Colima for the local Docker-compatible container layer
+- Docker Compose through Colima's Docker runtime, either as `docker compose` or `docker-compose`
+- `kind`, `kubectl`, and `helm` for local Kubernetes and chart validation
+- `curl`
 
-Required access:
-
-- GitHub fork of `poundcake`
-- GHCR package permissions for your fork owner
-- Kubernetes cluster access for lab deployment
-
-Quick verification:
-
-```bash
-python --version
-docker --version
-docker compose version
-kubectl version --client
-helm version
-gh --version
-gh auth status
-```
-
-## 2) Local Setup (Docker Compose)
-
-Install dependencies:
-
-```bash
-make dev-install
-```
-
-## 2.1) Python venv Setup (Unit Tests + pre-commit)
-
-Create and activate a virtual environment:
+Typical Python setup:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
-```
-
-Install development dependencies:
-
-```bash
 pip install -e ".[dev]"
-```
-
-Install and run pre-commit hooks:
-
-```bash
 pre-commit install
+```
+
+Common checks:
+
+```bash
 pre-commit run -a
+.venv/bin/python -m pytest tests
 ```
 
-Typical local quality checks:
+## Plugin Development Standard
+
+The `dummy` plugin is the standard reference for plugin and plugin adapter development. New plugins should follow its shape before adding provider-specific complexity.
+
+Built-in plugin requirements are documented under [plugins/README.md](plugins/README.md).
+
+Reference files:
+
+- `api/plugins/dummy/plugin.py`: plugin manifest
+- `api/plugins/dummy/adapter.py`: plugin adapter implementation
+- `api/plugins/dummy/templates.py`: immutable ingredient templates, recipes, communication routes, and scheduled tasks
+- `api/plugins/dummy/helper.py`: optional helper registration pattern
+- `api/plugins/dummy/bootstrap.py`: optional bootstrap hook pattern
+
+A plugin should provide:
+
+- a `get_plugin()` function that returns `ServicePlugin`
+- a stable lowercase `service_type`
+- an `ExecutionAdapter` with `validate`, `dispatch`, `poll`, and `health_check`
+- immutable `ingredient_templates` with JSON Schema payload validation
+- a `plugin_health_check` scheduled task
+- a health-check recipe named `plugin-health-check:<service_type>`
+- canonical `ExecutionResult.status` values
+- optional communication route templates when the plugin owns communication work
+- optional helper and bootstrap hooks only when cross-plugin or install-time setup requires them
+
+Use the dummy plugin to prove these contract behaviors:
+
+- positive provider result maps to a successful runtime row
+- negative provider result maps to a failed runtime row
+- expected negative outcome can still satisfy a PoundCake step
+- long-running work stays `running` until Timer polls it terminal
+- cancellation maps to canonical `canceled`
+- communication operations/capabilities use `open`, `notify`, `update`, and `close`
+- plugin health is exercised through scheduled-task orders
+
+## Adapter Rules
+
+Plugin adapters are provider translators. They should not bypass Cook, Expediter, Timer, or the normal order workflow.
+
+Adapter implementation requirements:
+
+- Normalize provider states to `pending`, `dispatched`, `running`, `succeeded`, `failed`, `errored`, `timeout`, or `canceled`.
+- Return stable `service_exec_id` values for asynchronous provider work.
+- Keep provider-native response data in `result` and `raw` without leaking credentials.
+- Use `retryable` only for failures that the orchestration layer can safely retry.
+- Implement `cancel` when the provider supports cancellation; otherwise inherit the default unsupported response.
+- Keep `health_check` lightweight and safe for scheduled execution.
+
+Template requirements:
+
+- Treat `ingredients` as immutable templates.
+- Put provider-specific operation/capability metadata in `service_exec_parameters`.
+- Prefer adding operations to an existing ingredient when the same adapter surface and payload family fit the work; create a new ingredient only for a distinct contract or lifecycle.
+- Validate fillable payload fields with JSON Schema.
+- Prefer explicit `service_exec_expected_outcome_default`.
+- Mark communication work `is_blocking=false` unless it must block order completion.
+
+## Local Container Devstack
+
+The local container devstack is for PoundCake development and plugin contract validation. It starts a dummy-only PoundCake stack with MariaDB, API, UI, Prep Chef, Dishwasher, and Timer.
+
+Colima is the default local container layer. The dev scripts use Docker Compose through Colima's Docker runtime, first as `docker compose` and then as the standalone `docker-compose` binary.
+
+Start the stack:
 
 ```bash
-make test
-make lint
+bash docker/devstack/create.sh
 ```
 
-Start local stack with compose:
+Defaults:
+
+- API: `http://127.0.0.1:8000/api/v1`
+- UI: `http://127.0.0.1:8080`
+
+Override compose when needed:
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+COMPOSE="docker compose" bash docker/devstack/create.sh
+COMPOSE="docker-compose" bash docker/devstack/create.sh
 ```
 
-Check health and logs:
+The script waits for `/live`, `/ready`, and the UI, then prints dummy plugin health, service registry ingredients, and recipes.
+
+Run dummy e2e scenarios against the running stack:
 
 ```bash
-curl http://localhost:8000/api/v1/health
-docker compose -f docker/docker-compose.yml logs -f api prep-chef chef timer dishwasher
+bash tests/run_e2e.sh
 ```
 
-Stop stack:
+Run one scenario:
 
 ```bash
-docker compose -f docker/docker-compose.yml down
+bash tests/run_e2e.sh --single positive
+bash tests/run_e2e.sh --single expected-negative
+bash tests/run_e2e.sh --single cancel-parallel
 ```
 
-## 3) Build/Test Workflow
-
-Run tests:
+Tear down the stack:
 
 ```bash
-make test
+bash docker/devstack/destroy.sh
 ```
 
-Manual shell e2e test execution examples (compose and k8s): see [tests/README.md](../tests/README.md) under **Run Tests By Hand**.
-
-Run lint/type checks:
+Keep the database volume for follow-up debugging:
 
 ```bash
-make lint
+REMOVE_VOLUMES=false bash docker/devstack/destroy.sh
 ```
 
-Format:
+## Local Kind Cluster
+
+Use Kind on top of Colima when validating the PoundCake Helm chart against a real local Kubernetes API. Start Colima with the Docker runtime, then create the Kind cluster:
 
 ```bash
-make format
+brew install colima docker docker-compose kubectl helm
+
+colima start --cpu 6 --memory 12 --disk 80 --runtime docker
+docker context use colima
+docker info
+docker compose version || docker-compose version
+
+unset KIND_EXPERIMENTAL_PROVIDER
+
+helm/devstack/create.sh
+kubectl cluster-info --context kind-poundcake
+kubectl config use-context kind-poundcake
+kubectl get nodes
 ```
 
-Coverage output:
-
-- HTML coverage is generated in `htmlcov/` by `make test`.
-
-## 4) Release/Versioning Rules
-
-Versioning inputs:
-
-- App version tags: Git tags like `v2.0.169` trigger release workflow.
-- Helm chart publish version: `helm/Chart.yaml` `version:` field.
-
-Rules:
-
-- Bump `helm/Chart.yaml` `version:` before publishing a new chart version.
-
-- Pushing a `v*` tag runs `.github/workflows/release.yaml`.
-- Pushing to `main` runs `.github/workflows/build-push.yaml`.
-
-Tag and push:
+If Kind fails while pulling `kindest/node` with `docker-credential-osxkeychain` missing, reset the
+Docker client config left behind by a previous desktop runtime and retry:
 
 ```bash
-export RELEASE_TAG="<release-tag>"
-git tag "$RELEASE_TAG"
-git push origin "$RELEASE_TAG"
+cp ~/.docker/config.json ~/.docker/config.json.pre-colima 2>/dev/null || true
+printf '{\n  "auths": {},\n  "currentContext": "colima"\n}\n' > ~/.docker/config.json
+
+docker pull kindest/node:v1.35.0
+DELETE_NAMESPACE=false helm/devstack/destroy.sh
+INSTALL_CHART=false helm/devstack/create.sh
 ```
 
-## 5) Deploy Workflows (Fork Artifacts -> Lab)
-
-Configure your fork for package publishing:
+Run the chart checks before installing:
 
 ```bash
-export FORK_REPO="<your-github-user>/poundcake"
-export FORK_OWNER="<your-github-user>"
-
-gh variable set GHCR_OWNER --repo "$FORK_REPO" --body "$FORK_OWNER"
-gh variable set GHCR_REPO_NAME --repo "$FORK_REPO" --body "poundcake"
+helm lint ./helm
+helm unittest ./helm --file 'tests/unittest/*_test.yaml'
 ```
 
-Secrets in fork:
+Install PoundCake into the local Kind cluster or refresh the release:
 
 ```bash
-# Preferred: use GITHUB_TOKEN path in workflow if possible.
-gh secret delete CR_PAT --repo "$FORK_REPO" || true
-
-# If needed, set CR_PAT with read:packages + write:packages.
-# gh secret set CR_PAT --repo "$FORK_REPO"
+VALUES_FILE=helm/devstack/values/poundcake-plugins-kind.yaml helm/devstack/create.sh
 ```
 
-Trigger image build (push to fork main):
+Set `INSTALL_CHART=false` when you only want the kind cluster.
+
+Tear down the Kind cluster when finished:
 
 ```bash
-git checkout main
-git pull --ff-only
-git push origin main
+helm/devstack/destroy.sh
 ```
 
-Trigger chart publish (release tag in fork):
+Stop Colima when you are done with local containers:
 
 ```bash
-export RELEASE_TAG="<release-tag>"
-git tag "$RELEASE_TAG"
-git push origin "$RELEASE_TAG"
+colima stop
 ```
 
-Deploy in lab from fork registries:
+## Test Expectations
+
+For plugin contract changes, run:
 
 ```bash
-export HELM_REGISTRY_USERNAME="<github-user>"
-export HELM_REGISTRY_PASSWORD="<github-token-with-read:packages>"
-
-export POUNDCAKE_CHART_REPO="oci://ghcr.io/${FORK_OWNER}/charts/poundcake"
-# Default helper behavior is local chart install (POUNDCAKE_CHART_REPO unset).
-# Set POUNDCAKE_CHART_REPO only when you explicitly want OCI chart source.
-# export POUNDCAKE_CHART_REPO="oci://ghcr.io/${FORK_OWNER}/charts/poundcake"
-# Configure image repositories/tags in your Helm override files.
-
-./install/install-poundcake-helm.sh --validate
-./install/install-poundcake-helm.sh
+.venv/bin/python -m pytest tests
+bash docker/devstack/create.sh
+bash tests/run_e2e.sh
+bash docker/devstack/destroy.sh
 ```
 
-Note:
+If your code change affects the Helm chart, rendered environment variables, or production deployment behavior, also run the Helm checks listed in [OPERATOR.md](OPERATOR.md).
 
-- Installers:
-  - `install/install-poundcake-helm.sh` installs PoundCake only.
-  - Bakery now lives in the standalone [rackerlabs/bakery](https://github.com/rackerlabs/bakery) repo.
-  - For remote Bakery, put PoundCake client settings in override files.
-  - For the PoundCake side of the split-environment flow, see [REMOTE_BAKERY_DEPLOYMENT_GUIDE.md](REMOTE_BAKERY_DEPLOYMENT_GUIDE.md).
-- `install/install-poundcake-helm.sh` reads desired chart versions from `/etc/poundcake/helm-chart-versions.yaml`:
-  - `poundcake`
-  - `stackstorm`
-  - `mariadb-operator`
-  - `redis-operator`
-  - `rabbitmq-cluster-operator`
-  - `mongodb-operator` (optional; falls back to installer default when absent)
-
-### 5.1) Installer Environment Variables
-
-Defaults below are installer defaults from `helm/bin/install-poundcake.sh` unless noted.
-If you source `install/set-env-helper.sh`, those helper exports may override these defaults.
-
-| Variable | Default | Required? | Purpose | When to set |
-|---|---|---|---|---|
-| `FORK_OWNER` | _(none)_ | Yes for fork workflow | Owner/org for fork package references in helper snippets | Always in fork-based deploy workflows |
-| `HELM_REGISTRY_USERNAME` | `""` (helper: `$FORK_OWNER`) | Required for private GHCR | Used for Helm OCI login and docker-registry secret creation | Set when chart/images are private |
-| `HELM_REGISTRY_PASSWORD` | `""` | Required for private GHCR | Token/password for OCI login and pull-secret auth; must include `read:packages` for private pulls | Set when using private GHCR |
-| `POUNDCAKE_CHART_REPO` | local chart path (`./helm`) (helper leaves unset for local mode) | Optional | Chart source (`oci://...` or local) | Set for OCI-based deployments |
-| `POUNDCAKE_CHART_VERSION` | `""` | Optional | Explicit OCI chart version | Pin chart version for repeatable deploys |
-| `POUNDCAKE_VERSION_FILE` | `/etc/poundcake/helm-chart-versions.yaml` | Optional | Source for auto-detected chart version key `poundcake` | Change only if your version file is elsewhere |
-| `POUNDCAKE_RELEASE_NAME` | `poundcake` | Optional | Helm release name | Change for parallel installs |
-| `POUNDCAKE_NAMESPACE` | `poundcake` | Optional | Kubernetes namespace for install | Set per environment/tenant |
-| `POUNDCAKE_HELM_TIMEOUT` | `120m` | Optional | Helm operation timeout | Increase for slower clusters |
-| `POUNDCAKE_HELM_WAIT` | `false` | Optional | Enable Helm `--wait` | Only for advanced troubleshooting; guarded due to hook deadlock risk |
-| `POUNDCAKE_ALLOW_HOOK_WAIT` | `false` | Optional | Bypass wait deadlock guard | Set only when intentionally forcing wait/atomic |
-| `POUNDCAKE_HELM_ATOMIC` | `false` | Optional | Enable Helm `--atomic` | Use only if you accept hook/wait behavior implications |
-| `POUNDCAKE_HELM_CLEANUP_ON_FAIL` | `false` | Optional | Enable Helm cleanup on failure | Enable in strict CI environments |
-| `POUNDCAKE_IMAGE_PULL_SECRET_NAME` | `registry-creds` | Optional | Pull secret name created/reused by installer | Override when the target namespace uses a different secret name |
-| `POUNDCAKE_CREATE_IMAGE_PULL_SECRET` | `true` | Optional | Auto-create/apply docker-registry secret | Disable if secret is pre-provisioned |
-| `POUNDCAKE_IMAGE_PULL_SECRET_EMAIL` | `noreply@local` | Optional | Email field used when creating docker-registry secret | Set if your policy requires real address |
-
-Important clarifications:
-
-- `HELM_REGISTRY_PASSWORD` must have `read:packages` for private GHCR pulls.
-- Image repositories/tags/digests are configured in Helm values or override files, not installer env vars.
-- Pull-secret references are configured in values via `poundcakeImage.pullSecrets`.
-- `POUNDCAKE_CREATE_IMAGE_PULL_SECRET=true` requires namespace and secret create/apply RBAC.
-
-### 5.2) Chart Pull-Secret Value
-
-- Canonical key: `poundcakeImage.pullSecrets`
-
-Examples:
-
-```bash
-helm upgrade --install poundcake ./helm --set poundcakeImage.pullSecrets[0]=registry-creds
-```
-
-Scope:
-
-- Pull secret is applied to PoundCake and Bakery workloads, plus startup jobs that pull private PoundCake/Bakery images.
-- Pull secret is not applied to StackStorm/infra workloads by default.
-
-Secret ownership and readiness notes:
-
-- `poundcake-secrets` is for PoundCake MariaDB credentials (`DB_*`).
-- `stackstorm-secrets` is authoritative for StackStorm infra credentials (`MONGO_*`, `RABBITMQ_*`, `ST2_AUTH_*`).
-- `poundcake-api` uses `stackstorm-secrets` for RabbitMQ health-check credentials.
-- Redis is currently unauthenticated in this chart; readiness still treats Redis TCP reachability as blocking.
-
-### 5.3) Private GHCR Quick Path
-
-```bash
-source ./install/set-env-helper.sh
-export HELM_REGISTRY_PASSWORD="<github-token-with-read:packages>"
-
-# Configure image repositories/tags in your values/override files.
-# export POUNDCAKE_NAMESPACE="poundcake"
-
-./install/install-poundcake-helm.sh
-```
-
-Verification:
-
-```bash
-# Secret exists
-kubectl -n <ns> get secret <pull-secret-name>
-
-# PoundCake pod spec includes pull secret
-kubectl -n <ns> get pod <poundcake-pod> -o jsonpath='{.spec.imagePullSecrets[*].name}'
-
-# No anonymous GHCR token error in events
-kubectl -n <ns> describe pod <poundcake-pod> | sed -n '/Events/,$p'
-```
-
-
-## 6) Secrets/Auth Handling
-
-GitHub/GHCR:
-
-- `HELM_REGISTRY_USERNAME` + `HELM_REGISTRY_PASSWORD` are used by Helm OCI login in installer.
-- In workflows, ensure token used for package push has `read:packages` and `write:packages`.
-
-Kubernetes/Helm:
-
-- Secrets should be stored as Kubernetes Secrets and referenced by workloads.
-- Use `--rotate-secrets` with installer only when you intentionally want to regenerate chart-managed secrets.
-
-### 6.1) Private Pull Troubleshooting Matrix
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `failed to fetch anonymous token ... 401 Unauthorized` | Pull secret not rendered on PoundCake pod spec, or bad credentials | Ensure your values set `poundcakeImage.pullSecrets`; verify pod `imagePullSecrets`; validate PAT scope (`read:packages`) |
-| Pull secret exists but image pull still fails | GHCR package visibility/access mismatch for pulling principal | Grant package read access to user/org/token principal used in secret |
-| Installer fails creating secret | Namespace or RBAC does not permit secret create/apply | Ensure namespace exists or allow installer namespace creation and secret create/apply RBAC |
-
-### 6.2) Behavioral Guardrails
-
-Installer safeguards to expect:
-
-- `--wait`/`--atomic` deadlock guard: installer fails fast unless `POUNDCAKE_ALLOW_HOOK_WAIT=true` because startup jobs are hook-driven.
-- Runtime config such as remote Bakery, shared DB mode, and pull-secret references must come from values or override files.
-
-## 7) Observability/Verification
-
-CI verification:
-
-```bash
-gh run list --repo "$FORK_REPO" --limit 10
-gh run watch --repo "$FORK_REPO"
-```
-
-Artifact verification:
-
-```bash
-helm registry login ghcr.io -u "$HELM_REGISTRY_USERNAME" --password-stdin <<<"$HELM_REGISTRY_PASSWORD"
-helm pull oci://ghcr.io/${FORK_OWNER}/charts/poundcake --version <chart-version>
-```
-
-Cluster verification after install:
-
-```bash
-kubectl -n <namespace> get pods
-kubectl -n <namespace> get svc
-kubectl -n <namespace> get jobs
-helm -n <namespace> list
-```
-
-### 7.1) UI Non-root Entrypoint Verification
-
-When `uiImage.tag` remains `latest`, verify the running pod is using the expected image and rendered config:
-
-```bash
-# 1) Confirm current image reference and immutable imageID (digest)
-kubectl -n <namespace> get pod -l app.kubernetes.io/component=ui \
-  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].image}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
-
-# 2) Check restart timestamps for rollout freshness
-kubectl -n <namespace> get pod -l app.kubernetes.io/component=ui \
-  -o custom-columns=POD:.metadata.name,RESTARTS:.status.containerStatuses[0].restartCount,STARTED:.status.startTime
-
-# 3) Verify rendered nginx config listens on 8080
-kubectl -n <namespace> exec deploy/poundcake-ui -- grep -n "listen" /etc/nginx/conf.d/default.conf
-
-# 4) Verify nginx runs as non-root and is bound to :8080
-kubectl -n <namespace> exec deploy/poundcake-ui -- id -u
-kubectl -n <namespace> exec deploy/poundcake-ui -- sh -c 'ss -lntp 2>/dev/null || netstat -lnt 2>/dev/null'
-```
-
-Expected:
-- `id -u` is not `0` (default is `1000`).
-- Rendered config includes `listen 8080;` and does not include `listen 80;`.
-- Listener output shows `:8080`.
-- Service/ingress may still expose external port `80` while targeting container `8080`.
-
-## 8) CI/CD Behavior
-
-Workflow triggers:
-
-- `.github/workflows/build-push.yaml`: push to `main`
-- `.github/workflows/release.yaml`: push tags matching `v*`
-
-Publish targets are configurable by Actions variables:
-
-- `GHCR_OWNER` (defaults to repo owner if unset)
-- `GHCR_REPO_NAME` (defaults to repo name if unset)
-
-Expected outputs:
-
-- Images: `ghcr.io/<owner>/poundcake`, `-ui`, `-bakery`
-- Chart: `oci://ghcr.io/<owner>/charts/poundcake`
-
-Common CI/CD failure patterns:
-
-- `401 Unauthorized` on GHCR pull/push: token scope or package visibility issue.
-- Chart push conflict: chart version already exists; bump `Chart.yaml` version.
+If a change affects a specific plugin, add or update tests around that plugin's manifest, adapter normalization, template validation, and scheduled health behavior.

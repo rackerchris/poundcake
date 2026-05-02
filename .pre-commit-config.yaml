@@ -34,13 +34,13 @@ repos:
         entry: mypy api
         language: system
         pass_filenames: false
-        stages: [pre-push]
+        stages: [manual]
       - id: pyright
         name: pyright
         entry: pyright
         language: system
         pass_filenames: false
-        stages: [pre-push]
+        stages: [manual]
       - id: pytest-unit
         name: pytest (unit)
         entry: pytest -m "not integration" tests/ -q

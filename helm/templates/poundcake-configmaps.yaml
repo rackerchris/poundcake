@@ -2,34 +2,6 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: stackstorm-config
-  labels:
-    {{- include "poundcake.labels" . | nindent 4 }}
-data:
-  st2.conf.template: |
-{{ .Files.Get "files/st2-config/st2.conf.template" | indent 4 }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: stackstorm-scripts
-  labels:
-    {{- include "poundcake.labels" . | nindent 4 }}
-data:
-  st2-entrypoint.sh: |
-{{ .Files.Get "files/st2-init/st2-entrypoint.sh" | indent 4 }}
-  stackstorm-pack-sync.sh: |
-{{ .Files.Get "files/st2-init/stackstorm-pack-sync.sh" | indent 4 }}
-  install-third-party-packs.sh: |
-{{ .Files.Get "files/st2-init/install-third-party-packs.sh" | indent 4 }}
-  automated-setup.sh: |
-{{ .Files.Get "files/scripts/automated-setup.sh" | indent 4 }}
-  mongodb-init.sh: |
-{{ .Files.Get "files/mongodb-init/01-create-st2-user.sh" | indent 4 }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
   name: poundcake-scripts
   labels:
     {{- include "poundcake.labels" . | nindent 4 }}

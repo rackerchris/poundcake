@@ -12,6 +12,11 @@ const unknownRecordSchema = z.record(z.unknown());
 const stringRecordSchema = z.record(z.string());
 const numberRecordSchema = z.record(z.number());
 const repoSyncExportValueSchema = z.union([z.string(), z.number(), z.null()]);
+const pluginHealthStatusSchema = z.enum(["unknown", "initializing", "healthy", "degraded", "failed", "disabled"]);
+const pluginTierSchema = z.enum(["community", "supported"]);
+const orderTypeSchema = z.enum(["webhook_alert", "scheduled_task", "manual"]);
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
 export const authProviderRecordSchema = strictObject({
   name: providerNameSchema,
@@ -83,11 +88,165 @@ export const appSettingsSchema = strictObject({
   git_rules_path: z.string().nullable(),
   git_workflows_path: z.string().nullable(),
   git_actions_path: z.string().nullable(),
-  stackstorm_enabled: z.boolean(),
   version: z.string(),
   global_communications_configured: z.boolean(),
 });
 export type AppSettings = z.infer<typeof appSettingsSchema>;
+
+export const servicePluginSummaryRecordSchema = strictObject({
+  service_type: z.string(),
+  plugin_short_id: z.string().nullable().optional(),
+  plugin_type: z.enum(["internal_plugin", "external_plugin"]),
+  plugin_tier: pluginTierSchema,
+  plugin_log_key: z.string().nullable().optional(),
+  enabled: z.boolean(),
+  run_interval_seconds: z.number().int().nullable().optional(),
+  query_limit: z.number().int().nullable().optional(),
+  status_message: z.string().nullable().optional(),
+  config_editable: z.boolean(),
+  ingredient_template_count: z.number().int(),
+  recipe_template_count: z.number().int(),
+  credential_status: z.string(),
+  credential_error: z.string().nullable().optional(),
+  last_credential_bootstrap_at: z.string().nullable().optional(),
+  last_credential_rotation_at: z.string().nullable().optional(),
+  health_status: pluginHealthStatusSchema,
+  health_message: z.string().nullable().optional(),
+  health_error_code: z.string().nullable().optional(),
+  health_latency_ms: z.number().int().nullable().optional(),
+  last_health_check_at: z.string().nullable().optional(),
+  next_health_check_at: z.string().nullable().optional(),
+  health_check_task_id: z.number().int().nullable().optional(),
+  health_check_interval_seconds: z.number().int().nullable().optional(),
+  health_check_enabled: z.boolean().optional(),
+  last_success_at: z.string().nullable().optional(),
+  consecutive_failures: z.number().int(),
+  health_check_state: z.enum(["idle", "queued", "running"]).optional(),
+  health_check_order_id: z.number().int().nullable().optional(),
+  health_check_started_at: z.string().nullable().optional(),
+  health_check_grace_until: z.string().nullable().optional(),
+  helper_available: z.boolean(),
+  helper_capabilities: z.array(z.string()),
+  required_helper_capabilities: z.record(z.array(z.string())),
+  missing_helper_capabilities: z.record(z.array(z.string())),
+});
+export type ServicePluginSummaryRecord = z.infer<typeof servicePluginSummaryRecordSchema>;
+export const servicePluginSummaryRecordArraySchema = z.array(servicePluginSummaryRecordSchema);
+
+export const servicePluginConfigurationRecordSchema = strictObject({
+  service_type: z.string(),
+  config: unknownRecordSchema,
+  config_schema: unknownRecordSchema.optional(),
+  credential_requirements: z.array(unknownRecordSchema).optional(),
+  credential_type: z.string().nullable().optional(),
+  credential_key_id: z.string(),
+  credential_configured: z.boolean(),
+  updated_at: z.string(),
+});
+export type ServicePluginConfigurationRecord = z.infer<typeof servicePluginConfigurationRecordSchema>;
+
+export const servicePluginActionResponseSchema = strictObject({
+  service_type: z.string(),
+  status: z.string(),
+  message: z.string(),
+  details: unknownRecordSchema,
+  checked_at: z.string(),
+});
+export type ServicePluginActionResponse = z.infer<typeof servicePluginActionResponseSchema>;
+
+export const prometheusRuleGroupSummarySchema = strictObject({
+  name: z.string(),
+  rule_count: z.number().int(),
+  alert_count: z.number().int(),
+  recording_count: z.number().int(),
+  alert_names: z.array(z.string()),
+  recording_names: z.array(z.string()),
+});
+export type PrometheusRuleGroupSummary = z.infer<typeof prometheusRuleGroupSummarySchema>;
+
+export const prometheusRuleResourceRecordSchema = strictObject({
+  name: z.string(),
+  namespace: z.string(),
+  labels: unknownRecordSchema,
+  annotations: unknownRecordSchema,
+  groups: z.array(prometheusRuleGroupSummarySchema),
+  group_count: z.number().int(),
+  rule_count: z.number().int(),
+  alert_count: z.number().int(),
+  recording_count: z.number().int(),
+  raw: unknownRecordSchema,
+});
+export type PrometheusRuleResourceRecord = z.infer<typeof prometheusRuleResourceRecordSchema>;
+
+export const prometheusRuleListResponseSchema = strictObject({
+  service_type: z.string(),
+  namespace: z.string(),
+  items: z.array(prometheusRuleResourceRecordSchema),
+  resource_count: z.number().int(),
+  group_count: z.number().int(),
+  rule_count: z.number().int(),
+  alert_count: z.number().int(),
+  recording_count: z.number().int(),
+  checked_at: z.string(),
+});
+export type PrometheusRuleListResponse = z.infer<typeof prometheusRuleListResponseSchema>;
+
+export const scheduledTaskRecordSchema = strictObject({
+  id: z.number().int(),
+  task_key: z.string(),
+  task_type: z.string(),
+  service_type: z.string().nullable().optional(),
+  service_exec: z.string().nullable().optional(),
+  source: z.string(),
+  is_enabled: z.boolean(),
+  run_interval_seconds: z.number().int(),
+  next_run_at: z.string().nullable().optional(),
+  priority: z.number().int(),
+  timeout_seconds: z.number().int(),
+  task_payload: z.record(z.unknown()).nullable().optional(),
+  task_parameters: z.record(z.unknown()).nullable().optional(),
+  expected_outcome: z.unknown().nullable().optional(),
+  status: z.string(),
+  last_status: z.string().nullable().optional(),
+  last_message: z.string().nullable().optional(),
+  last_order_id: z.number().int().nullable().optional(),
+  last_order_req_id: z.string().nullable().optional(),
+  last_started_at: z.string().nullable().optional(),
+  last_completed_at: z.string().nullable().optional(),
+  consecutive_failures: z.number().int(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type ScheduledTaskRecord = z.infer<typeof scheduledTaskRecordSchema>;
+export const scheduledTaskRecordArraySchema = z.array(scheduledTaskRecordSchema);
+
+export const scheduledTaskStatusRecordSchema = strictObject({
+  id: z.number().int(),
+  task_key: z.string(),
+  task_type: z.string(),
+  service_type: z.string().nullable().optional(),
+  service_exec: z.string().nullable().optional(),
+  source: z.string(),
+  is_enabled: z.boolean(),
+  run_interval_seconds: z.number().int(),
+  next_run_at: z.string().nullable().optional(),
+  priority: z.number().int(),
+  timeout_seconds: z.number().int(),
+  status: z.string(),
+  last_status: z.string().nullable().optional(),
+  last_message: z.string().nullable().optional(),
+  last_order_id: z.number().int().nullable().optional(),
+  last_order_req_id: z.string().nullable().optional(),
+  last_started_at: z.string().nullable().optional(),
+  last_completed_at: z.string().nullable().optional(),
+  consecutive_failures: z.number().int(),
+  run_now_label: z.string(),
+  run_now_description: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type ScheduledTaskStatusRecord = z.infer<typeof scheduledTaskStatusRecordSchema>;
+export const scheduledTaskStatusRecordArraySchema = z.array(scheduledTaskStatusRecordSchema);
 
 const repoSyncPullRequestSchema = strictObject({
   number: z.union([z.number(), z.string(), z.null()]).optional(),
@@ -107,20 +266,30 @@ export const repoSyncResponseSchema = strictObject({
 });
 export type RepoSyncResponse = z.infer<typeof repoSyncResponseSchema>;
 
-export const communicationRouteRecordSchema = strictObject({
+const communicationRouteRecordNormalizedSchema = strictObject({
   id: z.string(),
   label: z.string(),
   execution_target: z.string(),
+  service_type: z.string(),
   destination_target: z.string(),
   provider_config: unknownRecordSchema,
   enabled: z.boolean(),
   position: z.number().int(),
 });
-export type CommunicationRouteRecord = z.infer<typeof communicationRouteRecordSchema>;
+export type CommunicationRouteRecord = z.infer<typeof communicationRouteRecordNormalizedSchema>;
+export const communicationRouteRecordSchema: z.ZodType<CommunicationRouteRecord> = z.preprocess((input) => {
+  if (!isRecord(input)) return input;
+  return {
+    ...input,
+    execution_target: input.execution_target ?? input.service_type ?? "",
+    service_type: input.service_type ?? input.execution_target ?? "",
+  };
+}, communicationRouteRecordNormalizedSchema) as z.ZodType<CommunicationRouteRecord>;
 
 export const communicationPolicyRecordSchema = strictObject({
   configured: z.boolean(),
   routes: z.array(communicationRouteRecordSchema),
+  available_routes: z.array(communicationRouteRecordSchema).optional().default([]),
   lifecycle_summary: stringRecordSchema,
 });
 export type CommunicationPolicyRecord = z.infer<typeof communicationPolicyRecordSchema>;
@@ -148,17 +317,6 @@ export const healthResponseSchema = strictObject({
 });
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 
-export const statsResponseSchema = strictObject({
-  total_alerts: z.number(),
-  total_recipes: z.number(),
-  total_executions: z.number(),
-  alerts_by_processing_status: numberRecordSchema,
-  alerts_by_alert_status: numberRecordSchema,
-  executions_by_status: numberRecordSchema,
-  recent_alerts: z.number(),
-});
-export type StatsResponse = z.infer<typeof statsResponseSchema>;
-
 export const observabilityOverviewResponseSchema = strictObject({
   health: unknownRecordSchema,
   queue: numberRecordSchema,
@@ -172,10 +330,6 @@ export const observabilityOverviewResponseSchema = strictObject({
       }),
     ),
     runbook_hints: z.array(z.string()),
-  }),
-  bakery: strictObject({
-    summary_failures: z.number(),
-    order_dead_letters: z.number(),
   }),
   suppressions: strictObject({
     active: z.number(),
@@ -198,6 +352,19 @@ export const observabilityActivityRecordSchema = strictObject({
 });
 export type ObservabilityActivityRecord = z.infer<typeof observabilityActivityRecordSchema>;
 export const observabilityActivityRecordArraySchema = z.array(observabilityActivityRecordSchema);
+
+export const observabilityActivityStatusRecordSchema = strictObject({
+  type: z.string(),
+  status: z.string(),
+  title: z.string(),
+  summary: z.string().nullable().optional(),
+  timestamp: z.string().nullable().optional(),
+  target_kind: z.string(),
+  target_id: z.string(),
+  link_hint: z.string().nullable().optional(),
+});
+export type ObservabilityActivityStatusRecord = z.infer<typeof observabilityActivityStatusRecordSchema>;
+export const observabilityActivityStatusRecordArraySchema = z.array(observabilityActivityStatusRecordSchema);
 
 export const orderCommunicationSchema = strictObject({
   id: z.number().int(),
@@ -232,11 +399,12 @@ export const orderResponseSchema = strictObject({
   auto_close_eligible: z.boolean(),
   severity: z.string().nullable().optional(),
   instance: z.string().nullable().optional(),
+  correlation_key: z.string().nullable().optional(),
   counter: z.number(),
   bakery_ticket_id: z.string().nullable().optional(),
   bakery_operation_id: z.string().nullable().optional(),
   bakery_ticket_state: z.string().nullable().optional(),
-  bakery_permanent_failure: z.boolean(),
+  bakery_permanent_failure: z.union([z.boolean(), z.undefined()]).transform((value) => value ?? false),
   bakery_last_error: z.string().nullable().optional(),
   bakery_comms_id: z.string().nullable().optional(),
   labels: unknownRecordSchema,
@@ -244,12 +412,40 @@ export const orderResponseSchema = strictObject({
   raw_data: unknownRecordSchema.nullable().optional(),
   starts_at: z.string(),
   ends_at: z.string().nullable().optional(),
-  communications: z.array(orderCommunicationSchema),
+  order_lifetime_secs: z.number().int().nullable().optional(),
+  communications: z.union([z.array(orderCommunicationSchema), z.undefined()]).transform((value) => value ?? []),
   created_at: z.string(),
   updated_at: z.string(),
 });
 export type OrderResponse = z.infer<typeof orderResponseSchema>;
 export const orderResponseArraySchema = z.array(orderResponseSchema);
+
+export const orderStatusRecordSchema = strictObject({
+  id: z.number().int(),
+  req_id: z.string(),
+  order_type: orderTypeSchema,
+  alert_status: z.string(),
+  alert_group_name: z.string(),
+  processing_status: z.string(),
+  is_active: z.boolean(),
+  remediation_outcome: z.string(),
+  clear_timeout_sec: z.number().nullable().optional(),
+  clear_deadline_at: z.string().nullable().optional(),
+  clear_timed_out_at: z.string().nullable().optional(),
+  auto_close_eligible: z.boolean(),
+  severity: z.string().nullable().optional(),
+  instance: z.string().nullable().optional(),
+  correlation_key: z.string().nullable().optional(),
+  counter: z.number(),
+  starts_at: z.string(),
+  ends_at: z.string().nullable().optional(),
+  order_lifetime_secs: z.number().int().nullable().optional(),
+  communication_route_count: z.number().int(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type OrderStatusRecord = z.infer<typeof orderStatusRecordSchema>;
+export const orderStatusRecordArraySchema = z.array(orderStatusRecordSchema);
 
 export const incidentTimelineEventSchema = strictObject({
   timestamp: z.string().nullable().optional(),
@@ -262,7 +458,7 @@ export const incidentTimelineEventSchema = strictObject({
 export type IncidentTimelineEvent = z.infer<typeof incidentTimelineEventSchema>;
 
 export const incidentTimelineResponseSchema = strictObject({
-  order: orderResponseSchema,
+  order: orderStatusRecordSchema,
   events: z.array(incidentTimelineEventSchema),
 });
 export type IncidentTimelineResponse = z.infer<typeof incidentTimelineResponseSchema>;
@@ -287,6 +483,20 @@ export const communicationActivityRecordSchema = strictObject({
 export type CommunicationActivityRecord = z.infer<typeof communicationActivityRecordSchema>;
 export const communicationActivityRecordArraySchema = z.array(communicationActivityRecordSchema);
 
+export const communicationActivityStatusRecordSchema = strictObject({
+  communication_id: z.string(),
+  reference_type: z.string(),
+  reference_id: z.string(),
+  reference_name: z.string().nullable().optional(),
+  channel: z.string(),
+  destination: z.string().nullable().optional(),
+  lifecycle_state: z.string().nullable().optional(),
+  remote_state: z.string().nullable().optional(),
+  updated_at: z.string().nullable().optional(),
+});
+export type CommunicationActivityStatusRecord = z.infer<typeof communicationActivityStatusRecordSchema>;
+export const communicationActivityStatusRecordArraySchema = z.array(communicationActivityStatusRecordSchema);
+
 export const suppressionMatcherSchema = strictObject({
   label_key: z.string(),
   operator: z.string(),
@@ -306,6 +516,11 @@ export const suppressionRecordSchema = strictObject({
   canceled_at: z.string().nullable().optional(),
   created_by: z.string().nullable().optional(),
   summary_ticket_enabled: z.boolean(),
+  source: z.string(),
+  source_service_type: z.string().nullable().optional(),
+  source_ref: z.string().nullable().optional(),
+  source_payload: unknownRecordSchema.nullable().optional(),
+  last_synced_at: z.string().nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
   matchers: z.array(suppressionMatcherSchema),
@@ -313,7 +528,23 @@ export const suppressionRecordSchema = strictObject({
 export type SuppressionRecord = z.infer<typeof suppressionRecordSchema>;
 export const suppressionRecordArraySchema = z.array(suppressionRecordSchema);
 
-export const dishRecordSchema = strictObject({
+export const suppressionStatusRecordSchema = strictObject({
+  id: z.number().int(),
+  name: z.string(),
+  reason: z.string().nullable().optional(),
+  scope: z.string(),
+  status: z.string(),
+  enabled: z.boolean(),
+  starts_at: z.string(),
+  ends_at: z.string(),
+  canceled_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type SuppressionStatusRecord = z.infer<typeof suppressionStatusRecordSchema>;
+export const suppressionStatusRecordArraySchema = z.array(suppressionStatusRecordSchema);
+
+const dishRecordNormalizedSchema = strictObject({
   id: z.number().int(),
   req_id: z.string(),
   order_id: z.number().int().nullable().optional(),
@@ -327,60 +558,166 @@ export const dishRecordSchema = strictObject({
     .optional(),
   execution_ref: z.string().nullable().optional(),
   execution_status: z.string().nullable().optional(),
+  dish_exec_status: z.string().nullable().optional(),
   processing_status: z.string(),
   run_phase: z.string(),
   expected_duration_sec: z.number().nullable().optional(),
   actual_duration_sec: z.number().nullable().optional(),
+  expected_run_secs: z.number().nullable().optional(),
+  run_time_secs: z.number().nullable().optional(),
+  work_execution_time_secs: z.number().int().nullable().optional(),
+  work_execution_groups: z.array(strictObject({
+    depth: z.number().int(),
+    parallel_group: z.number().int(),
+    rows: z.number().int(),
+    total_seconds: z.number().int(),
+  })).optional(),
   result: z.unknown().nullable().optional(),
+  dish_actual_outcome: z.unknown().nullable().optional(),
   error_message: z.string().nullable().optional(),
-  retry_attempt: z.number().int(),
+  retry_attempt: z.number().int().optional(),
   started_at: z.string().nullable().optional(),
   completed_at: z.string().nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 });
-export type DishRecord = z.infer<typeof dishRecordSchema>;
-export const dishRecordArraySchema = z.array(dishRecordSchema);
+export type DishRecord = z.infer<typeof dishRecordNormalizedSchema>;
+export const dishRecordSchema = z.preprocess((input) => {
+  if (!isRecord(input)) return input;
+  return {
+    ...input,
+    execution_status: input.execution_status ?? input.dish_exec_status ?? null,
+    expected_duration_sec: input.expected_duration_sec ?? input.expected_run_secs ?? null,
+    actual_duration_sec: input.actual_duration_sec ?? input.run_time_secs ?? null,
+    work_execution_time_secs: input.work_execution_time_secs ?? null,
+    work_execution_groups: input.work_execution_groups ?? [],
+    result: input.result ?? input.dish_actual_outcome ?? null,
+  };
+}, dishRecordNormalizedSchema) as z.ZodType<DishRecord>;
+export const dishRecordArraySchema: z.ZodType<DishRecord[]> = z.array(dishRecordSchema);
 
-export const prometheusRuleSchema = strictObject({
-  group: z.string(),
-  crd: z.string().nullable().optional(),
-  file: z.string().nullable().optional(),
-  namespace: z.string().nullable().optional(),
-  interval: z.string().nullable().optional(),
-  name: z.string(),
-  query: z.string(),
-  duration: z.string().nullable().optional(),
-  labels: stringRecordSchema.optional(),
-  annotations: stringRecordSchema.optional(),
-  state: z.string().nullable().optional(),
-  health: z.string().nullable().optional(),
+export const dishStatusRecordSchema = strictObject({
+  id: z.number().int(),
+  order_id: z.number().int().nullable().optional(),
+  order_type: orderTypeSchema,
+  recipe_id: z.number().int(),
+  recipe_name: z.string().nullable().optional(),
+  processing_status: z.string(),
+  run_phase: z.string(),
+  dish_exec_status: z.string().nullable().optional(),
+  started_at: z.string().nullable().optional(),
+  completed_at: z.string().nullable().optional(),
+  expected_run_secs: z.number().nullable().optional(),
+  run_time_secs: z.number().nullable().optional(),
+  work_execution_time_secs: z.number().int().nullable().optional(),
+  work_execution_groups: z.array(strictObject({
+    depth: z.number().int(),
+    parallel_group: z.number().int(),
+    rows: z.number().int(),
+    total_seconds: z.number().int(),
+  })).optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
 });
-export type PrometheusRule = z.infer<typeof prometheusRuleSchema>;
+export type DishStatusRecord = z.infer<typeof dishStatusRecordSchema>;
+export const dishStatusRecordArraySchema = z.array(dishStatusRecordSchema);
 
-export const prometheusRuleListResponseSchema = strictObject({
-  rules: z.array(prometheusRuleSchema),
-  source: z.string(),
+export const dishIngredientRecordSchema = strictObject({
+  id: z.number().int(),
+  req_id: z.string(),
+  dish_id: z.number().int(),
+  recipe_ingredient_id: z.number().int().nullable().optional(),
+  service_exec_id: z.string().nullable().optional(),
+  task_key: z.string().nullable().optional(),
+  step_order: z.number().int(),
+  parallel_group: z.number().int(),
+  depth: z.number().int(),
+  service_type: z.string().nullable().optional(),
+  service_exec: z.string().nullable().optional(),
+  destination_target: z.string().nullable().optional(),
+  service_payload: unknownRecordSchema.nullable().optional(),
+  service_exec_parameters: unknownRecordSchema.nullable().optional(),
+  service_exec_expected_secs: z.number().int().nullable().optional(),
+  service_exec_timeout: z.number().int().nullable().optional(),
+  service_exec_expected_outcome: z.unknown().nullable().optional(),
+  retry_count: z.number().int().nullable().optional(),
+  retry_delay: z.number().int().nullable().optional(),
+  on_failure: z.string().nullable().optional(),
+  service_exec_status: z.string(),
+  attempt: z.number().int(),
+  service_exec_start_time: z.string().nullable().optional(),
+  service_exec_completed_time: z.string().nullable().optional(),
+  service_exec_canceled_time: z.string().nullable().optional(),
+  service_exec_run_time: z.number().int().nullable().optional(),
+  service_exec_sla_exceeded: z.boolean(),
+  service_exec_claimed_at: z.string().nullable().optional(),
+  service_exec_claimed_by: z.string().nullable().optional(),
+  service_exec_actual_outcome: unknownRecordSchema.nullable().optional(),
+  service_exec_error: z.string().nullable().optional(),
+  deleted: z.boolean(),
+  deleted_at: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
 });
-export type PrometheusRuleListResponse = z.infer<typeof prometheusRuleListResponseSchema>;
+export type DishIngredientRecord = z.infer<typeof dishIngredientRecordSchema>;
+export const dishIngredientRecordArraySchema = z.array(dishIngredientRecordSchema);
 
-export const ingredientRecordSchema = strictObject({
+export const dishIngredientStatusRecordSchema = strictObject({
+  id: z.number().int(),
+  dish_id: z.number().int(),
+  recipe_ingredient_id: z.number().int().nullable().optional(),
+  task_key: z.string().nullable().optional(),
+  step_order: z.number().int(),
+  parallel_group: z.number().int(),
+  depth: z.number().int(),
+  service_type: z.string().nullable().optional(),
+  service_exec: z.string().nullable().optional(),
+  retry_count: z.number().int().nullable().optional(),
+  retry_delay: z.number().int().nullable().optional(),
+  on_failure: z.string().nullable().optional(),
+  service_exec_status: z.string(),
+  attempt: z.number().int(),
+  execution_role: z.string().nullable().optional(),
+  operation: z.string().nullable().optional(),
+  result_status: z.string().nullable().optional(),
+  result_message: z.string().nullable().optional(),
+  result_summary: unknownRecordSchema.nullable().optional(),
+  service_exec_start_time: z.string().nullable().optional(),
+  service_exec_completed_time: z.string().nullable().optional(),
+  service_exec_canceled_time: z.string().nullable().optional(),
+  service_exec_run_time: z.number().int().nullable().optional(),
+  service_exec_sla_exceeded: z.boolean(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type DishIngredientStatusRecord = z.infer<typeof dishIngredientStatusRecordSchema>;
+export const dishIngredientStatusRecordArraySchema = z.array(dishIngredientStatusRecordSchema);
+
+const ingredientRecordNormalizedSchema = strictObject({
   id: z.number().int(),
   execution_target: z.string(),
+  service_exec: z.string(),
   destination_target: z.string(),
   task_key_template: z.string(),
   execution_id: z.string().nullable().optional(),
   action_id: z.string().nullable().optional(),
   execution_payload: unknownRecordSchema.nullable().optional(),
+  service_payload_template: unknownRecordSchema.nullable().optional(),
   execution_parameters: unknownRecordSchema.nullable().optional(),
+  service_exec_parameters: unknownRecordSchema.nullable().optional(),
+  payload_schema: unknownRecordSchema.optional(),
+  service_exec_expected_outcome_default: z.unknown().nullable().optional(),
   execution_engine: z.string(),
+  service_type: z.string(),
   execution_purpose: z.string(),
+  ingredient_purpose: z.string(),
   ingredient_kind: z.string().nullable().optional(),
-  is_default: z.boolean(),
   is_active: z.boolean(),
   is_blocking: z.boolean(),
   expected_duration_sec: z.number(),
+  default_expected_secs: z.number(),
   timeout_duration_sec: z.number(),
+  default_timeout: z.number(),
   retry_count: z.number().int(),
   retry_delay: z.number().int(),
   on_failure: z.string(),
@@ -389,10 +726,49 @@ export const ingredientRecordSchema = strictObject({
   deleted: z.boolean(),
   deleted_at: z.string().nullable().optional(),
 });
-export type IngredientRecord = z.infer<typeof ingredientRecordSchema>;
+export type IngredientRecord = z.infer<typeof ingredientRecordNormalizedSchema>;
+export const ingredientRecordSchema: z.ZodType<IngredientRecord> = z.preprocess((input) => {
+  if (!isRecord(input)) return input;
+  return {
+    ...input,
+    execution_target: input.execution_target ?? input.service_exec ?? "",
+    service_exec: input.service_exec ?? input.execution_target ?? "",
+    execution_engine: input.execution_engine ?? input.service_type ?? "",
+    service_type: input.service_type ?? input.execution_engine ?? "",
+    execution_purpose: input.execution_purpose ?? input.ingredient_purpose ?? "utility",
+    ingredient_purpose: input.ingredient_purpose ?? input.execution_purpose ?? "utility",
+    ingredient_kind: input.ingredient_kind ?? input.ingredient_purpose ?? input.execution_purpose ?? "utility",
+    expected_duration_sec: input.expected_duration_sec ?? input.default_expected_secs ?? 0,
+    default_expected_secs: input.default_expected_secs ?? input.expected_duration_sec ?? 0,
+    timeout_duration_sec: input.timeout_duration_sec ?? input.default_timeout ?? 0,
+    default_timeout: input.default_timeout ?? input.timeout_duration_sec ?? 0,
+    execution_payload: input.execution_payload ?? input.service_payload_template ?? null,
+    execution_parameters: input.execution_parameters ?? input.service_exec_parameters ?? null,
+  };
+}, ingredientRecordNormalizedSchema) as z.ZodType<IngredientRecord>;
 export const ingredientRecordArraySchema = z.array(ingredientRecordSchema);
 
-export const recipeStepRecordSchema = strictObject({
+export const ingredientStatusRecordSchema = strictObject({
+  id: z.number().int(),
+  service_type: z.string(),
+  service_exec: z.string(),
+  destination_target: z.string().nullable().optional(),
+  task_key_template: z.string(),
+  ingredient_purpose: z.string(),
+  is_active: z.boolean(),
+  is_blocking: z.boolean(),
+  default_expected_secs: z.number(),
+  default_timeout: z.number(),
+  retry_count: z.number().int(),
+  retry_delay: z.number().int(),
+  on_failure: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type IngredientStatusRecord = z.infer<typeof ingredientStatusRecordSchema>;
+export const ingredientStatusRecordArraySchema = z.array(ingredientStatusRecordSchema);
+
+const recipeStepRecordNormalizedSchema = strictObject({
   id: z.number().int(),
   recipe_id: z.number().int(),
   ingredient_id: z.number().int(),
@@ -401,14 +777,54 @@ export const recipeStepRecordSchema = strictObject({
   parallel_group: z.number().int(),
   depth: z.number().int(),
   execution_payload_override: unknownRecordSchema.nullable().optional(),
+  service_payload: unknownRecordSchema.nullable().optional(),
   execution_parameters_override: unknownRecordSchema.nullable().optional(),
+  service_exec_parameters_override: unknownRecordSchema.nullable().optional(),
   expected_duration_sec_override: z.number().int().positive().nullable().optional(),
+  service_exec_expected_secs: z.number().int().positive().nullable().optional(),
   timeout_duration_sec_override: z.number().int().positive().nullable().optional(),
+  service_exec_timeout: z.number().int().positive().nullable().optional(),
+  service_exec_expected_outcome: z.unknown().nullable().optional(),
   run_phase: z.string(),
   run_condition: z.string(),
   ingredient: ingredientRecordSchema.nullable().optional(),
 });
-export type RecipeStepRecord = z.infer<typeof recipeStepRecordSchema>;
+export type RecipeStepRecord = z.infer<typeof recipeStepRecordNormalizedSchema>;
+export const recipeStepRecordSchema: z.ZodType<RecipeStepRecord> = z.preprocess((input) => {
+  if (!isRecord(input)) return input;
+  return {
+    ...input,
+    execution_payload_override: input.execution_payload_override ?? input.service_payload ?? null,
+    execution_parameters_override:
+      input.execution_parameters_override ?? input.service_exec_parameters_override ?? null,
+    expected_duration_sec_override:
+      input.expected_duration_sec_override ?? input.service_exec_expected_secs ?? null,
+    timeout_duration_sec_override:
+      input.timeout_duration_sec_override ?? input.service_exec_timeout ?? null,
+  };
+}, recipeStepRecordNormalizedSchema) as z.ZodType<RecipeStepRecord>;
+
+export const recipeIngredientStatusRecordSchema = strictObject({
+  id: z.number().int(),
+  recipe_id: z.number().int(),
+  ingredient_id: z.number().int(),
+  step_order: z.number().int(),
+  on_success: z.string(),
+  parallel_group: z.number().int(),
+  depth: z.number().int(),
+  run_phase: z.string(),
+  run_condition: z.string(),
+  service_type: z.string().nullable().optional(),
+  service_exec: z.string().nullable().optional(),
+  task_key_template: z.string().nullable().optional(),
+  ingredient_purpose: z.string().nullable().optional(),
+  ingredient_is_active: z.boolean(),
+  ingredient_is_blocking: z.boolean(),
+  expected_secs: z.number().int().nullable().optional(),
+  timeout_secs: z.number().int().nullable().optional(),
+});
+export type RecipeIngredientStatusRecord = z.infer<typeof recipeIngredientStatusRecordSchema>;
+export const recipeIngredientStatusRecordArraySchema = z.array(recipeIngredientStatusRecordSchema);
 
 export const recipeRecordSchema = strictObject({
   id: z.number().int(),
@@ -428,6 +844,22 @@ export const recipeRecordSchema = strictObject({
 export type RecipeRecord = z.infer<typeof recipeRecordSchema>;
 export const recipeRecordArraySchema = z.array(recipeRecordSchema);
 
+export const recipeStatusRecordSchema = strictObject({
+  id: z.number().int(),
+  name: z.string(),
+  description: z.string().nullable().optional(),
+  enabled: z.boolean(),
+  clear_timeout_sec: z.number().nullable().optional(),
+  can_execute: z.boolean(),
+  inactive_ingredient_count: z.number().int(),
+  step_count: z.number().int(),
+  communication_route_count: z.number().int(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type RecipeStatusRecord = z.infer<typeof recipeStatusRecordSchema>;
+export const recipeStatusRecordArraySchema = z.array(recipeStatusRecordSchema);
+
 export const deleteResponseSchema = strictObject({
   status: z.string(),
   id: z.number().int(),
@@ -435,19 +867,42 @@ export const deleteResponseSchema = strictObject({
 });
 export type DeleteResponse = z.infer<typeof deleteResponseSchema>;
 
-export const communicationRouteRequestSchema = strictObject({
+const communicationRouteRequestNormalizedSchema = strictObject({
   id: z.string().optional(),
   label: z.string().min(1),
-  execution_target: z.string().min(1),
+  service_type: z.string().min(1),
   destination_target: z.string().optional().default(""),
   provider_config: unknownRecordSchema.optional().default({}),
   enabled: z.boolean().optional().default(true),
   position: z.number().int().positive().optional().default(1),
 });
+export const communicationRouteRequestSchema = z.preprocess((input) => {
+  if (!isRecord(input)) return input;
+  const normalized = { ...input };
+  const executionTarget = normalized.execution_target;
+  delete normalized.execution_target;
+  return {
+    ...normalized,
+    service_type: normalized.service_type ?? executionTarget ?? "",
+  };
+}, communicationRouteRequestNormalizedSchema);
 export type CommunicationRouteRequest = z.infer<typeof communicationRouteRequestSchema>;
 
 export const communicationPolicyUpdateRequestSchema = strictObject({
   routes: z.array(communicationRouteRequestSchema),
+});
+
+export const uiOperatorActionRequestSchema = strictObject({
+  action: z.string().min(1).max(120),
+  surface: z.string().min(1).max(120),
+  status: z.string().max(40).optional(),
+  target: z.string().max(255).nullable().optional(),
+  details: unknownRecordSchema.optional().default({}),
+});
+export type UIOperatorActionRequest = z.infer<typeof uiOperatorActionRequestSchema>;
+
+export const uiOperatorActionResponseSchema = strictObject({
+  status: z.string(),
 });
 
 export const suppressionCreateRequestSchema = strictObject({
@@ -462,60 +917,19 @@ export const suppressionCreateRequestSchema = strictObject({
   enabled: z.boolean(),
 });
 
-export const prometheusRuleMutationResponseSchema = strictObject({
-  status: z.string(),
-  message: z.string(),
-  crd: unknownRecordSchema.nullable().optional(),
-  git: unknownRecordSchema.nullable().optional(),
-  git_error: z.string().nullable().optional(),
-});
-
-export const prometheusRuleWriteRequestSchema = z
-  .object({
-    alert: z.string().min(1).optional(),
-    record: z.string().min(1).optional(),
-    expr: z.string().min(1),
-    for: z.string().optional(),
-    labels: stringRecordSchema.optional(),
-    annotations: stringRecordSchema.optional(),
-    keep_firing_for: z.string().optional(),
-  })
-  .refine((value) => Boolean(value.alert || value.record), {
-    message: "either alert or record is required",
-  });
-
-export const ingredientCreateRequestSchema = strictObject({
-  execution_target: z.string().min(1),
-  destination_target: z.string().optional(),
-  task_key_template: z.string().min(1),
-  execution_id: z.string().nullable().optional(),
-  action_id: z.string().nullable().optional(),
-  execution_payload: unknownRecordSchema.nullable().optional(),
-  execution_parameters: unknownRecordSchema.nullable().optional(),
-  execution_engine: z.string().optional(),
-  execution_purpose: z.string().optional(),
-  ingredient_kind: z.string().nullable().optional(),
-  is_default: z.boolean().optional(),
-  is_active: z.boolean().optional(),
-  is_blocking: z.boolean().optional(),
-  expected_duration_sec: z.number().int().positive(),
-  timeout_duration_sec: z.number().int().positive().optional(),
-  retry_count: z.number().int().nonnegative().optional(),
-  retry_delay: z.number().int().nonnegative().optional(),
-  on_failure: z.string().optional(),
-});
-
-export const ingredientUpdateRequestSchema = ingredientCreateRequestSchema.partial();
-
 export const recipeStepRequestSchema = strictObject({
   ingredient_id: z.number().int().positive(),
   step_order: z.number().int().positive(),
   on_success: z.string().optional(),
   parallel_group: z.number().int().nonnegative().optional(),
   depth: z.number().int().nonnegative().optional(),
+  service_payload: unknownRecordSchema.nullable().optional(),
   execution_payload_override: unknownRecordSchema.nullable().optional(),
+  service_exec_parameters_override: unknownRecordSchema.nullable().optional(),
   execution_parameters_override: unknownRecordSchema.nullable().optional(),
+  service_exec_expected_secs: z.number().int().positive().nullable().optional(),
   expected_duration_sec_override: z.number().int().positive().nullable().optional(),
+  service_exec_timeout: z.number().int().positive().nullable().optional(),
   timeout_duration_sec_override: z.number().int().positive().nullable().optional(),
   run_phase: z.string().optional(),
   run_condition: z.string().optional(),
