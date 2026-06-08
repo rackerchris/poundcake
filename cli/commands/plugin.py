@@ -40,7 +40,11 @@ def health_cmd(ctx: click.Context, service_type: str) -> None:
 
 @plugin.command("configuration")
 @click.argument("service_type")
-@click.option("--config-json", default=None, help="JSON configuration object for PUT /plugins/{type}/configuration")
+@click.option(
+    "--config-json",
+    default=None,
+    help="JSON configuration object for PUT /plugins/{type}/configuration",
+)
 @click.option(
     "--config-file",
     type=click.Path(exists=True, path_type=Path),

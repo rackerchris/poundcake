@@ -19,7 +19,7 @@ The global dependency is `require_auth_if_enabled`, mounted on the FastAPI app. 
 
 Public paths bypass authentication even when auth is enabled:
 
-- `/`, `/metrics`, `/docs`, `/redoc`, `/openapi.json`
+- `/`, `/docs`, `/redoc`, `/openapi.json`
 - `/livez`, `/readyz`
 - `/api/v1/auth/login`, `/api/v1/auth/providers`
 - `/api/v1/auth/oidc/login`, `/api/v1/auth/oidc/callback`

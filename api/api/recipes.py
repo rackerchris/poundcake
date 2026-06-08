@@ -502,6 +502,7 @@ async def list_recipe_statuses(
 @limiter.limit(get_settings().rate_limit_default)
 @router.get("/recipes/{recipe_id}/status", response_model=RecipeStatusResponse)
 async def get_recipe_status(
+    request: Request,
     recipe_id: int,
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
@@ -520,6 +521,7 @@ async def get_recipe_status(
     response_model=List[RecipeIngredientStatusResponse],
 )
 async def list_recipe_ingredient_statuses(
+    request: Request,
     recipe_id: int,
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),

@@ -51,7 +51,7 @@ monitoring:
     url: http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093
 
 config:
-  enabledPlugins: k8s,git,github,prometheus,alertmanager,bakery,stackstorm,genestack_monitoring
+  enabledPlugins: dummy,k8s,git,github,prometheus,alertmanager,bakery,stackstorm,genestack_monitoring
 
 # Enable authentication for devstack
 auth:

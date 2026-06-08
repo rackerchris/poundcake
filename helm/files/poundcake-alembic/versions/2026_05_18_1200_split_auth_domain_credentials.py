@@ -10,7 +10,6 @@ from __future__ import annotations
 from alembic import op
 import sqlalchemy as sa
 
-
 revision = "2026_05_18_1200"
 down_revision = "2026_02_03_1600"
 branch_labels = None
@@ -96,8 +95,7 @@ def upgrade() -> None:
         unique=False,
     )
 
-    op.execute(
-        """
+    op.execute("""
         INSERT INTO adapter_credentials (
             id, service_plugin_id, credential_type, credential_key_id,
             encrypted_payload, created_at, updated_at
@@ -107,10 +105,8 @@ def upgrade() -> None:
             encrypted_payload, created_at, updated_at
         FROM service_plugin_credentials
         WHERE credential_type <> 'internal_control_plane_hmac'
-        """
-    )
-    op.execute(
-        """
+        """)
+    op.execute("""
         INSERT INTO service_identity_credentials (
             id, service_plugin_id, credential_type, credential_key_id,
             encrypted_payload, created_at, updated_at
@@ -120,8 +116,7 @@ def upgrade() -> None:
             encrypted_payload, created_at, updated_at
         FROM service_plugin_credentials
         WHERE credential_type = 'internal_control_plane_hmac'
-        """
-    )
+        """)
 
     op.drop_index(
         "ix_service_plugin_credentials_service_plugin_id",
@@ -158,8 +153,7 @@ def downgrade() -> None:
         ["service_plugin_id"],
         unique=False,
     )
-    op.execute(
-        """
+    op.execute("""
         INSERT INTO service_plugin_credentials (
             id, service_plugin_id, credential_type, credential_key_id,
             encrypted_payload, created_at, updated_at
@@ -168,10 +162,8 @@ def downgrade() -> None:
             id, service_plugin_id, credential_type, credential_key_id,
             encrypted_payload, created_at, updated_at
         FROM adapter_credentials
-        """
-    )
-    op.execute(
-        """
+        """)
+    op.execute("""
         INSERT INTO service_plugin_credentials (
             id, service_plugin_id, credential_type, credential_key_id,
             encrypted_payload, created_at, updated_at
@@ -180,8 +172,7 @@ def downgrade() -> None:
             id, service_plugin_id, credential_type, credential_key_id,
             encrypted_payload, created_at, updated_at
         FROM service_identity_credentials
-        """
-    )
+        """)
     op.drop_index(
         "ix_service_identity_credentials_service_plugin_id",
         table_name="service_identity_credentials",

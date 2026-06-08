@@ -54,7 +54,7 @@ Protected database work is exposed through PoundCake helper operations that chec
 Internal endpoints return full data. External endpoints return sanitized/redacted data. All I/O is validated against schemas.
 
 ### Auth Layers
-- **Public paths** bypass authentication: `/`, `/metrics`, `/docs`, `/redoc`, `/openapi.json`, `/livez`, `/readyz`, auth bootstrap routes, `/api/v1/webhook` (guarded by route-level bearer), `/static/*`, `OPTIONS` preflight.
+- **Public paths** bypass authentication: `/`, `/docs`, `/redoc`, `/openapi.json`, `/livez`, `/readyz`, auth bootstrap routes, `/api/v1/webhook` (guarded by route-level bearer), `/static/*`, `OPTIONS` preflight.
 - **Human sessions** resolve to `reader`, `operator`, or `admin`.
 - **Internal HMAC requests** resolve to `service` plus registered service plugin metadata.
 - **Generic service tokens** (`X-Auth-Token`, `Authorization: Bearer <service-token>`) are rejected as internal service identity. Requests must use HMAC signatures mapped to registered service plugin rows.

@@ -1,4 +1,4 @@
-""""Add allow_public_read column to adapter_credentials for credential-managed
+""" "Add allow_public_read column to adapter_credentials for credential-managed
 policy gating.
 
 Revision ID: 2026_06_02_1200
@@ -18,7 +18,6 @@ from __future__ import annotations
 from alembic import op
 import sqlalchemy as sa
 
-
 revision = "2026_06_02_1200"
 down_revision = "2026_05_22_1200"
 branch_labels = None
@@ -28,7 +27,9 @@ depends_on = None
 def upgrade() -> None:
     op.add_column(
         "adapter_credentials",
-        sa.Column("allow_public_read", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        sa.Column(
+            "allow_public_read", sa.Boolean(), nullable=False, server_default=sa.text("false")
+        ),
     )
 
 

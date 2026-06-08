@@ -87,7 +87,16 @@ def test_cli_token_uses_session_cookie(
 
     result = runner.invoke(
         cli,
-        ["--url", "http://example.test", "--token", "session-123", "--format", "json", "auth", "me"],
+        [
+            "--url",
+            "http://example.test",
+            "--token",
+            "session-123",
+            "--format",
+            "json",
+            "auth",
+            "me",
+        ],
     )
 
     assert result.exit_code == 0
@@ -118,7 +127,9 @@ def test_cli_auto_login_with_username_and_password(
                 "username": "alice",
                 "password": "secret",
             }
-            return _json_response(method, url, 200, _session_payload(session_id="new-session", username="alice"))
+            return _json_response(
+                method, url, 200, _session_payload(session_id="new-session", username="alice")
+            )
         if url.endswith("/api/v1/auth/me"):
             assert kwargs["cookies"] == {"session_token": "new-session"}
             return _json_response(method, url, 200, _me_payload(username="alice"))
@@ -177,13 +188,19 @@ def test_cli_retries_with_credentials_after_stale_stored_session(
         method = str(kwargs["method"])
         url = str(kwargs["url"])
         calls.append((method, url, dict(kwargs)))
-        if url.endswith("/api/v1/auth/me") and kwargs["cookies"] == {"session_token": "stale-session"}:
+        if url.endswith("/api/v1/auth/me") and kwargs["cookies"] == {
+            "session_token": "stale-session"
+        }:
             return _json_response(method, url, 401, {"detail": "Valid session required"})
         if url.endswith("/api/v1/auth/providers"):
             return _json_response(method, url, 200, _provider_payload())
         if url.endswith("/api/v1/auth/login"):
-            return _json_response(method, url, 200, _session_payload(session_id="fresh-session", username="alice"))
-        if url.endswith("/api/v1/auth/me") and kwargs["cookies"] == {"session_token": "fresh-session"}:
+            return _json_response(
+                method, url, 200, _session_payload(session_id="fresh-session", username="alice")
+            )
+        if url.endswith("/api/v1/auth/me") and kwargs["cookies"] == {
+            "session_token": "fresh-session"
+        }:
             return _json_response(method, url, 200, _me_payload(username="alice"))
         raise AssertionError(f"Unexpected request {method} {url} {kwargs['cookies']}")
 

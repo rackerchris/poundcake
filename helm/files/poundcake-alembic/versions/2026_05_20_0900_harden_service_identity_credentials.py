@@ -10,7 +10,6 @@ from __future__ import annotations
 from alembic import op
 import sqlalchemy as sa
 
-
 revision = "2026_05_20_0900"
 down_revision = "2026_05_18_1200"
 branch_labels = None
@@ -26,8 +25,7 @@ SERVICE_IDENTITY_VIEWS = {
 
 def _create_service_identity_views() -> None:
     for service_type, view_name in SERVICE_IDENTITY_VIEWS.items():
-        op.execute(
-            f"""
+        op.execute(f"""
             CREATE VIEW {view_name} AS
             SELECT
                 sic.id,
@@ -42,8 +40,7 @@ def _create_service_identity_views() -> None:
             WHERE sp.service_type = '{service_type}'
               AND sp.plugin_type = 'internal_plugin'
               AND sic.credential_type = 'internal_control_plane_hmac'
-            """
-        )
+            """)
 
 
 def _drop_service_identity_views() -> None:
@@ -53,9 +50,7 @@ def _drop_service_identity_views() -> None:
 
 def upgrade() -> None:
     bind = op.get_bind()
-    bind.execute(
-        sa.text(
-            """
+    bind.execute(sa.text("""
             DELETE FROM service_identity_credentials
             WHERE credential_type = 'internal_control_plane_hmac'
               AND service_plugin_id IN (
@@ -63,23 +58,16 @@ def upgrade() -> None:
                   FROM service_plugins
                   WHERE COALESCE(plugin_type, '') <> 'internal_plugin'
               )
-            """
-        )
-    )
-    duplicates = bind.execute(
-        sa.text(
-            """
+            """))
+    duplicates = bind.execute(sa.text("""
             SELECT credential_type, credential_key_id, COUNT(*) AS row_count
             FROM service_identity_credentials
             GROUP BY credential_type, credential_key_id
             HAVING COUNT(*) > 1
-            """
-        )
-    ).fetchall()
+            """)).fetchall()
     if duplicates:
         details = ", ".join(
-            f"{row.credential_type}/{row.credential_key_id}={row.row_count}"
-            for row in duplicates
+            f"{row.credential_type}/{row.credential_key_id}={row.row_count}" for row in duplicates
         )
         raise RuntimeError(
             "duplicate service identity credential key ids must be resolved before migration: "

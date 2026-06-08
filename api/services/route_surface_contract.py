@@ -42,6 +42,7 @@ GUARDED_ROUTE_PREFIXES: tuple[str, ...] = (
     "/api/v1/communications",
     "/api/v1/plugins",
     "/api/v1/suppressions",
+    "/api/v1/activity",
 )
 
 
@@ -97,6 +98,9 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
     ),
     RouteSurfaceEntry(
         "GET", "/api/v1/communications/activity/status", RouteSurface.REPORTING_STATUS, "reader"
+    ),
+    RouteSurfaceEntry(
+        "GET", "/api/v1/activity/suppressed", RouteSurface.ADMIN_OBSERVABILITY, "reader"
     ),
     RouteSurfaceEntry("GET", "/api/v1/recipes/", RouteSurface.CONFIGURATION_EDITOR, "operator"),
     RouteSurfaceEntry(

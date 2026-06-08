@@ -43,7 +43,6 @@ dependencies = [
 ]
 
 [project.scripts]
-poundcake = "cli.main:main"
 cakectl = "cli.main:main"
 
 [project.optional-dependencies]

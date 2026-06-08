@@ -19,6 +19,7 @@ from api.api.auth import require_operator, require_reader
 from api.core.database import get_db
 from api.core.logging import get_logger
 from api.core.rate_limit import limiter
+from api.core.config import get_settings
 from api.models.models import (
     AlertSuppression,
     AlertSuppressionMatcher,
@@ -226,7 +227,6 @@ async def create_suppression(
     return _to_suppression_response(refreshed)
 
 
-
 @limiter.limit(get_settings().rate_limit_default)
 @router.get("/suppressions/{suppression_id}", response_model=SuppressionDetailResponse)
 async def get_suppression_by_id(
@@ -338,10 +338,12 @@ async def cancel_suppression(
 @limiter.limit(get_settings().rate_limit_default)
 @router.get("/suppressions/{suppression_id}/stats", response_model=SuppressionStatsResponse)
 async def get_suppression_stats(
+    request: Request,
     suppression_id: int,
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
 ) -> SuppressionStatsResponse:
+    req_id = request.state.req_id
     suppression = await get_suppression(db, suppression_id)
     if not suppression:
         raise HTTPException(status_code=404, detail="Suppression not found")
@@ -359,12 +361,14 @@ async def get_suppression_stats(
 @limiter.limit(get_settings().rate_limit_default)
 @router.get("/activity/suppressed", response_model=list[SuppressedActivityResponse])
 async def get_suppressed_activity(
+    request: Request,
     params: SuppressedActivityQueryParams = Depends(
         validate_query_params(SuppressedActivityQueryParams)
     ),
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
 ) -> list[SuppressedActivityResponse]:
+    req_id = request.state.req_id
     rows = await list_suppression_activity(
         db=db,
         suppression_id=params.suppression_id,
@@ -377,9 +381,11 @@ async def get_suppressed_activity(
 @limiter.limit(get_settings().rate_limit_default)
 @router.get("/observability/overview", response_model=ObservabilityOverviewResponse)
 async def get_observability_overview(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
 ) -> ObservabilityOverviewResponse:
+    req_id = request.state.req_id
     active_suppressions = await count_active_suppressions(db)
 
     order_new = await db.scalar(

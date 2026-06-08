@@ -41,7 +41,6 @@ from api.services.route_surface_contract import (
 
 PUBLIC_ROUTES = {
     ("GET", "/"),
-    ("GET", "/metrics"),
     ("GET", "/openapi.json"),
     ("GET", "/livez"),
     ("GET", "/readyz"),
@@ -442,7 +441,6 @@ def test_removed_execution_routes_stay_removed() -> None:
         ("GET", "/api/v1/cook/executions/{execution_id}"),
         ("GET", "/api/v1/prometheus/rules"),
         ("GET", "/api/v1/prometheus/rule-groups"),
-        ("GET", "/api/v1/prometheus/metrics"),
         ("GET", "/api/v1/prometheus/labels"),
         ("GET", "/api/v1/prometheus/label-values/{label_name}"),
         ("GET", "/api/v1/prometheus/health"),

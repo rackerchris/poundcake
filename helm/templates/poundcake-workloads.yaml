@@ -256,7 +256,6 @@ spec:
               value: {{ .Values.auth.azureAd.cli.enabled | quote }}
             - name: POUNDCAKE_AUTH_AZURE_AD_CLI_CLIENT_ID
               value: {{ .Values.auth.azureAd.cli.clientId | quote }}
-            {{- end }}
             - name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
@@ -267,6 +266,7 @@ spec:
                 secretKeyRef:
                   name: poundcake-secrets
                   key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
+            {{- end }}
           ports:
             - containerPort: 8000
               name: http

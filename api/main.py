@@ -15,7 +15,6 @@ from fastapi.exceptions import RequestValidationError
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 
 from api.core.config import settings
 from api.core.rate_limit import limiter
@@ -71,7 +70,8 @@ app = FastAPI(
 
 # --- Middleware Registration ---
 if not settings.debug:
-    app.add_middleware(HTTPSRedirectMiddleware, permanent=False)
+    # Removed HTTPSRedirectMiddleware — it interferes with HTTP readiness/liveness probes
+    pass
 app.add_middleware(PreHeatMiddleware)
 
 # Inject limiter state so SlowAPI can decorate route handlers
@@ -152,7 +152,9 @@ async def validation_exception_handler(
 ) -> JSONResponse:
     """Sanitized 422 response that hides Pydantic internals."""
     req_id = getattr(request.state, "req_id", "UNKNOWN")
-    logger.warning("Request validation failed", extra={"req_id": req_id, "errors": exc.errors()}, exc_info=True)
+    logger.warning(
+        "Request validation failed", extra={"req_id": req_id, "errors": exc.errors()}, exc_info=True
+    )
     return JSONResponse(
         status_code=422,
         content={

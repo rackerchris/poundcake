@@ -61,7 +61,7 @@ tests:
           count: 0
         template: templates/poundcake-pvcs.yaml
       - hasDocuments:
-          count: 65
+          count: 78
         template: templates/poundcake-shared-mariadb.yaml
       - equal:
           path: kind

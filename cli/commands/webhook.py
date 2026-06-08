@@ -1,4 +1,4 @@
-"""Webhook commands — POST alerts to the PoundCake webhook endpoint (POST /webhook)."""
+"""Webhook commands — POST alerts to the PoundCake webhook endpoint (POST /api/v1/webhook)."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def post_cmd(
     file: Path | None,
     order_id_only: bool,
 ) -> None:
-    """POST a webhook payload to trigger a remediation order (POST /webhook)."""
+    """POST a webhook payload to trigger a remediation order (POST /api/v1/webhook)."""
     client = get_client(ctx)
     output_format = get_output_format(ctx)
 
@@ -71,5 +71,5 @@ def post_cmd(
         else:
             print_output(response, output_format)
     except PoundCakeClientError as exc:
-        print_error(f"Webhook POST failed ({client.base_url}/webhook): {exc}")
+        print_error(f"Webhook POST failed ({client.base_url}/api/v1/webhook): {exc}")
         raise click.Abort() from exc

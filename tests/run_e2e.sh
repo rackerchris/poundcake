@@ -70,6 +70,10 @@ while [ $# -gt 0 ]; do
 done
 
 export API_URL
+export CAKECTL="/Users/chris.breu/code/poundcake/.venv/bin/cakectl"
+export AUTH_USERNAME="${AUTH_USERNAME:-admin}"
+export AUTH_PASSWORD="${AUTH_PASSWORD:-cjK1c6tYTsUYf8cDHmE49FjS}"
+export WEBHOOK_BEARER_TOKEN="${WEBHOOK_BEARER_TOKEN:-vkd27OTVDoHnxenX9VAGNu0osWNNncHqtO6sNURwjHWiZyjh}"
 
 preflight() {
   require_cmd curl
@@ -365,13 +369,16 @@ run_suppressed() {
 
   order_id="$(post_alert "dummy-positive-result" "firing" "${req_id}" "${fingerprint}" "${instance}")"
   order="$(wait_for_order_status "${order_id}" "complete")"
+  local order_req_id
+  order_req_id="$(echo "${order}" | jq -r '.req_id')"
   dishes="$(collect_order_dishes "${order_id}")"
-  ingredients="$(collect_order_ingredients "${order_id}")"
-  activity="$(${CAKECTL} -u "${API_URL%/api/v1}" activity suppressed "${suppression_id}" --format json 2>/dev/null)"
+   ingredients="$(collect_order_ingredients "${order_id}")"
+   sleep 2
+   activity="$(${CAKECTL} -u "${API_URL%/api/v1}" -f json activity suppressed "${suppression_id}" 2>/dev/null)"
 
   dish_count="$(echo "${dishes}" | jq -r 'length')"
   runtime_count="$(echo "${ingredients}" | jq -r 'length')"
-  activity_count="$(echo "${activity}" | jq -r --arg req_id "${req_id}" '[.[] | select(.req_id == $req_id)] | length')"
+  activity_count="$(echo "${activity}" | jq -r --arg req_id "${order_req_id}" '[.[] | select(.req_id == $req_id)] | length')"
   if [ "${dish_count}" != "1" ] || [ "${runtime_count}" != "0" ] || [ "${activity_count}" != "1" ]; then
     log_error "Expected suppressed order to complete with one dish, no visible runtime rows, and one suppression activity row; dish_count=${dish_count}, runtime_count=${runtime_count}, activity_count=${activity_count}"
     echo "${order}" | jq . >&2

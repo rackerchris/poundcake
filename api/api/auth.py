@@ -573,11 +573,15 @@ async def refresh_session(
     """
     session_token = request.cookies.get("session_token")
     if not session_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No session cookie present")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="No session cookie present"
+        )
 
     settings = get_settings()
     if settings.auth_session_timeout == 0:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session refresh disabled")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Session refresh disabled"
+        )
 
     # Rehydrate without extending — we extend explicitly below.
     # Manually rehydrate to avoid the implicit sliding TTL logic.
@@ -587,11 +591,15 @@ async def refresh_session(
     if stored_context_or_error is None:
         if resolution_error:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=resolution_error)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session"
+        )
 
     # Ensure context is a human context (service tokens should not touch this endpoint)
     if not stored_context_or_error.is_human():
-        raise HTTPException(status_code=status.HTTP_403, detail="Service tokens cannot use this endpoint")
+        raise HTTPException(
+            status_code=status.HTTP_403, detail="Service tokens cannot use this endpoint"
+        )
 
     refresh_at = utc_now() + timedelta(seconds=settings.auth_session_timeout)
     context = stored_context_or_error
@@ -599,7 +607,9 @@ async def refresh_session(
 
     # Update stored session with new expiry and TTL, preserving _created_at
     payload = context.to_session_payload() if hasattr(context, "to_session_payload") else {}
-    payload.setdefault("_created_at", (utc_now() - timedelta(seconds=settings.auth_session_timeout)).isoformat())
+    payload.setdefault(
+        "_created_at", (utc_now() - timedelta(seconds=settings.auth_session_timeout)).isoformat()
+    )
     payload["expires_at"] = refresh_at.isoformat()
     await store.set_value("session", session_token, payload, settings.auth_session_timeout)
 

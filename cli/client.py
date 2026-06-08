@@ -256,10 +256,7 @@ class PoundCakeClient:
             use_session
             and not _refresh_attempted
             and self.session
-            and (
-                self.session.is_expired()
-                or self.session.expires_at < self._now_utc()
-            )
+            and (self.session.is_expired() or self.session.expires_at < self._now_utc())
         ):
             self.clear_session()
             if self._can_auto_login():
@@ -566,8 +563,11 @@ class PoundCakeClient:
 
     # Health and overview
     def health(self) -> HealthResponse:
-        payload = self._request("GET", "/api/v1/health")
-        return self._validate_model(payload, HealthResponse, "Unexpected health response format")
+        # /readyz is a public endpoint (no auth required) for Kubernetes health probes.
+        # We must call it directly rather than through _request which would prepend /api/v1/.
+        resp = httpx.get(f"{self.base_url}/readyz", timeout=10.0)
+        resp.raise_for_status()
+        return self._validate_model(resp.json(), HealthResponse, "Unexpected health response format")
 
     def ready(self) -> HealthResponse:
         return self.health()
@@ -870,7 +870,7 @@ class PoundCakeClient:
     # --- Helper methods for E2E tests ---
 
     def post_webhook(self, payload: JSONObject) -> Any:
-        """POST /webhook with webhook bearer auth.
+        """POST /api/v1/webhook with webhook bearer auth.
 
         Uses webhook_token (set via --webhook-token / POUNDCAKE_WEBHOOK_TOKEN).
         No session required — the route is auto-auth exempt.
@@ -881,15 +881,13 @@ class PoundCakeClient:
             )
         return self._request(
             "POST",
-            "/webhook",
+            "/api/v1/webhook",
             json=payload,
             use_session=False,
             extra_headers={"Authorization": f"Bearer {self.webhook_token}"},
         )
 
-    def configure_plugin_config(
-        self, plugin_type: str, config: JSONObject
-    ) -> JSONObject:
+    def configure_plugin_config(self, plugin_type: str, config: JSONObject) -> JSONObject:
         """PUT /plugins/{service_type}/configuration — update plugin config."""
         response = self._request(
             "PUT",
@@ -897,9 +895,7 @@ class PoundCakeClient:
             json=config,
         )
         if isinstance(response, PydanticModel):
-            return cast(
-                JSONObject, response.model_dump(mode="json", by_alias=True)
-            )
+            return cast(JSONObject, response.model_dump(mode="json", by_alias=True))
         return cast(JSONObject, response)
 
     def get_activity_suppressed(self, suppression_id: int) -> Any:

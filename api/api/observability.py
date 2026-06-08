@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -165,12 +165,14 @@ async def _load_communication_activity(
 @limiter.limit(get_settings().rate_limit_default)
 @router.get("/communications/activity", response_model=list[CommunicationActivityRecord])
 async def get_communication_activity(
+    request: Request,
     params: CommunicationActivityQueryParams = Depends(
         validate_query_params(CommunicationActivityQueryParams)
     ),
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
 ) -> list[CommunicationActivityRecord]:
+    _ = request.state.req_id
     rows = await _load_communication_activity(
         db,
         status=params.status,
@@ -187,6 +189,7 @@ async def get_communication_activity(
     response_model=list[CommunicationActivityStatusRecord],
 )
 async def get_communication_activity_status(
+    request: Request,
     params: CommunicationActivityQueryParams = Depends(
         validate_query_params(CommunicationActivityQueryParams)
     ),
@@ -219,12 +222,14 @@ async def get_communication_activity_status(
 @limiter.limit(get_settings().rate_limit_default)
 @router.get("/observability/activity", response_model=list[ObservabilityActivityRecord])
 async def get_observability_activity(
+    request: Request,
     params: ObservabilityActivityQueryParams = Depends(
         validate_query_params(ObservabilityActivityQueryParams)
     ),
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
 ) -> list[ObservabilityActivityRecord]:
+    _ = request.state.req_id
     records: list[ObservabilityActivityRecord] = []
     fetch_count = params.limit + params.offset
     effective_scope = _effective_order_scope(
@@ -364,19 +369,20 @@ async def get_observability_activity(
     return records[params.offset : params.offset + params.limit]
 
 
-
 @limiter.limit(get_settings().rate_limit_default)
 @router.get(
     "/observability/activity/status",
     response_model=list[ObservabilityActivityStatusRecord],
 )
 async def get_observability_activity_status(
+    request: Request,
     params: ObservabilityActivityQueryParams = Depends(
         validate_query_params(ObservabilityActivityQueryParams)
     ),
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
 ) -> list[ObservabilityActivityStatusRecord]:
+    _ = request.state.req_id
     records = await get_observability_activity(params=params, db=db)
     return [
         ObservabilityActivityStatusRecord(

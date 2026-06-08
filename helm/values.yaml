@@ -185,8 +185,7 @@ config:
   logFormat: console
 
   # Metrics
-  metricsEnabled: true
-  metricsPath: /metrics
+  metricsEnabled: false
 
   # Remediation settings
   defaultTimeout: 300

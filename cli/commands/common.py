@@ -22,6 +22,8 @@ _AUTO_AUTH_EXEMPT_COMMAND_SUFFIXES = (
     " api put",
     " api patch",
     " api delete",
+    " ready",
+    " health",
 )
 
 

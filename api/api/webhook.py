@@ -8,7 +8,7 @@
 
 import secrets
 
-from fastapi import APIRouter, Depends, Body, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Body, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import get_settings

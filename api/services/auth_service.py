@@ -209,9 +209,7 @@ class SessionStore:
         context.expires_at = (utc_now() + timedelta(seconds=ttl_seconds)).isoformat()
         payload = context.to_session_payload()
         payload["_created_at"] = utc_now().isoformat()
-        await self.set_value(
-            "session", context.session_id, payload, ttl_seconds
-        )
+        await self.set_value("session", context.session_id, payload, ttl_seconds)
         return context
 
     async def get_session(self, session_id: str | None) -> AuthContext | None:
@@ -1389,7 +1387,11 @@ async def rehydrate_session_context(
         return (stored, None)
 
     max_session = get_settings().auth_absolute_max_session
-    created_at_str = (stored.to_session_payload().get("_created_at") if hasattr(stored, "to_session_payload") else None)
+    created_at_str = (
+        stored.to_session_payload().get("_created_at")
+        if hasattr(stored, "to_session_payload")
+        else None
+    )
     if not created_at_str:
         created_at_str = stored.expires_at  # legacy sessions: use expires_at as worst proxy
     try:
@@ -1438,7 +1440,6 @@ def _is_public_path(path: str, method: str) -> bool:
         return True
     public_paths = {
         "/",
-        "/metrics",
         "/docs",
         "/redoc",
         "/openapi.json",

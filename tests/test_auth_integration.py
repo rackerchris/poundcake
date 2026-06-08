@@ -83,7 +83,8 @@ def _request_with_headers(
     if headers:
         base_headers.update(headers)
     raw_headers = [
-        (key.lower().encode("latin-1"), value.encode("latin-1")) for key, value in base_headers.items()
+        (key.lower().encode("latin-1"), value.encode("latin-1"))
+        for key, value in base_headers.items()
     ]
     return Request(
         {

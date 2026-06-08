@@ -108,6 +108,7 @@ class DummyExecutionAdapter(ExecutionAdapter):
             "positive_result",
             "negative_result",
             "slow_result",
+            "fast_result",
             "sleep_10",
             "health_check",
             "communication",
@@ -307,6 +308,26 @@ class DummyExecutionAdapter(ExecutionAdapter):
             return ExecutionResult(
                 service_type=self.service_type,
                 status="succeeded" if success else "failed",
+                service_exec_id=service_exec_id,
+                result=outcome,
+                raw=outcome,
+                retryable=False,
+            )
+
+        # fast_result returns immediately on first poll
+        if service_exec == "fast_result":
+            outcome: JSONObject = {
+                "success": True,
+                "status": "succeeded",
+                "message": "dummy fast execution completed",
+                "service_exec": service_exec,
+                "service_exec_id": service_exec_id,
+            }
+            if operation:
+                outcome["operation"] = operation
+            return ExecutionResult(
+                service_type=self.service_type,
+                status="succeeded",
                 service_exec_id=service_exec_id,
                 result=outcome,
                 raw=outcome,

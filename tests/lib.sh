@@ -3,10 +3,10 @@
 
 set -euo pipefail
 
-: "${API_URL:=http://localhost:8000/api/v1}"
+: "${API_URL:=http://127.0.0.1:8000/api/v1}"
 : "${API_ROOT_URL:=}"
 : "${AUTH_USERNAME:=admin}"
-: "${AUTH_PASSWORD:=poundcake-dev}"
+: "${AUTH_PASSWORD:=cjK1c6tYTsUYf8cDHmE49FjS}"
 : "${AUTH_PROVIDER:=local}"
 : "${WEBHOOK_BEARER_TOKEN:=}"
 : "${TEST_TIMEOUT_SEC:=60}"
@@ -34,6 +34,16 @@ require_cmd() {
   if ! command -v "${cmd}" >/dev/null 2>&1; then
     log_error "${cmd} is required"
     exit 1
+  fi
+}
+
+# Ensure the Kind API port-forward is active
+# This is idempotent: it only starts the process if port 8000 is not listening.
+ensure_port_forward() {
+  if ! curl -sf http://127.0.0.1:8000/readyz >/dev/null 2>&1; then
+    debug_log "starting kind port-forward to poundcake-api:8000"
+    nohup /opt/homebrew/bin/kubectl port-forward svc/poundcake-api -n poundcake 8000:8000 --address 127.0.0.1 >/dev/null 2>&1 &
+    disown
   fi
 }
 
@@ -70,13 +80,16 @@ api_request_json() {
   fi
 
   local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
+  if [ -z "${cf}" ]; then
+    cf="-u ${API_URL%/api/v1}"
+  fi
   local resp
-  resp="$(${CAKECTL} ${cf:-} --format json api request \
-    GET "${path#}" \
-    "${extra[@]}" \
-    ${body_file:+--body-file "${body_file}"})" 2>/dev/null || {
+  resp="$(${CAKECTL} ${cf:-} -f json api request \
+      $method "${path#}" \
+      ${extra[@]+"${extra[@]}"} \
+      ${body_file:+--body-file "${body_file}"})" 2>/dev/null || {
     log_error "API request failed: ${method} ${url}"
-    echo "Command was: ${CAKECTL} ${cf:-} --format json api request GET ${path#} ${body_file:+--body-file ${body_file}}" >&2
+    echo "Command was: ${CAKECTL} ${cf:-} -f json api request ${method} ${path#} ${body_file:+--body-file ${body_file}}" >&2
     rm -f "${body_file}"
     exit 1
   }
@@ -90,9 +103,12 @@ wait_for_api_ready() {
   local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
   local cake_flags="${cf:--u ${api_root}}"
   start=$(date +%s)
+
+  ensure_port_forward
+
   while true; do
     local status
-    if status=$(${CAKECTL} ${cake_flags} ready --format json 2>/dev/null); then
+    if status=$(${CAKECTL} ${cake_flags} -f json ready 2>/dev/null); then
       local ready_status
       ready_status="$(echo "${status}" | jq -r '.status // ""' 2>/dev/null || true)"
       if [ "${ready_status}" = "healthy" ]; then
@@ -115,17 +131,16 @@ authenticate_api_if_required() {
   local cake_flags="${cf:--u ${api_root}}"
 
   local providers
-  providers="$(${CAKECTL} ${cake_flags} auth providers --format json 2>/dev/null)" || return 0
+  providers="$(${CAKECTL} ${cake_flags} -f json auth providers 2>/dev/null)" || return 0
   if ! echo "${providers}" | jq -e \
     --arg provider "${AUTH_PROVIDER}" \
     '.[] | select(.name == $provider and .password_login == true)' >/dev/null 2>&1; then
     return 0
   fi
-  ${CAKECTL} ${cake_flags} auth login \
-    --provider "${AUTH_PROVIDER}" \
-    --username "${AUTH_USERNAME}" \
-    --password "${AUTH_PASSWORD}" \
-    --format json >/dev/null 2>&1
+  ${CAKECTL} ${cake_flags} -f json auth login \
+     --provider "${AUTH_PROVIDER}" \
+     --username "${AUTH_USERNAME}" \
+     --password "${AUTH_PASSWORD}" >/dev/null 2>&1
 }
 
 wait_for_plugin_health() {
@@ -134,10 +149,11 @@ wait_for_plugin_health() {
   local start now
   local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
   local cake_flags="${cf:--u ${API_URL%/api/v1}}"
+  ensure_port_forward
   start=$(date +%s)
   while true; do
     local health status
-    health="$(${CAKECTL} ${cake_flags} plugin health "${service_type}" --format json 2>/dev/null)" || true
+    health="$(${CAKECTL} ${cake_flags} -f json plugin health "${service_type}" 2>/dev/null)" || true
     status="$(echo "${health}" | jq -r '.health_status' 2>/dev/null)" || status="unknown"
     if [ "${status}" = "${expected}" ]; then
       printf '%s' "${health}"
@@ -253,7 +269,7 @@ wait_for_order_status() {
   start=$(date +%s)
   while true; do
     local order_json status
-    order_json="$(${CAKECTL} ${cake_flags} orders show "${order_id}" --format json 2>/dev/null)"
+    order_json="$(${CAKECTL} ${cake_flags} -f json orders show "${order_id}" 2>/dev/null)"
     status="$(echo "${order_json}" | jq -r '.processing_status')"
     if [ "${status}" = "${expected}" ]; then
       printf '%s' "${order_json}"
@@ -276,7 +292,7 @@ wait_for_order_terminal() {
   local cake_flags="${cf:--u ${API_URL%/api/v1}}"
   start=$(date +%s)
   while true; do
-    order_json="$(${CAKECTL} ${cake_flags} orders show "${order_id}" --format json 2>/dev/null)"
+    order_json="$(${CAKECTL} ${cake_flags} -f json orders show "${order_id}" 2>/dev/null)"
     status="$(echo "${order_json}" | jq -r '.processing_status')"
     case "${status}" in
       complete|failed|canceled)
@@ -298,15 +314,15 @@ collect_order_dishes() {
   local order_id="$1"
   local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
   local cake_flags="${cf:--u ${API_URL%/api/v1}}"
-  ${CAKECTL} ${cake_flags} dishes list --format json \
+  ${CAKECTL} ${cake_flags} -f json dishes list \
     --order-id "${order_id}" 2>/dev/null
 }
 
 collect_order_ingredients() {
   local order_id="$1"
   local dishes dish_id all_ingredients
-  dishes="$(collect_order_dishes "${order_id}")"
-  if [ "$(echo "${dishes}" | jq -r 'length')" = "0" ]; then
+  dishes="$(collect_order_dishes "${order_id}" 2>&1)"
+  if [ -z "${dishes}" ] || [ "${dishes}" = "[]" ]; then
     echo "[]"
     return 0
   fi
@@ -315,8 +331,8 @@ collect_order_ingredients() {
     [ -z "${dish_id}" ] && continue
     [ "${dish_id}" = "null" ] && continue
     local ingredients
-    ingredients="$(${CAKECTL} -u "${API_URL%/api/v1}" dishes show "${dish_id}" --format json 2>/dev/null)"
-    all_ingredients="$(printf '%s%s' "${all_ingredients}" "${ingredients}" | jq -s '[.[0][] + .[1][]]')"
+    ingredients="$(${CAKECTL} -u "${API_URL%/api/v1}" -f json dishes show "${dish_id}" 2>/dev/null | jq -c '.ingredient_status // []')"
+    all_ingredients="$(jq -n --argjson a "${all_ingredients}" --argjson b "${ingredients}" '$a + $b')"
   done <<< "$(echo "${dishes}" | jq -r '.[].id')"
   echo "${all_ingredients}"
 }
@@ -349,6 +365,6 @@ configure_webhook_token() {
     --arg token "${WEBHOOK_BEARER_TOKEN}" \
     '{config: {webhook_bearer_token: $token}}')"
 
-  ${CAKECTL} -u "${API_URL%/api/v1}" plugin configuration alertmanager \
-    --config-json "${payload}" --format json >/dev/null 2>&1
+  ${CAKECTL} -u "${API_URL%/api/v1}" -f json plugin configuration alertmanager \
+    --config-json "${payload}" >/dev/null 2>&1
 }
