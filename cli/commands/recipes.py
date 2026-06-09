@@ -14,7 +14,6 @@ from cli.commands.common import (
     compact_update_payload,
     get_client,
     get_output_format,
-
     read_mapping_file,
 )
 from cli.utils import parse_json_object, print_error, print_output, render_sections, to_plain_data

@@ -12,7 +12,6 @@ from cli.commands.common import get_client, get_output_format
 from cli.utils import (
     load_data_file,
     parse_json_object,
-    parse_json_value,
     print_error,
     print_output,
 )

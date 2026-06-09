@@ -567,7 +567,9 @@ class PoundCakeClient:
         # We must call it directly rather than through _request which would prepend /api/v1/.
         resp = httpx.get(f"{self.base_url}/readyz", timeout=10.0)
         resp.raise_for_status()
-        return self._validate_model(resp.json(), HealthResponse, "Unexpected health response format")
+        return self._validate_model(
+            resp.json(), HealthResponse, "Unexpected health response format"
+        )
 
     def ready(self) -> HealthResponse:
         return self.health()
@@ -894,7 +896,7 @@ class PoundCakeClient:
             f"/plugins/{plugin_type}/configuration",
             json=config,
         )
-        if isinstance(response, PydanticModel):
+        if isinstance(response, BaseModel):
             return cast(JSONObject, response.model_dump(mode="json", by_alias=True))
         return cast(JSONObject, response)
 

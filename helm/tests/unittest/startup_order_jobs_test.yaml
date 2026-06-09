@@ -218,6 +218,10 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: DB_PLUGIN_REGISTRY_USER
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: DB_PLUGIN_REGISTRY_USER
         documentIndex: 4
       - notContains:
           path: spec.template.spec.containers[0].env
@@ -233,11 +237,19 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: DB_SERVICE_IDENTITY_MANAGER_USER
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: DB_SERVICE_IDENTITY_MANAGER_USER
         documentIndex: 5
       - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 5
       - notContains:
           path: spec.template.spec.containers[0].env
@@ -248,11 +260,19 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: DB_CREDENTIAL_MANAGER_USER
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: DB_CREDENTIAL_MANAGER_USER
         documentIndex: 6
       - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: PLUGIN_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 6
       - notContains:
           path: spec.template.spec.containers[0].env

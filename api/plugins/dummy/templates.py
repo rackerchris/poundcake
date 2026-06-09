@@ -402,7 +402,7 @@ DUMMY_RECIPE_TEMPLATES: tuple[JSONObject, ...] = (
                 "service_exec_expected_outcome": {"success": True},
                 "run_phase": "resolving",
                 "run_condition": "always",
-            }
+            },
         ],
     },
     {

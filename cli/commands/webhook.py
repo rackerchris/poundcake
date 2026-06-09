@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -10,7 +9,7 @@ import click
 
 from cli.client import PoundCakeClientError
 from cli.commands.common import get_client, get_output_format
-from cli.utils import load_data_file, parse_json_object, print_error, print_output
+from cli.utils import parse_json_object, print_error, print_output
 
 
 @click.group(name="webhook")

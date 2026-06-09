@@ -318,11 +318,11 @@ async def test_local_superuser_login_rejects_wrong_password(
         await authenticate_password_provider("local", "testadmin", "wrongpassword")
 
 
-def test_force_secure_cookie_defaults_to_false() -> None:
-    """Verify force_secure_cookie defaults to False in config."""
+def test_force_secure_cookie_defaults_to_true() -> None:
+    """Verify force_secure_cookie defaults to True in config."""
     from api.core.config import settings
 
-    assert settings.force_secure_cookie is False
+    assert settings.force_secure_cookie is True
 
 
 def test_allowed_origins_env_parses_json_array(monkeypatch: pytest.MonkeyPatch) -> None:

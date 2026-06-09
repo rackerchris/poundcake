@@ -343,7 +343,6 @@ async def get_suppression_stats(
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
 ) -> SuppressionStatsResponse:
-    req_id = request.state.req_id
     suppression = await get_suppression(db, suppression_id)
     if not suppression:
         raise HTTPException(status_code=404, detail="Suppression not found")
@@ -368,7 +367,6 @@ async def get_suppressed_activity(
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
 ) -> list[SuppressedActivityResponse]:
-    req_id = request.state.req_id
     rows = await list_suppression_activity(
         db=db,
         suppression_id=params.suppression_id,
@@ -385,7 +383,6 @@ async def get_observability_overview(
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
 ) -> ObservabilityOverviewResponse:
-    req_id = request.state.req_id
     active_suppressions = await count_active_suppressions(db)
 
     order_new = await db.scalar(

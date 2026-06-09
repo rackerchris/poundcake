@@ -198,6 +198,7 @@ def test_dummy_templates_are_strict_service_plugin_templates() -> None:
         "positive_result",
         "negative_result",
         "slow_result",
+        "fast_result",
         "sleep_10",
         "communication",
     }

@@ -12,6 +12,8 @@ import os
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
+
+from api.core.time import utc_now
 from typing import Any
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
