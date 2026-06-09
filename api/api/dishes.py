@@ -36,7 +36,7 @@ from api.services.dish_planner import (
     build_step_task_key,
 )
 from api.services.order_types import (
-    infer_order_type,
+    require_order_type,
     order_matches_filters,
 )
 from api.types import OrderScope, OrderType
@@ -84,6 +84,34 @@ def _aware_datetime(value: datetime | None, fallback: datetime) -> datetime:
 def _rowcount(result: object) -> int:
     """Get affected row count from SQLAlchemy DML result."""
     return int(getattr(cast(Any, result), "rowcount", 0) or 0)
+
+
+def _service_type_from_request(request: Request) -> str:
+    context = getattr(request.state, "auth_context", None)
+    return str(getattr(context, "service_type", "") or "").strip().lower()
+
+
+def _require_reconcile_owner(
+    request: Request,
+    row: DishIngredient,
+    *,
+    expected_service_type: str,
+    require_runner_receipt: bool,
+) -> None:
+    caller = _service_type_from_request(request)
+    if caller != expected_service_type:
+        raise HTTPException(status_code=403, detail="Reconcile operation not permitted")
+    has_runner_receipt = _has_expediter_runner_receipt(row)
+    if require_runner_receipt and not has_runner_receipt:
+        raise HTTPException(
+            status_code=409,
+            detail="Execution reconcile is only valid for expediter-runner dispatched rows",
+        )
+    if not require_runner_receipt and has_runner_receipt:
+        raise HTTPException(
+            status_code=409,
+            detail="Timer reconcile cannot mutate expediter-runner dispatched rows",
+        )
 
 
 @asynccontextmanager
@@ -427,6 +455,9 @@ def _status_result_summary(outcome: dict[str, Any]) -> dict[str, Any] | None:
 def _serialize_admin_dish_ingredient_history(record: DishIngredient) -> DishIngredientResponse:
     """Return full runtime evidence for admins with secret-like nested keys redacted."""
     payload = DishIngredientResponse.model_validate(record).model_dump(mode="python")
+    payload["service_exec_error"] = _sanitize_status_string(str(payload.get("service_exec_error") or ""))
+    if not payload["service_exec_error"]:
+        payload["service_exec_error"] = None
     for key in (
         "service_payload",
         "service_exec_parameters",
@@ -486,10 +517,7 @@ def _serialize_dish_status(dish: Dish) -> DishStatusResponse:
         {
             "id": dish.id,
             "order_id": dish.order_id,
-            "order_type": infer_order_type(
-                raw_data=getattr(order, "raw_data", None),
-                labels=getattr(order, "labels", None),
-            ),
+            "order_type": require_order_type(getattr(order, "raw_data", None)),
             "recipe_id": dish.recipe_id,
             "recipe_name": getattr(recipe, "name", None),
             "processing_status": dish.processing_status,
@@ -518,7 +546,6 @@ def _filter_dishes(
         for dish in dishes
         if order_matches_filters(
             raw_data=getattr(getattr(dish, "order", None), "raw_data", None),
-            labels=getattr(getattr(dish, "order", None), "labels", None),
             order_scope=order_scope,
             order_type=order_type,
         )
@@ -1187,6 +1214,7 @@ async def release_dish_ingredient_poll_claim(
     response_model=DishIngredientResponse,
 )
 async def reconcile_dish_ingredient(
+    request: Request,
     dish_ingredient_id: int,
     payload: DishIngredientUpsert,
     db: AsyncSession = Depends(get_db),
@@ -1200,6 +1228,45 @@ async def reconcile_dish_ingredient(
         row = result.scalars().first()
         if row is None or row.deleted:
             raise HTTPException(status_code=404, detail="Dish ingredient not found")
+        _require_reconcile_owner(
+            request,
+            row,
+            expected_service_type="timer",
+            require_runner_receipt=False,
+        )
+        try:
+            _apply_dish_ingredient_update(row, payload)
+        except ServiceExecutionStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await db.refresh(row)
+    return DishIngredientResponse.model_validate(row)
+
+
+@router.post(
+    "/dish-ingredients/{dish_ingredient_id}/execution-reconcile",
+    response_model=DishIngredientResponse,
+)
+async def reconcile_executed_dish_ingredient(
+    request: Request,
+    dish_ingredient_id: int,
+    payload: DishIngredientUpsert,
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_service),
+) -> DishIngredientResponse:
+    """Apply expediter-runner execution results to a runner-dispatched runtime row."""
+    async with _write_transaction(db):
+        result = await db.execute(
+            select(DishIngredient).where(DishIngredient.id == dish_ingredient_id).with_for_update()
+        )
+        row = result.scalars().first()
+        if row is None or row.deleted:
+            raise HTTPException(status_code=404, detail="Dish ingredient not found")
+        _require_reconcile_owner(
+            request,
+            row,
+            expected_service_type="expediter-runner",
+            require_runner_receipt=True,
+        )
         try:
             _apply_dish_ingredient_update(row, payload)
         except ServiceExecutionStateError as exc:

@@ -44,15 +44,16 @@ cakectl --url http://localhost:8080 orders list --processing-status processing
 - `suppressions`: suppression management
 - `comm-policy`: communication policy management
 - `ingredients`: read-only ingredient template inspection
+- `plugins`: plugin inventory, health, configuration, credentials, connection tests, and Kubernetes PrometheusRule inspection
+- `scheduled-tasks`: typed scheduled task CRUD, status, and run-now controls
 - `api`: low-level authenticated API wrapper for E2E and debugging
 - `webhook`: post alerts via the webhook endpoint (POST /webhook)
-- `plugin`: manage plugin configuration and health checks
 - `activity`: view suppressed activity records
 - `ready`: check API readiness (GET /ready)
 - `health`: get full health status (GET /health)
 
-The CLI no longer exposes legacy action-template or Prometheus rule command
-families that targeted removed or out-of-contract API routes.
+The CLI no longer exposes the removed action-template or Prometheus rule
+command families that targeted out-of-contract API routes.
 
 ## E2E-Friendly API Wrapper
 
@@ -113,27 +114,54 @@ cakectl --url http://localhost:8080 --webhook-token my-token \
 
 ## Plugin Commands
 
-### Health Check
+### Inventory and Health
 
 ```bash
-cakectl --url http://localhost:8080 plugin health k8s
-# {
-#   "health_status": "healthy",
-#   "health_message": "OK",
-#   "service_type": "k8s"
-# }
+cakectl --url http://localhost:8080 plugins list
+cakectl --url http://localhost:8080 plugins show k8s
+cakectl --url http://localhost:8080 plugins health k8s
 ```
 
-### Configuration Update
+### Configuration and Credentials
 
 ```bash
-# Update via inline JSON
-cakectl --url http://localhost:8080 plugin configuration alertmanager \
-  --config-json '{"config":{"webhook_bearer_token":"new-token"}}'
+# Show non-secret configuration
+cakectl --url http://localhost:8080 plugins config show alertmanager
 
 # Update via file
-cakectl --url http://localhost:8080 plugin configuration alertmanager \
+cakectl --url http://localhost:8080 plugins config set alertmanager \
   --config-file plugin-config.json
+
+# Write credential material
+cakectl --url http://localhost:8080 plugins credentials set stackstorm \
+  --credential-type stackstorm_api_key \
+  --payload-json '{"api_key":"example"}'
+
+# Run a control-plane connection test
+cakectl --url http://localhost:8080 plugins test-connection bakery --credential-key-id default
+
+# Inspect PrometheusRule CRDs through the Kubernetes plugin
+cakectl --url http://localhost:8080 plugins k8s prometheus-rules --namespace monitoring
+```
+
+## Scheduled Task Commands
+
+```bash
+# List redacted status rows
+cakectl --url http://localhost:8080 scheduled-tasks status --service-type stackstorm
+
+# Create from inline fields
+cakectl --url http://localhost:8080 scheduled-tasks create \
+  --task-key stackstorm-health \
+  --task-type plugin_health_check \
+  --service-type stackstorm \
+  --service-exec health_check
+
+# Update one field
+cakectl --url http://localhost:8080 scheduled-tasks update 7 --run-interval-seconds 600
+
+# Request an immediate run for a plugin-manifest task
+cakectl --url http://localhost:8080 scheduled-tasks run-now 7
 ```
 
 ## Activity Commands

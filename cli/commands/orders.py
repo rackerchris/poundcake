@@ -37,32 +37,34 @@ def _order_rows(rows: list[JSONObject]) -> list[JSONObject]:
 
 
 def _order_detail_table(order: JSONObject) -> str:
-    return render_sections(
-        [
-            (
-                "Order",
-                {
-                    "id": order.get("id"),
-                    "name": order.get("alert_group_name"),
-                    "processing_status": order.get("processing_status"),
-                    "alert_status": order.get("alert_status"),
-                    "severity": order.get("severity"),
-                    "instance": order.get("instance"),
-                    "req_id": order.get("req_id"),
-                    "counter": order.get("counter"),
-                    "remediation_outcome": order.get("remediation_outcome"),
-                    "auto_close_eligible": order.get("auto_close_eligible"),
-                    "communication_route_count": order.get("communication_route_count"),
-                    "clear_timeout_sec": order.get("clear_timeout_sec"),
-                    "clear_deadline_at": order.get("clear_deadline_at"),
-                    "clear_timed_out_at": order.get("clear_timed_out_at"),
-                    "starts_at": order.get("starts_at"),
-                    "ends_at": order.get("ends_at"),
-                    "updated_at": order.get("updated_at"),
-                },
-            ),
-        ]
-    )
+    sections: list[tuple[str, object]] = [
+        (
+            "Order",
+            {
+                "id": order.get("id"),
+                "name": order.get("alert_group_name"),
+                "processing_status": order.get("processing_status"),
+                "alert_status": order.get("alert_status"),
+                "severity": order.get("severity"),
+                "instance": order.get("instance"),
+                "req_id": order.get("req_id"),
+                "counter": order.get("counter"),
+                "remediation_outcome": order.get("remediation_outcome"),
+                "auto_close_eligible": order.get("auto_close_eligible"),
+                "communication_route_count": order.get("communication_route_count"),
+                "clear_timeout_sec": order.get("clear_timeout_sec"),
+                "clear_deadline_at": order.get("clear_deadline_at"),
+                "clear_timed_out_at": order.get("clear_timed_out_at"),
+                "starts_at": order.get("starts_at"),
+                "ends_at": order.get("ends_at"),
+                "updated_at": order.get("updated_at"),
+            },
+        )
+    ]
+    labels = order.get("labels")
+    if isinstance(labels, dict) and labels:
+        sections.append(("Labels", labels))
+    return render_sections(sections)
 
 
 def _timeline_table(payload: JSONObject) -> str:
@@ -81,6 +83,31 @@ def _timeline_table(payload: JSONObject) -> str:
                     for item in payload.get("events") or []
                 ],
             ),
+        ]
+    )
+
+
+def _execution_history_table(rows: list[JSONObject]) -> str:
+    return render_sections(
+        [
+            (
+                "Order Execution History",
+                [
+                    {
+                        "id": item.get("id"),
+                        "dish_id": item.get("dish_id"),
+                        "recipe_ingredient_id": item.get("recipe_ingredient_id"),
+                        "service_type": item.get("service_type"),
+                        "service_exec": item.get("service_exec"),
+                        "status": item.get("service_exec_status"),
+                        "attempt": item.get("attempt"),
+                        "service_exec_id": item.get("service_exec_id"),
+                        "started_at": item.get("service_exec_start_time"),
+                        "completed_at": item.get("service_exec_completed_time"),
+                    }
+                    for item in rows
+                ],
+            )
         ]
     )
 
@@ -250,4 +277,19 @@ def watch_orders(
         print_success("Stopped watching orders.")
     except PoundCakeClientError as exc:
         print_error(f"Failed to watch orders: {exc}")
+        raise click.Abort() from exc
+
+
+@orders.command("execution-history")
+@click.argument("order_id", type=int)
+@click.pass_context
+def order_execution_history(ctx: click.Context, order_id: int) -> None:
+    """Show admin execution history for all dish ingredient rows in an order."""
+    client = get_client(ctx)
+    output_format = get_output_format(ctx)
+    try:
+        payload = client.get_order_execution_history(order_id)
+        print_output(payload, output_format, table_renderer=_execution_history_table)
+    except PoundCakeClientError as exc:
+        print_error(f"Failed to show order execution history: {exc}")
         raise click.Abort() from exc

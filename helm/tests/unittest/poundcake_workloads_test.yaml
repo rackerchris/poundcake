@@ -621,45 +621,6 @@ tests:
           value: registry-creds
         documentIndex: 4
 
-  - it: mounts alembic config files into poundcake-api without shadowing image migrations
-    asserts:
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[1].name
-          value: poundcake-alembic
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[1].mountPath
-          value: /app/alembic.ini
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[1].subPath
-          value: alembic.ini
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[2].mountPath
-          value: /app/alembic/env.py
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[2].subPath
-          value: env.py
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[3].mountPath
-          value: /app/alembic/script.py.mako
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.containers[0].volumeMounts[3].subPath
-          value: script.py.mako
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.volumes[1].name
-          value: poundcake-alembic
-        documentIndex: 0
-      - equal:
-          path: spec.template.spec.volumes[1].configMap.name
-          value: poundcake-alembic
-        documentIndex: 0
-
   - it: injects scoped credential keys into api and worker workloads when auth is enabled
     set:
       auth.enabled: true

@@ -405,7 +405,7 @@ def _runtime_context_entry(row: DishIngredient) -> dict:
 def _is_evidence_runtime_row(row: DishIngredient) -> bool:
     params = row.service_exec_parameters if isinstance(row.service_exec_parameters, dict) else {}
     role = str(params.get("managed_role") or "").strip().lower()
-    if role == "gather_evidence":
+    if role.startswith("gather_"):
         return True
     return bool(str(params.get("evidence_family") or "").strip())
 

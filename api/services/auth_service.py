@@ -1440,6 +1440,7 @@ def _is_public_path(path: str, method: str) -> bool:
         return True
     public_paths = {
         "/",
+        "/metrics",
         "/docs",
         "/redoc",
         "/openapi.json",
@@ -1504,7 +1505,7 @@ def _timer_runtime_path(path: str, method: str) -> bool:
             or path.endswith("/poll-release")
             or path.endswith("/reconcile")
         )
-    if path.startswith("/api/v1/dishes/") and path.endswith("/ingredients") and method == "GET":
+    if path.startswith("/api/v1/dishes/") and path.endswith("/ingredient-status") and method == "GET":
         return True
     if path.startswith("/api/v1/cook/dishes/") and path.endswith("/advance") and method == "POST":
         return True
@@ -1522,7 +1523,7 @@ def _expediter_runner_runtime_path(path: str, method: str) -> bool:
         return (
             path.endswith("/execution-claim")
             or path.endswith("/execution-release")
-            or path.endswith("/reconcile")
+            or path.endswith("/execution-reconcile")
         )
     if path.startswith("/api/v1/expediter/execute/") and method == "POST":
         return True
@@ -1583,6 +1584,12 @@ def _operator_plugin_runtime_path(path: str, method: str) -> bool:
     if not path.startswith("/api/v1/plugins/"):
         return False
     if method == "PATCH":
+        return True
+    if path.startswith("/api/v1/plugins/k8s/prometheus-rules/") and method in {"POST", "PUT"}:
+        return True
+    if path == "/api/v1/plugins/prometheus/reload" and method == "POST":
+        return True
+    if path == "/api/v1/plugins/genestack_monitoring/export-alert-updates" and method == "POST":
         return True
     if path.endswith("/configuration") and method in {"GET", "PUT"}:
         return True
@@ -1678,6 +1685,14 @@ def request_role_requirement(path: str, method: str) -> AuthRole | None:
     if path in {"/api/v1/auth/me", "/api/v1/auth/logout"}:
         return "reader"
 
+    if path == "/api/v1/settings" and normalized_method == "GET":
+        return "reader"
+
+    if path == "/api/v1/ui/operator-actions" and normalized_method == "POST":
+        return "operator"
+    if path == "/api/v1/ui/operator-actions" and normalized_method == "GET":
+        return "reader"
+
     if path == "/api/v1/communications/policy" and normalized_method == "PUT":
         return "admin"
 
@@ -1770,6 +1785,9 @@ def ensure_request_authorized(context: AuthContext, path: str, method: str) -> N
         return
     if context.role == "service":
         normalized_method = method.upper()
+        # Only registered internal service identities can use control-plane allowlists.
+        # External webhook bearer callers stay scoped to their route-level dependency and
+        # are denied if they attempt to reuse that service context elsewhere.
         if context.plugin_type == "internal_plugin":
             _require_service_credential_scope(context, "poundcake_control_plane")
         if (

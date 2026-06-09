@@ -10,9 +10,12 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.core.database import credential_manager_db_session, get_db
+from api.core.config import get_settings
+from api.core.database import get_db
+from api.core.rate_limit import limiter
 from api.core.time import utc_now_db
-from api.models.models import AdapterCredential, ScheduledTask, ServicePlugin
+from api.models.models import ScheduledTask, ServicePlugin
+from api.plugins.types import ExecutionContext
 from api.plugins.catalog import (
     get_enabled_plugin_helper_capabilities,
     get_enabled_plugins,
@@ -26,11 +29,23 @@ from api.plugins.state import (
     PLUGIN_RUN_STATE_UNKNOWN,
 )
 from api.plugins.base import ExecutionAdapter
-from api.services.credential_manager import ServicePluginCredentialError, write_adapter_credential
+from api.services.credential_manager import (
+    ServicePluginCredentialError,
+    read_adapter_credential_with_policy,
+    write_adapter_credential,
+)
+from api.services.plugin_orchestrator import ExecutionOrchestrator, get_execution_orchestrator
+from api.services.prometheus_reload import reload_prometheus_rules
 from api.schemas.schemas import (
+    GenestackAlertExportRequest,
+    PrometheusRuleDetailResponse,
     PrometheusRuleGroupSummary,
     PrometheusRuleListResponse,
+    PrometheusRuleRuleCreateRequest,
+    PrometheusRuleRuleResponse,
+    PrometheusRuleRuleUpdateRequest,
     PrometheusRuleResourceResponse,
+    RepoSyncResponse,
     ServicePluginActionResponse,
     ServicePluginConfigurationResponse,
     ServicePluginConfigurationUpdate,
@@ -240,15 +255,15 @@ async def _credential_configured(
     credential_type: str,
     credential_key_id: str = "default",
 ) -> bool:
-    async with credential_manager_db_session() as credential_db:
-        result = await credential_db.execute(
-            select(AdapterCredential).where(
-                AdapterCredential.service_plugin_id == row.id,
-                AdapterCredential.credential_type == credential_type,
-                AdapterCredential.credential_key_id == credential_key_id,
-            )
+    try:
+        result = await read_adapter_credential_with_policy(
+            service_type=row.service_type,
+            credential_type=credential_type,
+            credential_key_id=credential_key_id,
         )
-    return result.scalar_one_or_none() is not None
+    except ServicePluginCredentialError:
+        return False
+    return result is not None
 
 
 async def _external_plugin_row_or_404(
@@ -300,6 +315,28 @@ def _credential_requirement(
         if str(requirement.get("credential_type") or "").strip().lower() == normalized:
             return dict(requirement)
     return None
+
+
+async def _reload_prometheus_rule_state(
+    *,
+    db: AsyncSession,
+    orchestrator: ExecutionOrchestrator,
+    req_id: str,
+) -> None:
+    """Reload Prometheus after PrometheusRule CRD mutations."""
+
+    row, _plugin, adapter = await _external_plugin_row_or_404(db, "prometheus")
+    config = _plugin_config_from_row(row, adapter)
+    result = await reload_prometheus_rules(
+        orchestrator=orchestrator,
+        req_id=req_id,
+        operator_config=config,
+    )
+    if result.status not in {"succeeded"}:
+        raise HTTPException(
+            status_code=502,
+            detail=result.service_exec_error or "Prometheus rule reload failed",
+        )
 
 
 def _configuration_response(
@@ -377,6 +414,79 @@ def _prometheus_rule_resource_from_crd(crd: dict[str, object]) -> PrometheusRule
     )
 
 
+def _rule_identity(rule: object) -> str:
+    if not isinstance(rule, dict):
+        return ""
+    return str(rule.get("alert") or rule.get("record") or "").strip()
+
+
+def _rule_source_from_crd(crd: dict[str, object], rule_name: str) -> dict[str, object] | None:
+    metadata = crd.get("metadata") if isinstance(crd.get("metadata"), dict) else {}
+    annotations = (
+        metadata.get("annotations") if isinstance(metadata.get("annotations"), dict) else {}
+    )
+    from api.services.alert_rule_repo import load_alert_rule_sources_from_annotations
+
+    sources = load_alert_rule_sources_from_annotations(annotations)
+    source = sources.get(rule_name)
+    return source.as_annotation_value() if source is not None else None
+
+
+def _rule_from_crd(
+    crd: dict[str, object],
+    *,
+    group_name: str,
+    rule_name: str,
+) -> PrometheusRuleRuleResponse | None:
+    metadata = crd.get("metadata") if isinstance(crd.get("metadata"), dict) else {}
+    spec = crd.get("spec") if isinstance(crd.get("spec"), dict) else {}
+    groups = spec.get("groups") if isinstance(spec.get("groups"), list) else []
+    for group in groups:
+        if not isinstance(group, dict) or str(group.get("name") or "").strip() != group_name:
+            continue
+        rules = group.get("rules") if isinstance(group.get("rules"), list) else []
+        for raw_rule in rules:
+            if not isinstance(raw_rule, dict) or _rule_identity(raw_rule) != rule_name:
+                continue
+            rule_kind = "record" if str(raw_rule.get("record") or "").strip() else "alert"
+            return PrometheusRuleRuleResponse(
+                namespace=str(metadata.get("namespace") or "").strip(),
+                crd_name=str(metadata.get("name") or "").strip(),
+                group_name=group_name,
+                rule_name=rule_name,
+                rule_kind=rule_kind,
+                source=_rule_source_from_crd(crd, rule_name),
+                rule_data=dict(raw_rule),
+                checked_at=utc_now_db(),
+            )
+    return None
+
+
+def _repo_sync_response_from_result(result: dict[str, object]) -> RepoSyncResponse:
+    payload = {
+        "status": str(result.get("status") or "failed"),
+        "message": str(result.get("message") or "Plugin operation failed"),
+        "branch": result.get("branch"),
+        "pull_request": result.get("pull_request"),
+        "exported": result.get("exported"),
+        "imported": result.get("imported"),
+        "skipped": result.get("skipped"),
+        "warnings": result.get("warnings"),
+        "cleared": result.get("cleared"),
+    }
+    return RepoSyncResponse.model_validate(payload)
+
+
+def _resolved_adapter_helper(adapter: ExecutionAdapter) -> object | None:
+    helper = getattr(adapter, "helper", None)
+    if helper is not None:
+        return helper
+    resolver = getattr(adapter, "_resolve_helper", None)
+    if callable(resolver):
+        return resolver()
+    return None
+
+
 @router.get("/plugins", response_model=list[ServicePluginSummaryResponse])
 async def list_enabled_plugins(
     db: AsyncSession = Depends(get_db),
@@ -421,7 +531,7 @@ async def list_kubernetes_prometheus_rules(
     if namespace is not None:
         config["namespace"] = namespace.strip()
     configured_adapter = adapter.with_operator_config(_normalize_plugin_config(adapter, config))
-    helper = getattr(configured_adapter, "helper", None)
+    helper = _resolved_adapter_helper(configured_adapter)
     if helper is None or not hasattr(helper, "list_prometheus_rules"):
         raise HTTPException(status_code=500, detail="Kubernetes PrometheusRule helper unavailable")
     try:
@@ -444,6 +554,194 @@ async def list_kubernetes_prometheus_rules(
         recording_count=sum(item.recording_count for item in items),
         checked_at=utc_now_db(),
     )
+
+
+@router.get(
+    "/plugins/k8s/prometheus-rules/{crd_name}",
+    response_model=PrometheusRuleDetailResponse,
+)
+async def get_kubernetes_prometheus_rule(
+    crd_name: str,
+    namespace: str | None = Query(default=None, min_length=1, max_length=255),
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_reader),
+) -> PrometheusRuleDetailResponse:
+    row, _plugin, adapter = await _external_plugin_row_or_404(db, "k8s")
+    config = _plugin_config_from_row(row, adapter)
+    if namespace is not None:
+        config["namespace"] = namespace.strip()
+    configured_adapter = adapter.with_operator_config(_normalize_plugin_config(adapter, config))
+    helper = _resolved_adapter_helper(configured_adapter)
+    if helper is None or not hasattr(helper, "get_prometheus_rule"):
+        raise HTTPException(status_code=500, detail="Kubernetes PrometheusRule helper unavailable")
+    try:
+        crd = await helper.get_prometheus_rule(crd_name.strip())
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Failed to read PrometheusRule CRD: {exc}") from exc
+    if crd is None or not isinstance(crd, dict):
+        raise HTTPException(status_code=404, detail=f"PrometheusRule CRD not found: {crd_name}")
+    return PrometheusRuleDetailResponse(
+        **_prometheus_rule_resource_from_crd(crd).model_dump(),
+        checked_at=utc_now_db(),
+    )
+
+
+@router.get(
+    "/plugins/k8s/prometheus-rules/{crd_name}/rules/{rule_name}",
+    response_model=PrometheusRuleRuleResponse,
+)
+async def get_kubernetes_prometheus_rule_rule(
+    crd_name: str,
+    rule_name: str,
+    group_name: str = Query(..., min_length=1, max_length=255),
+    namespace: str | None = Query(default=None, min_length=1, max_length=255),
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_reader),
+) -> PrometheusRuleRuleResponse:
+    row, _plugin, adapter = await _external_plugin_row_or_404(db, "k8s")
+    config = _plugin_config_from_row(row, adapter)
+    if namespace is not None:
+        config["namespace"] = namespace.strip()
+    configured_adapter = adapter.with_operator_config(_normalize_plugin_config(adapter, config))
+    helper = _resolved_adapter_helper(configured_adapter)
+    if helper is None or not hasattr(helper, "get_prometheus_rule"):
+        raise HTTPException(status_code=500, detail="Kubernetes PrometheusRule helper unavailable")
+    crd = await helper.get_prometheus_rule(crd_name.strip())
+    if crd is None or not isinstance(crd, dict):
+        raise HTTPException(status_code=404, detail=f"PrometheusRule CRD not found: {crd_name}")
+    response = _rule_from_crd(crd, group_name=group_name.strip(), rule_name=rule_name.strip())
+    if response is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Rule '{rule_name}' not found in group '{group_name}' within CRD '{crd_name}'",
+        )
+    return response
+
+
+@router.put(
+    "/plugins/k8s/prometheus-rules/{crd_name}/rules/{rule_name}",
+    response_model=PrometheusRuleRuleResponse,
+)
+async def update_kubernetes_prometheus_rule_rule(
+    crd_name: str,
+    rule_name: str,
+    payload: PrometheusRuleRuleUpdateRequest,
+    request: Request,
+    namespace: str | None = Query(default=None, min_length=1, max_length=255),
+    db: AsyncSession = Depends(get_db),
+    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
+    _context: object = Depends(require_operator),
+) -> PrometheusRuleRuleResponse:
+    row, _plugin, adapter = await _external_plugin_row_or_404(db, "k8s")
+    config = _plugin_config_from_row(row, adapter)
+    if namespace is not None:
+        config["namespace"] = namespace.strip()
+    configured_adapter = adapter.with_operator_config(_normalize_plugin_config(adapter, config))
+    helper = _resolved_adapter_helper(configured_adapter)
+    if helper is None or not hasattr(helper, "update_rule_in_named_crd"):
+        raise HTTPException(status_code=500, detail="Kubernetes PrometheusRule helper unavailable")
+    result = await helper.update_rule_in_named_crd(
+        crd_name=crd_name.strip(),
+        group_name=payload.group_name.strip(),
+        rule_name=rule_name.strip(),
+        rule_data=dict(payload.rule_data),
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=str(result.get("message") or "Rule not found"))
+    await _reload_prometheus_rule_state(
+        db=db,
+        orchestrator=orchestrator,
+        req_id=getattr(request.state, "req_id", "plugin-k8s-prometheus-rule-update"),
+    )
+    crd = await helper.get_prometheus_rule(crd_name.strip())
+    if crd is None or not isinstance(crd, dict):
+        raise HTTPException(status_code=404, detail=f"PrometheusRule CRD not found: {crd_name}")
+    response = _rule_from_crd(crd, group_name=payload.group_name.strip(), rule_name=rule_name.strip())
+    if response is None:
+        raise HTTPException(status_code=500, detail="Updated rule could not be reloaded")
+    return response
+
+
+@router.post(
+    "/plugins/k8s/prometheus-rules/{crd_name}/rules",
+    response_model=PrometheusRuleRuleResponse,
+)
+async def create_kubernetes_prometheus_rule_rule(
+    crd_name: str,
+    payload: PrometheusRuleRuleCreateRequest,
+    request: Request,
+    namespace: str | None = Query(default=None, min_length=1, max_length=255),
+    db: AsyncSession = Depends(get_db),
+    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
+    _context: object = Depends(require_operator),
+) -> PrometheusRuleRuleResponse:
+    row, _plugin, adapter = await _external_plugin_row_or_404(db, "k8s")
+    config = _plugin_config_from_row(row, adapter)
+    if namespace is not None:
+        config["namespace"] = namespace.strip()
+    configured_adapter = adapter.with_operator_config(_normalize_plugin_config(adapter, config))
+    helper = _resolved_adapter_helper(configured_adapter)
+    if helper is None or not hasattr(helper, "add_rule_to_named_crd"):
+        raise HTTPException(status_code=500, detail="Kubernetes PrometheusRule helper unavailable")
+    result = await helper.add_rule_to_named_crd(
+        crd_name=crd_name.strip(),
+        group_name=payload.group_name.strip(),
+        rule_name=payload.rule_name.strip(),
+        rule_data=dict(payload.rule_data),
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=str(result.get("message") or "Rule create failed"))
+    await _reload_prometheus_rule_state(
+        db=db,
+        orchestrator=orchestrator,
+        req_id=getattr(request.state, "req_id", "plugin-k8s-prometheus-rule-create"),
+    )
+    crd = await helper.get_prometheus_rule(crd_name.strip())
+    if crd is None or not isinstance(crd, dict):
+        raise HTTPException(status_code=404, detail=f"PrometheusRule CRD not found: {crd_name}")
+    response = _rule_from_crd(
+        crd,
+        group_name=payload.group_name.strip(),
+        rule_name=payload.rule_name.strip(),
+    )
+    if response is None:
+        raise HTTPException(status_code=500, detail="Created rule could not be reloaded")
+    return response
+
+
+@router.post(
+    "/plugins/genestack_monitoring/export-alert-updates",
+    response_model=RepoSyncResponse,
+)
+async def export_genestack_alert_updates(
+    payload: GenestackAlertExportRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
+    _context: object = Depends(require_operator),
+) -> RepoSyncResponse:
+    await _external_plugin_row_or_404(db, "genestack_monitoring")
+    req_id = getattr(request.state, "req_id", "plugin-genestack-export")
+    ctx = ExecutionContext.model_validate(
+        {
+            "service_type": "genestack_monitoring",
+            "service_exec": "repo_sync",
+            "service_payload": payload.model_dump(exclude_none=True),
+            "service_exec_parameters": {"operation": "export_alert_updates"},
+            "retry_count": 0,
+            "retry_delay": 0,
+            "service_exec_timeout": 180,
+            "context": {},
+            "req_id": req_id,
+        }
+    )
+    result = await orchestrator.dispatch(ctx)
+    if result.status not in {"succeeded", "running"} or not isinstance(result.result, dict):
+        raise HTTPException(
+            status_code=502,
+            detail=result.service_exec_error or "Genestack alert export failed",
+        )
+    return _repo_sync_response_from_result(result.result)
 
 
 @router.get("/plugins/{service_type}", response_model=ServicePluginResponse)
@@ -723,13 +1021,16 @@ async def update_plugin_credential(
     "/plugins/{service_type}/test-connection",
     response_model=ServicePluginActionResponse,
 )
+@limiter.limit(get_settings().rate_limit_default)
 async def test_plugin_connection(
     service_type: str,
+    request: Request,
     payload: ServicePluginConnectionTestRequest,
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_operator),
 ) -> ServicePluginActionResponse:
     """Run an external plugin control-plane connection check."""
+    _ = request.state.req_id
     row, _plugin, adapter = await _external_plugin_row_or_404(db, service_type)
     config = _normalize_plugin_config(
         adapter, payload.config or _plugin_config_from_row(row, adapter)
@@ -763,6 +1064,46 @@ async def test_plugin_connection(
             "latency_ms": row.health_latency_ms,
             "config": config,
             **(health.details or {}),
+        },
+        checked_at=now,
+    )
+
+
+@router.post(
+    "/plugins/prometheus/reload",
+    response_model=ServicePluginActionResponse,
+)
+@limiter.limit(get_settings().rate_limit_default)
+async def reload_prometheus_plugin_rule_state(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
+    _context: object = Depends(require_operator),
+) -> ServicePluginActionResponse:
+    """Trigger a manual Prometheus rule/config reload."""
+
+    row, _plugin, adapter = await _external_plugin_row_or_404(db, "prometheus")
+    config = _plugin_config_from_row(row, adapter)
+    now = utc_now_db()
+    result = await reload_prometheus_rules(
+        orchestrator=orchestrator,
+        req_id=getattr(request.state, "req_id", "plugin-prometheus-reload"),
+        operator_config=config,
+    )
+    if result.status != "succeeded":
+        raise HTTPException(
+            status_code=502,
+            detail=result.service_exec_error or "Prometheus rule reload failed",
+        )
+    outcome = result.result if isinstance(result.result, dict) else {}
+    message = str(outcome.get("message") or "Prometheus rule state reloaded")
+    return ServicePluginActionResponse(
+        service_type=row.service_type,
+        status=str(outcome.get("status") or "success"),
+        message=message,
+        details={
+            "config": config,
+            **outcome,
         },
         checked_at=now,
     )

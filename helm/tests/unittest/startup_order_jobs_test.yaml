@@ -16,7 +16,7 @@ tests:
         documentIndex: 1
       - equal:
           path: metadata.name
-          value: poundcake-migrate
+          value: poundcake-bootstrap-schema
         documentIndex: 2
       - equal:
           path: metadata.name
@@ -37,7 +37,11 @@ tests:
       - equal:
           path: spec.ttlSecondsAfterFinished
           value: 300
-        documentIndex: 0
+          documentIndex: 0
+      - equal:
+          path: spec.ttlSecondsAfterFinished
+          value: 300
+        documentIndex: 3
       - equal:
           path: spec.ttlSecondsAfterFinished
           value: 300
@@ -51,12 +55,12 @@ tests:
           value: 300
         documentIndex: 6
 
-  - it: runs PoundCake migrations and split bootstrap stages with isolated personas
+  - it: runs split bootstrap stages with isolated personas
     asserts:
       - matchRegex:
           path: spec.template.spec.containers[0].command[2]
-          pattern: "alembic upgrade head"
-        documentIndex: 2
+          pattern: "api.scripts.bootstrap_schema"
+        documentIndex: 3
       - matchRegex:
           path: spec.template.spec.containers[0].command[2]
           pattern: "api.scripts.bootstrap_plugin_registry"
@@ -78,7 +82,7 @@ tests:
       - equal:
           path: spec.template.spec.serviceAccountName
           value: poundcake-startup
-        documentIndex: 0
+          documentIndex: 0
 
   - it: disables Kubernetes service environment variable injection
     asserts:
@@ -125,11 +129,11 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].image
           value: example/poundcake:test
-        documentIndex: 4
+        documentIndex: 3
       - equal:
           path: spec.template.spec.imagePullSecrets[0].name
           value: regcred
-        documentIndex: 4
+        documentIndex: 3
       - equal:
           path: spec.template.spec.containers[0].image
           value: example/poundcake:test
@@ -155,6 +159,10 @@ tests:
           path: spec.ttlSecondsAfterFinished
           value: 60
         documentIndex: 0
+      - equal:
+          path: spec.ttlSecondsAfterFinished
+          value: 60
+        documentIndex: 3
       - equal:
           path: spec.ttlSecondsAfterFinished
           value: 60
@@ -218,6 +226,10 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: DB_PLUGIN_REGISTRY_USER
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: DB_PLUGIN_REGISTRY_USER
         documentIndex: 4
       - notContains:
           path: spec.template.spec.containers[0].env
@@ -233,11 +245,19 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: DB_SERVICE_IDENTITY_MANAGER_USER
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: DB_SERVICE_IDENTITY_MANAGER_USER
         documentIndex: 5
       - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 5
       - notContains:
           path: spec.template.spec.containers[0].env
@@ -248,11 +268,19 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: DB_CREDENTIAL_MANAGER_USER
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: DB_CREDENTIAL_MANAGER_USER
         documentIndex: 6
       - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: PLUGIN_CREDENTIAL_ENCRYPTION_KEY
         documentIndex: 6
       - notContains:
           path: spec.template.spec.containers[0].env

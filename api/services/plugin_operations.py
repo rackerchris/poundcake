@@ -30,10 +30,12 @@ from api.services.database_access import (
     principal_for_internal_service,
     require_database_capability,
 )
+from api.services.capability_resolution import resolve_active_capability_ingredient
 from api.types import JSONObject
 from sqlalchemy import select
 
 _UNSET = object()
+_MANAGED_STEP_MARKERS = frozenset({"managed-by:poundcake-genestack-monitoring"})
 
 # ---------------------------------------------------------------------------
 # Data Models — lightweight, no SQLAlchemy dependencies
@@ -85,6 +87,17 @@ class UpsertStats:
     updated: int
     deleted: int
     skipped: int
+
+
+@dataclass(frozen=True)
+class RecipeManagementState:
+    """Recipe ownership and lifecycle metadata exposed to adapters."""
+
+    name: str
+    exists: bool
+    managed: bool
+    enabled: bool
+    deleted: bool
 
 
 # ---------------------------------------------------------------------------
@@ -227,17 +240,23 @@ async def upsert_recipes(
                 result = await db.execute(
                     select(RecipeIngredient).where(RecipeIngredient.recipe_id == recipe_id)
                 )
-                existing_steps: dict[int, RecipeIngredient] = {}
-                for step_row in result.scalars().all():
-                    params = getattr(step_row, "service_exec_parameters_override", None)
-                    if not isinstance(params, dict):
+                existing_steps: dict[tuple[str, int], list[RecipeIngredient]] = {}
+                stale_duplicate_step_ids: list[int] = []
+                existing_rows = sorted(
+                    result.scalars().all(),
+                    key=lambda row: (int(getattr(row, "step_order", 0) or 0), int(row.id)),
+                )
+                for step_row in existing_rows:
+                    step_key = _managed_recipe_step_key(step_row)
+                    if step_key is None:
                         continue
-                    if params.get("managed_by") != (MANAGED_REMEDIATION_MARKER or ""):
+                    bucket = existing_steps.setdefault(step_key, [])
+                    if bucket:
+                        stale_duplicate_step_ids.append(int(step_row.id))
                         continue
-                    existing_steps[int(step_row.ingredient_id)] = step_row
+                    bucket.append(step_row)
 
-                # Build target ingredient_ids from the payload.
-                target_ingredient_ids: set[int] = set()
+                matched_step_ids: set[int] = set()
                 for idx, step in enumerate(recipe_payload.steps, start=1):
                     ingredient = ingredient_map.get(
                         (
@@ -250,9 +269,10 @@ async def upsert_recipes(
                         continue
 
                     ingredient_id = int(ingredient.id)
-                    target_ingredient_ids.add(ingredient_id)
+                    step_key = ("index", idx)
+                    existing_bucket = existing_steps.get(step_key, [])
 
-                    if ingredient_id not in existing_steps:
+                    if not existing_bucket:
                         ri = RecipeIngredient(
                             recipe_id=recipe_id,
                             ingredient_id=ingredient_id,
@@ -272,7 +292,8 @@ async def upsert_recipes(
                         )
                         db.add(ri)
                     else:
-                        ri = existing_steps[ingredient_id]
+                        ri = existing_bucket.pop(0)
+                        matched_step_ids.add(int(ri.id))
                         ri.ingredient_id = ingredient_id
                         ri.step_order = idx * 10
                         ri.on_success = step.on_success
@@ -287,9 +308,17 @@ async def upsert_recipes(
                         ri.run_condition = step.run_condition
 
                 # Delete managed RecipeIngredients no longer in payload.
-                for ingredient_id, ri in existing_steps.items():
-                    if ingredient_id not in target_ingredient_ids:
-                        await db.delete(ri)
+                stale_step_ids = set(stale_duplicate_step_ids)
+                for rows in existing_steps.values():
+                    for ri in rows:
+                        if int(ri.id) not in matched_step_ids:
+                            stale_step_ids.add(int(ri.id))
+                if stale_step_ids:
+                    for stale_step_id in sorted(stale_step_ids):
+                        stale_row = await db.get(RecipeIngredient, stale_step_id)
+                        if stale_row is None:
+                            continue
+                        await db.delete(stale_row)
                         deleted += 1
 
     return UpsertStats(created=created, updated=updated, deleted=deleted, skipped=skipped)
@@ -302,6 +331,29 @@ def _is_managed(recipe: Recipe) -> bool:
     """Return ``True`` when the recipe description carries a managed marker."""
     description = str(recipe.description or "")
     return "managed-by:" in description
+
+
+def _managed_step_marker_matches(value: object) -> bool:
+    normalized = str(value or "").strip()
+    return normalized in _MANAGED_STEP_MARKERS
+
+
+def _managed_recipe_step_key(step_row: RecipeIngredient) -> tuple[str, int] | None:
+    params = getattr(step_row, "service_exec_parameters_override", None)
+    if not isinstance(params, dict):
+        return None
+    if not _managed_step_marker_matches(params.get("managed_by")):
+        return None
+    managed_index = params.get("managed_index")
+    try:
+        if managed_index is not None:
+            return ("index", int(managed_index))
+    except (TypeError, ValueError):
+        pass
+    try:
+        return ("step_order", int(getattr(step_row, "step_order", 0) or 0))
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +403,101 @@ async def get_ingredient(
         }
 
 
+async def resolve_capability_ingredient(
+    *,
+    requester_service_type: str,
+    capability: JSONObject,
+) -> JSONObject | None:
+    """Resolve one normalized capability to an active immutable ingredient."""
+
+    _require_capability(requester_service_type, "service-plugin:read")
+
+    async with plugin_operation_db_session() as db:
+        resolved = await resolve_active_capability_ingredient(db, capability=capability)
+    if resolved is None:
+        return None
+    ingredient = resolved.ingredient
+    return {
+        "capability_id": resolved.capability_id,
+        "service_type": resolved.service_type,
+        "mode": resolved.mode,
+        "operation": resolved.operation,
+        "priority": resolved.priority,
+        "defaults": resolved.defaults,
+        "ingredient": {
+            "id": int(ingredient.id),
+            "service_type": ingredient.service_type,
+            "service_exec": ingredient.service_exec,
+            "destination_target": ingredient.destination_target or "",
+            "task_key_template": ingredient.task_key_template,
+            "ingredient_purpose": ingredient.ingredient_purpose,
+            "is_active": bool(ingredient.is_active),
+            "default_expected_secs": int(ingredient.default_expected_secs),
+            "default_timeout": (
+                int(ingredient.default_timeout) if ingredient.default_timeout else None
+            ),
+            "retry_count": int(ingredient.retry_count),
+            "on_failure": ingredient.on_failure,
+        },
+    }
+
+
+async def list_service_plugin_configs(
+    *,
+    requester_service_type: str,
+) -> dict[str, JSONObject]:
+    """Return enabled plugin operator configs keyed by service_type."""
+
+    _require_capability(requester_service_type, "service-plugin:read")
+
+    async with plugin_operation_db_session() as db:
+        result = await db.execute(
+            select(ServicePlugin).where(ServicePlugin.enabled.is_(True))
+        )
+        rows = result.scalars().all()
+    configs: dict[str, JSONObject] = {}
+    for row in rows:
+        config = getattr(row, "plugin_config", None)
+        if not isinstance(config, dict):
+            continue
+        configs[str(row.service_type or "").strip().lower()] = dict(config)
+    return configs
+
+
+async def list_recipe_management_states(
+    *,
+    requester_service_type: str,
+    recipe_names: list[str],
+) -> dict[str, RecipeManagementState]:
+    """Return recipe ownership state keyed by recipe name."""
+
+    _require_capability(requester_service_type, "service-plugin:read")
+
+    normalized_names = sorted(
+        {str(recipe_name or "").strip() for recipe_name in recipe_names if str(recipe_name or "").strip()}
+    )
+    if not normalized_names:
+        return {}
+
+    async with plugin_operation_db_session() as db:
+        result = await db.execute(select(Recipe).where(Recipe.name.in_(normalized_names)))
+        rows = result.scalars().all()
+
+    states: dict[str, RecipeManagementState] = {}
+    for row in rows:
+        name = str(getattr(row, "name", "") or "").strip()
+        if not name:
+            continue
+        states[name] = RecipeManagementState(
+            name=name,
+            exists=True,
+            managed=_is_managed(row),
+            enabled=bool(getattr(row, "enabled", False)),
+            deleted=bool(getattr(row, "deleted", False)),
+        )
+    return states
+
+
 # ---------------------------------------------------------------------------
 # Service plugin state update
 # ---------------------------------------------------------------------------
@@ -368,6 +515,8 @@ async def update_service_plugin_state(
     last_health_check_at: datetime | None | object = _UNSET,
     last_success_at: datetime | None | object = _UNSET,
     consecutive_failures: int | object = _UNSET,
+    enabled: bool | object = _UNSET,
+    status_message: str | None | object = _UNSET,
 ) -> bool:
     """Update protected ``service_plugins`` state through the DB helper boundary."""
 
@@ -384,8 +533,12 @@ async def update_service_plugin_state(
 
         if plugin_config is not _UNSET:
             row.plugin_config = plugin_config
+        if enabled is not _UNSET:
+            row.enabled = bool(enabled)
         if health_status is not _UNSET:
             row.health_status = str(health_status)
+        if status_message is not _UNSET:
+            row.status_message = status_message
         if health_message is not _UNSET:
             row.health_message = health_message
         if health_error_code is not _UNSET:
@@ -409,6 +562,49 @@ async def update_service_plugin_state(
                 row.consecutive_failures = int(row.consecutive_failures or 0) + 1
 
         row.updated_at = utc_now_db()
+        await db.commit()
+
+    return True
+
+
+async def disable_service_plugin_and_tasks(
+    *,
+    requester_service_type: str,
+    service_type: str,
+    health_status: str = "disabled",
+    status_message: str | None = None,
+    task_status: str = "disabled",
+) -> bool:
+    """Disable a service plugin and all of its scheduled tasks."""
+
+    _require_capability(requester_service_type, "service-plugin:update-status")
+    _require_capability(requester_service_type, "app:data-write")
+
+    normalized = service_type.strip().lower()
+    now = utc_now_db()
+    async with plugin_operation_db_session() as db:
+        result = await db.execute(
+            select(ServicePlugin).where(ServicePlugin.service_type == normalized)
+        )
+        row = result.scalars().first()
+        if row is None:
+            return False
+
+        row.enabled = False
+        row.health_status = str(health_status)
+        row.status_message = status_message
+        row.updated_at = now
+
+        task_result = await db.execute(
+            select(ScheduledTask).where(ScheduledTask.service_type == normalized)
+        )
+        for task in task_result.scalars().all():
+            task.is_enabled = False
+            task.status = task_status
+            task.next_run_at = None
+            task.updated_at = now
+
+        await db.commit()
 
     return True
 

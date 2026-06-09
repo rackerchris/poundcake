@@ -72,7 +72,7 @@ async def liveness_check() -> LivenessResponse:
     return LivenessResponse(status="alive", version=settings.app_version)
 
 
-@router.get("/ready", response_model=HealthResponse, response_model_exclude_none=True)
+@router.get("/ready", response_model=HealthResponse)
 async def readiness_check(
     response: Response,
     db: AsyncSession = Depends(get_db),
@@ -86,7 +86,7 @@ async def readiness_check(
     return health
 
 
-@router.get("/health", response_model=HealthResponse, response_model_exclude_none=True)
+@router.get("/health", response_model=HealthResponse)
 async def health_check(
     response: Response,
     db: AsyncSession = Depends(get_db),
@@ -99,7 +99,7 @@ async def health_check(
     return health
 
 
-@router.get("/health/status", response_model=HealthResponse, response_model_exclude_none=True)
+@router.get("/health/status", response_model=HealthResponse)
 async def health_status(
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),

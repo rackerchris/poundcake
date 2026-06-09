@@ -9,7 +9,7 @@ AUTH_PASSWORD_WAS_SET="${AUTH_PASSWORD+x}"
 WEBHOOK_BEARER_TOKEN_WAS_SET="${WEBHOOK_BEARER_TOKEN+x}"
 source "${SCRIPT_DIR}/lib.sh"
 
-NAMESPACE="${NAMESPACE:-poundcake}"
+POUNDCAKE_NAMESPACE="${POUNDCAKE_NAMESPACE:-poundcake}"
 STACKSTORM_NAMESPACE="${STACKSTORM_NAMESPACE:-stackstorm}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-10m}"
 API_LOCAL_PORT="${API_LOCAL_PORT:-18000}"
@@ -181,20 +181,20 @@ require_cmd jq
 log "waiting for StackStorm and PoundCake deployments"
 "$KUBECTL_BIN" -n "$STACKSTORM_NAMESPACE" wait --for=condition=Available deployment/stackstorm-api --timeout="$WAIT_TIMEOUT"
 "$KUBECTL_BIN" -n "$STACKSTORM_NAMESPACE" wait --for=condition=Available deployment/stackstorm-auth --timeout="$WAIT_TIMEOUT"
-"$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=Available deployment/poundcake-api --timeout="$WAIT_TIMEOUT"
-"$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=Available deployment/poundcake-dishwasher --timeout="$WAIT_TIMEOUT"
-"$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=Available deployment/poundcake-prep-chef --timeout="$WAIT_TIMEOUT"
-"$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=Available deployment/poundcake-timer --timeout="$WAIT_TIMEOUT"
+"$KUBECTL_BIN" -n "$POUNDCAKE_NAMESPACE" wait --for=condition=Available deployment/poundcake-api --timeout="$WAIT_TIMEOUT"
+"$KUBECTL_BIN" -n "$POUNDCAKE_NAMESPACE" wait --for=condition=Available deployment/poundcake-dishwasher --timeout="$WAIT_TIMEOUT"
+"$KUBECTL_BIN" -n "$POUNDCAKE_NAMESPACE" wait --for=condition=Available deployment/poundcake-prep-chef --timeout="$WAIT_TIMEOUT"
+"$KUBECTL_BIN" -n "$POUNDCAKE_NAMESPACE" wait --for=condition=Available deployment/poundcake-timer --timeout="$WAIT_TIMEOUT"
 
 if [ "$CONFIGURE_STACKSTORM_ADAPTER" = "true" ]; then
     log "configuring PoundCake StackStorm adapter credentials and service URL"
-    NAMESPACE="$NAMESPACE" STACKSTORM_NAMESPACE="$STACKSTORM_NAMESPACE" \
+    POUNDCAKE_NAMESPACE="$POUNDCAKE_NAMESPACE" STACKSTORM_NAMESPACE="$STACKSTORM_NAMESPACE" \
         "$PROJECT_ROOT/helm/devstack/configure-stackstorm-adapter.sh"
 fi
 
 export API_ROOT_URL="http://127.0.0.1:${API_LOCAL_PORT}"
 export API_URL="${API_ROOT_URL}/api/v1"
-start_port_forward api "$NAMESPACE" svc/poundcake-api "${API_LOCAL_PORT}:8000"
+start_port_forward api "$POUNDCAKE_NAMESPACE" svc/poundcake-api "${API_LOCAL_PORT}:8000"
 start_port_forward stackstorm-api "$STACKSTORM_NAMESPACE" svc/stackstorm-api "${STACKSTORM_API_LOCAL_PORT}:9101"
 wait_for_port 127.0.0.1 "$API_LOCAL_PORT" poundcake-api
 wait_for_port 127.0.0.1 "$STACKSTORM_API_LOCAL_PORT" stackstorm-api
@@ -202,11 +202,11 @@ wait_for_port 127.0.0.1 "$STACKSTORM_API_LOCAL_PORT" stackstorm-api
 log "waiting for PoundCake API readiness and StackStorm plugin health"
 wait_for_api_ready
 if [ -z "$AUTH_PASSWORD_WAS_SET" ]; then
-    AUTH_PASSWORD="$(secret_value "$NAMESPACE" "poundcake-admin" "password")"
+    AUTH_PASSWORD="$(secret_value "$POUNDCAKE_NAMESPACE" "poundcake-admin" "password")"
     export AUTH_PASSWORD
 fi
 if [ -z "$WEBHOOK_BEARER_TOKEN_WAS_SET" ]; then
-    WEBHOOK_BEARER_TOKEN="$(secret_value "$NAMESPACE" "poundcake-secrets" "WEBHOOK_BEARER_TOKEN")"
+    WEBHOOK_BEARER_TOKEN="$(secret_value "$POUNDCAKE_NAMESPACE" "poundcake-secrets" "WEBHOOK_BEARER_TOKEN")"
     export WEBHOOK_BEARER_TOKEN
 fi
 STACKSTORM_API_KEY="$(secret_value "$STACKSTORM_NAMESPACE" "stackstorm-apikeys" "st2_api_key")"

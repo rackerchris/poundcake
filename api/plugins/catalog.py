@@ -8,11 +8,13 @@ from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from api.plugins.capabilities import apply_operator_capability_overrides
 from api.plugins.manifest import (
     ServicePlugin,
     ServicePluginManifestError,
     validate_service_plugin,
 )
+from api.services.capability_resolution import communication_routes_from_capability_catalog
 from api.types import JSONObject
 
 if TYPE_CHECKING:
@@ -26,7 +28,10 @@ PLUGIN_ROOT = Path(__file__).resolve().parent
 def _enabled_plugin_names() -> list[str]:
     configured = os.getenv("POUNDCAKE_ENABLED_PLUGINS", DEFAULT_ENABLED_PLUGINS)
     names = [item.strip().lower() for item in configured.split(",") if item.strip()]
-    return names or [DEFAULT_ENABLED_PLUGINS]
+    enabled = names or [DEFAULT_ENABLED_PLUGINS]
+    if "bakery" in enabled and "dummy" in enabled:
+        enabled = [name for name in enabled if name != "dummy"]
+    return enabled
 
 
 def _discover_plugin_modules() -> dict[str, str]:
@@ -127,11 +132,10 @@ def get_enabled_plugin_recipe_templates() -> list[JSONObject]:
 
 
 def get_enabled_plugin_communication_routes() -> list[JSONObject]:
-    """Return default communication routes advertised by enabled built-in plugins."""
-    routes: list[JSONObject] = []
-    for plugin in get_enabled_plugins():
-        routes.extend(plugin.communication_routes)
-    return _clone_templates(routes)
+    """Return default communication routes derived from enabled capabilities."""
+    return communication_routes_from_capability_catalog(
+        build_enabled_plugin_capability_catalog()
+    )
 
 
 def get_enabled_plugin_scheduled_task_templates() -> list[JSONObject]:
@@ -140,6 +144,42 @@ def get_enabled_plugin_scheduled_task_templates() -> list[JSONObject]:
     for plugin in get_enabled_plugins():
         tasks.extend(plugin.scheduled_tasks)
     return _clone_templates(tasks)
+
+
+def get_enabled_plugin_capability_templates() -> list[JSONObject]:
+    """Return capability templates advertised by enabled built-in plugins."""
+    templates: list[JSONObject] = []
+    for plugin in get_enabled_plugins():
+        templates.extend(plugin.capability_templates)
+    return _clone_templates(templates)
+
+
+def build_enabled_plugin_capability_catalog(
+    plugin_configs: dict[str, JSONObject] | None = None,
+) -> list[JSONObject]:
+    """Return the normalized capability catalog for enabled plugins."""
+    configs = {
+        str(key).strip().lower(): value
+        for key, value in (plugin_configs or {}).items()
+        if isinstance(value, dict)
+    }
+    catalog: list[JSONObject] = []
+    for plugin in get_enabled_plugins():
+        operator_config = configs.get(plugin.service_type.strip().lower())
+        for template in plugin.capability_templates:
+            catalog.append(
+                apply_operator_capability_overrides(
+                    template,
+                    operator_config=operator_config,
+                )
+            )
+    return sorted(
+        _clone_templates(catalog),
+        key=lambda item: (
+            str(item.get("service_type") or "").strip().lower(),
+            str(item.get("capability_id") or "").strip().lower(),
+        ),
+    )
 
 
 def get_enabled_plugin_helpers() -> dict[str, object]:

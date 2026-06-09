@@ -4,21 +4,33 @@ from __future__ import annotations
 
 from shared.types import JSONObject
 
-
 import click
 
 from cli.client import PoundCakeClientError
 from cli.commands.common import get_client, get_output_format
-from cli.utils import print_error, print_output, render_sections
+from cli.utils import print_error, print_output, render_sections, to_plain_data
 
 
-def _ingredient_row(item: JSONObject) -> list[JSONObject]:
+def _ingredient_row(item: JSONObject) -> JSONObject:
     return {
         "id": item.get("id"),
         "service_type": item.get("service_type"),
         "service_exec": item.get("service_exec"),
         "purpose": item.get("ingredient_purpose"),
         "is_active": item.get("is_active"),
+        "updated_at": item.get("updated_at"),
+    }
+
+
+def _ingredient_status_row(item: JSONObject) -> JSONObject:
+    return {
+        "id": item.get("id"),
+        "service_type": item.get("service_type"),
+        "service_exec": item.get("service_exec"),
+        "task_key_template": item.get("task_key_template"),
+        "ingredient_purpose": item.get("ingredient_purpose"),
+        "is_active": item.get("is_active"),
+        "default_timeout": item.get("default_timeout"),
         "updated_at": item.get("updated_at"),
     }
 
@@ -45,6 +57,17 @@ def _ingredient_detail_table(item: JSONObject) -> str:
                     "updated_at": item.get("updated_at"),
                 },
             ),
+            (
+                "Execution Contract",
+                {
+                    "service_exec_parameters": item.get("service_exec_parameters"),
+                    "service_exec_expected_outcome_default": item.get(
+                        "service_exec_expected_outcome_default"
+                    ),
+                },
+            ),
+            ("Payload Schema", item.get("payload_schema") or {}),
+            ("Payload Template", item.get("service_payload_template") or {}),
         ]
     )
 
@@ -92,4 +115,24 @@ def show_ingredient(ctx: click.Context, ingredient_id: int) -> None:
         print_output(item, output_format, table_renderer=_ingredient_detail_table)
     except PoundCakeClientError as exc:
         print_error(f"Failed to show ingredient: {exc}")
+        raise click.Abort() from exc
+
+
+@ingredients.command("status")
+@click.option("--limit", type=int, default=500, show_default=True)
+@click.option("--offset", type=int, default=0, show_default=True)
+@click.pass_context
+def ingredient_status(ctx: click.Context, limit: int, offset: int) -> None:
+    """List reader-safe ingredient status rows."""
+    client = get_client(ctx)
+    output_format = get_output_format(ctx)
+    try:
+        items = client.list_ingredient_statuses(limit=limit, offset=offset)
+        rows = [_ingredient_status_row(item) for item in to_plain_data(items)]
+        if output_format == "table":
+            print_output(rows, output_format)
+            return
+        print_output(items, output_format)
+    except PoundCakeClientError as exc:
+        print_error(f"Failed to list ingredient status: {exc}")
         raise click.Abort() from exc

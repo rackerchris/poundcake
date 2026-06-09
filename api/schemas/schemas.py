@@ -281,6 +281,34 @@ class PrometheusRuleResourceResponse(BaseModel):
     raw: JSONObject = Field(default_factory=dict)
 
 
+class PrometheusRuleDetailResponse(PrometheusRuleResourceResponse):
+    service_type: str = "k8s"
+    checked_at: datetime
+
+
+class PrometheusRuleRuleResponse(BaseModel):
+    service_type: str = "k8s"
+    namespace: str
+    crd_name: str
+    group_name: str
+    rule_name: str
+    rule_kind: str
+    source: Optional[JSONObject] = None
+    rule_data: JSONObject = Field(default_factory=dict)
+    checked_at: datetime
+
+
+class PrometheusRuleRuleUpdateRequest(BaseModel):
+    group_name: str = Field(..., min_length=1, max_length=255)
+    rule_data: JSONObject
+
+
+class PrometheusRuleRuleCreateRequest(BaseModel):
+    group_name: str = Field(..., min_length=1, max_length=255)
+    rule_name: str = Field(..., min_length=1, max_length=255)
+    rule_data: JSONObject
+
+
 class PrometheusRuleListResponse(BaseModel):
     service_type: str = "k8s"
     namespace: str
@@ -291,6 +319,30 @@ class PrometheusRuleListResponse(BaseModel):
     alert_count: int = Field(default=0, ge=0)
     recording_count: int = Field(default=0, ge=0)
     checked_at: datetime
+
+
+class RepoSyncPullRequestResponse(BaseModel):
+    number: Optional[int | str] = None
+    url: Optional[str] = None
+
+
+class RepoSyncResponse(BaseModel):
+    status: str
+    message: str
+    branch: Optional[str] = None
+    pull_request: Optional[RepoSyncPullRequestResponse] = None
+    exported: Optional[Dict[str, str | int | None]] = None
+    imported: Optional[Dict[str, int]] = None
+    skipped: Optional[Dict[str, int]] = None
+    warnings: Optional[List[str]] = None
+    cleared: Optional[Dict[str, int]] = None
+
+
+class GenestackAlertExportRequest(BaseModel):
+    namespace: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    crd_name: str = Field(..., min_length=1, max_length=255)
+    group_name: str = Field(..., min_length=1, max_length=255)
+    rule_name: str = Field(..., min_length=1, max_length=255)
 
 
 class ScheduledTaskBase(BaseModel):
@@ -929,6 +981,14 @@ class OrderStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
 
+class IncidentTimelineOrderResponse(OrderStatusResponse):
+    """Reader-safe order timeline summary with alert labels for suppression decisions."""
+
+    labels: JSONObject = Field(default_factory=dict)
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
 class DishIngredientUpsert(BaseModel):
     """Upsert payload for dish ingredient execution results."""
 
@@ -961,15 +1021,6 @@ class DishIngredientUpsert(BaseModel):
     service_exec_error: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
-
-
-class DishIngredientBulkUpsert(BaseModel):
-    """Bulk upsert payload for dish ingredient executions."""
-
-    items: List[DishIngredientUpsert]
-
-    model_config = ConfigDict(from_attributes=True, extra="forbid")
-
 
 class DishIngredientResponse(BaseModel):
     """Dish ingredient execution record."""
@@ -1062,7 +1113,7 @@ class IncidentTimelineEvent(BaseModel):
 
 
 class IncidentTimelineResponse(BaseModel):
-    order: OrderStatusResponse
+    order: IncidentTimelineOrderResponse
     events: List[IncidentTimelineEvent]
 
 
@@ -1081,25 +1132,23 @@ class SuppressionCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     starts_at: datetime
     ends_at: datetime
-    scope: SuppressionScope = "matchers"
     matchers: List[SuppressionMatcher] = Field(default_factory=list)
     reason: Optional[str] = Field(default=None, max_length=1000)
     created_by: Optional[str] = Field(default=None, max_length=255)
     summary_ticket_enabled: bool = True
-    enabled: bool = True
-    source: str = Field(default="local", max_length=32)
-    source_service_type: Optional[str] = Field(default=None, max_length=50)
-    source_ref: Optional[str] = Field(default=None, max_length=255)
-    source_payload: Optional[JSONObject] = None
-    last_synced_at: Optional[datetime] = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class SuppressionUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
     reason: Optional[str] = Field(default=None, max_length=1000)
-    enabled: Optional[bool] = None
+    summary_ticket_enabled: Optional[bool] = None
     matchers: Optional[List[SuppressionMatcher]] = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class SuppressionResponse(BaseModel):
@@ -1136,6 +1185,10 @@ class SuppressionStatusResponse(BaseModel):
     starts_at: datetime
     ends_at: datetime
     canceled_at: Optional[datetime] = None
+    source: str = "plugin"
+    source_service_type: Optional[str] = None
+    source_ref: Optional[str] = None
+    last_synced_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -1396,6 +1449,21 @@ class UIOperatorActionResponse(BaseModel):
     status: Literal["logged"] = "logged"
 
 
+class OperatorAuditEventResponse(BaseModel):
+    id: int
+    req_id: Optional[str] = None
+    action: str
+    surface: str
+    status: str
+    target: Optional[str] = None
+    actor_username: Optional[str] = None
+    actor_role: Optional[str] = None
+    details: JSONObject = Field(default_factory=dict)
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
 class ExecutionEnvelopeResponse(BaseModel):
     service_exec_id: Optional[str] = None
     service_type: str
@@ -1579,7 +1647,6 @@ class SettingsResponse(BaseModel):
     prometheus_use_crds: bool
     prometheus_crd_namespace: str
     prometheus_url: str
-    git_enabled: bool
     git_provider: Optional[str] = None
     git_repo_url: Optional[str] = None
     git_branch: Optional[str] = None
@@ -1588,17 +1655,3 @@ class SettingsResponse(BaseModel):
     git_actions_path: Optional[str] = None
     version: str
     global_communications_configured: bool
-
-
-class DishIngredientBulkUpsertResponse(BaseModel):
-    """Bulk upsert summary for dish ingredient execution rows."""
-
-    created: int
-    updated: int
-
-
-class SuppressionLifecycleResponse(BaseModel):
-    """Result of a suppression lifecycle sweep."""
-
-    status: str
-    finalized: int

@@ -9,6 +9,7 @@ import pytest
 from api.plugins.contract import ServicePluginContractError, validate_service_payload
 from api.plugins.dummy.templates import DUMMY_INGREDIENT_TEMPLATES
 from api.schemas.schemas import CommunicationPolicyUpdate
+from api.services.capability_resolution import ResolvedCapabilityIngredient
 from api.services.communications_policy import (
     _apply_step_spec,
     _group_routes_from_steps,
@@ -201,29 +202,227 @@ async def test_replace_recipe_communication_steps_reuses_existing_managed_step()
     recipe = SimpleNamespace(id=1, recipe_ingredients=[existing_step])
 
     class _ScalarResult:
+        def __init__(self, rows: list[SimpleNamespace]) -> None:
+            self._rows = rows
+
         def all(self) -> list[SimpleNamespace]:
-            return [ingredient]
+            return list(self._rows)
 
     class _ExecuteResult:
+        def __init__(self, rows: list[SimpleNamespace]) -> None:
+            self._rows = rows
+
         def scalars(self) -> _ScalarResult:
-            return _ScalarResult()
+            return _ScalarResult(self._rows)
+
+        def unique(self) -> "_ExecuteResult":
+            return self
 
     class _Session:
         def __init__(self) -> None:
             self.added: list[object] = []
+            self.calls = 0
 
         async def execute(self, _statement: object) -> _ExecuteResult:
-            return _ExecuteResult()
+            self.calls += 1
+            if self.calls == 1:
+                return _ExecuteResult([existing_step])
+            return _ExecuteResult([ingredient])
 
         def add(self, item: object) -> None:
             self.added.append(item)
 
     session = _Session()
 
-    await replace_recipe_communication_steps(session, recipe=recipe, step_specs=specs)
+    monkeypatch = pytest.MonkeyPatch()
+    async def fake_enabled_plugin_configs(_db: object) -> dict[str, object]:
+        return {}
+
+    async def fake_resolve_active_capability_ingredient(
+        _db: object, *, capability: dict[str, object]
+    ) -> ResolvedCapabilityIngredient:
+        return ResolvedCapabilityIngredient(
+            capability_id="dummy.communication.open.default",
+            service_type="dummy",
+            mode="communication",
+            operation=str(capability["operation"]),
+            defaults={},
+            priority=100,
+            ingredient=ingredient,
+        )
+
+    monkeypatch.setattr(
+        "api.services.communications_policy._enabled_plugin_configs",
+        fake_enabled_plugin_configs,
+    )
+    monkeypatch.setattr(
+        "api.services.communications_policy.build_enabled_plugin_capability_catalog",
+        lambda _configs=None: [
+            {
+                "capability_id": "dummy.communication.open.default",
+                "service_type": "dummy",
+                "mode": "communication",
+                "operation": "open",
+                "ingredient_ref": {
+                    "service_exec": "communication",
+                    "destination_target": "dummy",
+                    "task_key_template": "dummy-comms",
+                },
+                "defaults": {},
+                "priority": 100,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "api.services.communications_policy.resolve_active_capability_ingredient",
+        fake_resolve_active_capability_ingredient,
+    )
+    try:
+        await replace_recipe_communication_steps(session, recipe=recipe, step_specs=specs)
+    finally:
+        monkeypatch.undo()
 
     assert len(session.added) == len(specs) - 1
     assert existing_step.id == 99
+    assert existing_step.step_order == specs[0]["step_order"]
+    assert existing_step.on_success == specs[0]["on_success"]
+
+
+@pytest.mark.asyncio
+async def test_replace_recipe_communication_steps_loads_existing_steps_via_session() -> None:
+    _routes, specs = build_recipe_local_policy_step_specs(
+        recipe_id=7,
+        routes=[
+            {
+                "id": "dummy-default",
+                "label": "Dummy comms",
+                "service_type": "dummy",
+                "destination_target": "dummy",
+                "provider_config": {},
+                "enabled": True,
+                "position": 1,
+            }
+        ],
+    )
+    ingredient = SimpleNamespace(
+        id=321,
+        service_type="dummy",
+        service_exec="communication",
+        ingredient_purpose="comms",
+        is_active=True,
+        deleted=False,
+        payload_schema=_dummy_template("communication")["payload_schema"],
+        service_exec_parameters={
+            "operation": "open",
+            "allowed_operations": ["open", "notify", "update", "close"],
+        },
+        service_payload_template={},
+        default_expected_secs=5,
+        default_timeout=30,
+    )
+    existing_step = SimpleNamespace(
+        id=88,
+        recipe_id=7,
+        ingredient_id=321,
+        step_order=999,
+        on_success="stop",
+        parallel_group=9,
+        depth=9,
+        service_payload=specs[0]["service_payload"],
+        service_exec_parameters_override={},
+        service_exec_expected_secs=1,
+        service_exec_timeout=2,
+        service_exec_expected_outcome={},
+        run_phase="both",
+        run_condition="always",
+        ingredient=ingredient,
+    )
+    recipe = SimpleNamespace(id=7)
+
+    class _ScalarResult:
+        def __init__(self, rows: list[object]) -> None:
+            self._rows = rows
+
+        def all(self) -> list[object]:
+            return list(self._rows)
+
+    class _ExecuteResult:
+        def __init__(self, rows: list[object]) -> None:
+            self._rows = rows
+
+        def scalars(self) -> _ScalarResult:
+            return _ScalarResult(self._rows)
+
+        def unique(self) -> "_ExecuteResult":
+            return self
+
+    class _Session:
+        def __init__(self) -> None:
+            self.added: list[object] = []
+            self.calls = 0
+
+        async def execute(self, _statement: object) -> _ExecuteResult:
+            self.calls += 1
+            if self.calls == 1:
+                return _ExecuteResult([existing_step])
+            return _ExecuteResult([ingredient])
+
+        def add(self, item: object) -> None:
+            self.added.append(item)
+
+    session = _Session()
+
+    monkeypatch = pytest.MonkeyPatch()
+    async def fake_enabled_plugin_configs(_db: object) -> dict[str, object]:
+        return {}
+
+    async def fake_resolve_active_capability_ingredient(
+        _db: object, *, capability: dict[str, object]
+    ) -> ResolvedCapabilityIngredient:
+        return ResolvedCapabilityIngredient(
+            capability_id="dummy.communication.open.default",
+            service_type="dummy",
+            mode="communication",
+            operation=str(capability["operation"]),
+            defaults={},
+            priority=100,
+            ingredient=ingredient,
+        )
+
+    monkeypatch.setattr(
+        "api.services.communications_policy._enabled_plugin_configs",
+        fake_enabled_plugin_configs,
+    )
+    monkeypatch.setattr(
+        "api.services.communications_policy.build_enabled_plugin_capability_catalog",
+        lambda _configs=None: [
+            {
+                "capability_id": "dummy.communication.open.default",
+                "service_type": "dummy",
+                "mode": "communication",
+                "operation": "open",
+                "ingredient_ref": {
+                    "service_exec": "communication",
+                    "destination_target": "dummy",
+                    "task_key_template": "dummy-comms",
+                },
+                "defaults": {},
+                "priority": 100,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "api.services.communications_policy.resolve_active_capability_ingredient",
+        fake_resolve_active_capability_ingredient,
+    )
+    try:
+        await replace_recipe_communication_steps(session, recipe=recipe, step_specs=specs)
+    finally:
+        monkeypatch.undo()
+
+    assert session.calls == 1
+    assert len(session.added) == len(specs) - 1
+    assert existing_step.id == 88
     assert existing_step.step_order == specs[0]["step_order"]
     assert existing_step.on_success == specs[0]["on_success"]
 
@@ -262,3 +461,59 @@ def test_dummy_comms_template_rejects_invalid_filled_payload() -> None:
         validate_service_payload(
             {"message": "missing title and description"}, template["payload_schema"]
         )
+
+
+@pytest.mark.asyncio
+async def test_replace_recipe_communication_steps_requires_enabled_comms_capability() -> None:
+    _routes, specs = build_recipe_local_policy_step_specs(
+        recipe_id=1,
+        routes=[
+            {
+                "id": "dummy-default",
+                "label": "Dummy comms",
+                "service_type": "dummy",
+                "destination_target": "dummy",
+                "provider_config": {},
+                "enabled": True,
+                "position": 1,
+            }
+        ],
+    )
+    recipe = SimpleNamespace(id=1, recipe_ingredients=[])
+
+    class _ScalarResult:
+        def all(self) -> list[object]:
+            return []
+
+    class _ExecuteResult:
+        def scalars(self) -> _ScalarResult:
+            return _ScalarResult()
+
+        def unique(self) -> "_ExecuteResult":
+            return self
+
+    class _Session:
+        async def execute(self, _statement: object) -> _ExecuteResult:
+            return _ExecuteResult()
+
+        def add(self, _item: object) -> None:
+            raise AssertionError("no steps should be added when capability resolution fails")
+
+    session = _Session()
+    monkeypatch = pytest.MonkeyPatch()
+    async def fake_enabled_plugin_configs(_db: object) -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(
+        "api.services.communications_policy._enabled_plugin_configs",
+        fake_enabled_plugin_configs,
+    )
+    monkeypatch.setattr(
+        "api.services.communications_policy.build_enabled_plugin_capability_catalog",
+        lambda _configs=None: [],
+    )
+    try:
+        with pytest.raises(ValueError, match="No enabled communication capability registered"):
+            await replace_recipe_communication_steps(session, recipe=recipe, step_specs=specs)
+    finally:
+        monkeypatch.undo()

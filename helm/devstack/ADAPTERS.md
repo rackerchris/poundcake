@@ -22,7 +22,7 @@ Local credentials required for full plugin exercise:
 | Adapter | Credential type | Key | Notes |
 | --- | --- | --- | --- |
 | `git` | `git_repository_auth` | `default` | Required for write operations; optional for public reads. |
-| `github` | `github_token` | `default` | Optional for public repositories; useful for private repositories or higher rate limits. |
+| `github` | `github_token` | `default` | Optional for public reads; required for PR creation and other write operations. |
 | `k8s` | `kubernetes_kubeconfig` | `default` | Optional in-cluster; useful when PoundCake manages another cluster. |
 | `prometheus` | `prometheus_http_auth` | `default` | Optional HTTP auth for authenticated Prometheus endpoints. |
 | `alertmanager` | `alertmanager_http_auth` | `default` | Optional HTTP auth for authenticated Alertmanager endpoints. |
@@ -33,3 +33,18 @@ Local credentials required for full plugin exercise:
 Until the operator UI/API lands, do not seed these with Helm hooks or direct SQL
 fixtures. A missing credential should leave the relevant adapter failed or
 degraded instead of bypassing credential-manager.
+
+For Helm devstack bootstrap, `helm/devstack/configure-github-adapter.sh`
+defaults to `allow_public_read=true` with an empty token so Genestack catalog
+reads work out of the box. If `GITHUB_TOKEN` is present, the same bootstrap
+path writes a real `github_token` credential and enables write-capable
+`commit_and_pr` testing.
+
+When `helm/devstack/configure-bakery-adapter.sh` is used, it also disables the
+`dummy` plugin in the live devstack so Genestack-managed recipes only see one
+active communication provider.
+
+For the current remote devstack integration, the Bakery adapter defaults to the
+explicit monitor identity `rackspace/kronos-poundcake` and region `ord`. If Bakery
+minted the bootstrap credential for another monitor ID, override
+`BAKERY_PLUGIN_ID` before running the configurator.

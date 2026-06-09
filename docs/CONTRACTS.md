@@ -54,13 +54,13 @@ Protected database work is exposed through PoundCake helper operations that chec
 Internal endpoints return full data. External endpoints return sanitized/redacted data. All I/O is validated against schemas.
 
 ### Auth Layers
-- **Public paths** bypass authentication: `/`, `/docs`, `/redoc`, `/openapi.json`, `/livez`, `/readyz`, auth bootstrap routes, `/api/v1/webhook` (guarded by route-level bearer), `/static/*`, `OPTIONS` preflight.
+- **Public paths** bypass authentication: `/`, `/docs`, `/redoc`, `/openapi.json`, `/livez`, `/readyz`, public auth entrypoint routes, `/api/v1/webhook` (guarded by route-level bearer), `/static/*`, `OPTIONS` preflight.
 - **Human sessions** resolve to `reader`, `operator`, or `admin`.
 - **Internal HMAC requests** resolve to `service` plus registered service plugin metadata.
 - **Generic service tokens** (`X-Auth-Token`, `Authorization: Bearer <service-token>`) are rejected as internal service identity. Requests must use HMAC signatures mapped to registered service plugin rows.
 
 ### Route Classification
-- `public`: unauthenticated probes, docs, auth bootstrap, webhook ingress with bearer validation.
+- `public`: unauthenticated probes, docs, public auth entrypoints, webhook ingress with bearer validation.
 - `reporting/status`: redacted list and drilldown views for operators/readers. Must not expose raw alert labels/annotations, credentials, provider execution IDs, claim metadata, raw service payloads, expected/actual outcomes, provider error payloads, or `fingerprint`, `labels`, `annotations`, `raw_data`, `service_payload`, `claims_metadata`.
 - `configuration/editor`: desired-state detail reads/writes. Operators author recipes and tune cadence/limits. Admins own credentials/RBAC/ingredient template inspection/scheduled task payloads.
 - `admin/observability`: full dish ingredient execution history for audit/debug. Read-only. Redacts secret-bearing nested keys in payload/result JSON.

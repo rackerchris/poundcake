@@ -15,7 +15,7 @@ Dish planning is not a plugin extension point. Cook owns phase selection, run-co
 | Component | Owns | Must not own |
 |---|---|---|
 | PoundCake core control plane | Orchestration, persistence, lifecycle, RBAC, scheduling, recipe planning, dish advancement, and sanitized API surfaces. | Provider-native execution logic or provider credential interpretation outside plugin adapters/helpers. |
-| Plugin manifest | Static capability declarations: adapter factory, immutable ingredient templates, mutable recipe templates, scheduled tasks, communication routes, helper capabilities, and credential requirements. | Route authority, database grants, lifecycle fields, runtime state, credential values, or self-granted RBAC. |
+| Plugin manifest | Static capability declarations: adapter factory, immutable ingredient templates, composable capability templates, mutable recipe templates, scheduled tasks, communication routes, helper capabilities, and credential requirements. | Route authority, database grants, lifecycle fields, runtime state, credential values, or self-granted RBAC. |
 | Plugin adapter | Provider-specific validation, dispatch, polling, cancellation, health, credential requirements, credential payload validation, and non-secret operator configuration. | Calling internal workflow routes directly, mutating PoundCake runtime rows, registering recipes/ingredients at execution time, or using `poll` for provider writes. |
 | Helper | Narrow reusable provider/catalog functions advertised as capabilities for bootstrap or cross-plugin composition. | Hidden workflow execution, broad provider mutation outside declared capabilities, or bypassing service-execution ingredients for cross-adapter runtime work. |
 | Dishwasher | Enabled plugin discovery, manifest sync, service registry writes, recipe/scheduled-task definition sync, and due scheduled-task injection. | Provider execution, credential generation, runtime reconciliation, or human-facing recipe authorship beyond manifest sync. |
@@ -33,6 +33,7 @@ Dish planning is not a plugin extension point. Cook owns phase selection, run-co
 - **Ingredient**: An immutable plugin-provided capability template registered in `ingredients`.
 - **Recipe ingredient**: A mutable recipe step that uses an ingredient with recipe-specific payload, operation, expected outcome, timing, phase, and run-condition overrides.
 - **Operation/capability**: A selectable action within an ingredient, carried through `service_exec_parameters.operation` and advertised with `allowed_operations` plus `operation_metadata`. An operation may advertise a `payload_schema` that narrows the ingredient-wide payload schema for that selected operation.
+- **Composable plugin capability**: A provider-advertised mapping from one immutable ingredient plus one advertised operation to higher-level matching metadata and bounded defaults that recipe builders may consume.
 - **Expediter**: The only runtime gateway that calls plugin adapter workload methods for dispatch, status, and cancellation.
 
 Prefer adding operations to an existing ingredient when the same plugin adapter surface and payload family fit the work. Add a new ingredient only when the provider action has a distinct contract, purpose, payload shape, blocking behavior, or runtime lifecycle.
@@ -44,6 +45,7 @@ Each `ServicePlugin` manifest describes the plugin's capabilities:
 - `service_type`: Stable lowercase provider key. By default it must match the plugin directory name.
 - `adapter_factory`: Factory that returns an `ExecutionAdapter` implementation.
 - `ingredient_templates`: Immutable action templates registered into `ingredients`.
+- `capability_templates`: Provider-advertised composable capabilities that resolve to immutable ingredients plus advertised operations.
 - `recipe_templates`: Optional recipe templates registered during bootstrap.
 - `communication_routes`: Optional default communication routes for communication policy.
 - `scheduled_tasks`: Plugin-owned recurring work, including the required health check.
@@ -156,7 +158,7 @@ Credential requirements are service-ecosystem scoped, not recipe scoped. A plugi
   for write operations. Payloads may provide token-style credentials or an SSH
   key path.
 - `github`: optional `github_token` for private repositories or write operations. Public repositories such as `genestack-monitoring` do not need their own credential row.
-- `k8s`: optional `kubernetes_kubeconfig` for Kubernetes API access. When absent, the adapter uses in-cluster service account auth; local kubeconfig fallback is a dev-only setting.
+- `k8s`: optional `kubernetes_kubeconfig` for Kubernetes API access. When absent, the adapter uses in-cluster service account auth; local kubeconfig is a dev-only option.
 - `prometheus`: optional `prometheus_http_auth` for authenticated monitoring endpoints.
 - `genestack_monitoring`: no direct credentials; it composes GitHub and Prometheus helpers.
 
@@ -208,7 +210,7 @@ StackStorm follows the same external-plugin credential model. Its startup API ke
 
 PoundCake-owned StackStorm action metadata lives with the StackStorm plugin under `api/plugins/stackstorm/content` and is synced through the plugin's `content_sync` service-execution ingredient. StackStorm pack installation and workflow file distribution are Helm/ST2-cluster bootstrap concerns, not Cook routes or PoundCake runtime APIs. Recipes invoke native ST2 assets through `stackstorm` ingredients such as `action_execution` and `workflow_execution`; PoundCake recipes are not converted into StackStorm workflows.
 
-GitOps writes run through the external `git` plugin. Repository mutations should be modeled as `git/repo_write` recipe steps with `commit_files`, `create_pull_request`, or `commit_and_pr` operation metadata; legacy API helpers must not push branches or open PRs directly.
+GitOps writes run through the external `git` plugin. Repository mutations should be modeled as `git/repo_write` recipe steps with `commit_files`, `create_pull_request`, or `commit_and_pr` operation metadata; direct API helpers must not push branches or open PRs.
 
 RBAC Manager owns internal route policy. When a plugin registers advertised route needs, RBAC Manager may sync those into policy records only through an allowlisted model. Plugin-advertised routes are not self-grants.
 
@@ -274,6 +276,8 @@ database identity fields in `recipe_ingredients`; recipe steps refer to
 ingredient templates by service identity.
 
 Recipes reference ingredients through mutable `recipe_ingredients`. A recipe step can override payload, execution parameters, expected runtime, timeout, expected outcome, run phase, and run condition. PoundCake validates filled `service_payload` values against the ingredient `payload_schema`.
+
+Capability templates are provider-owned metadata layered on top of immutable ingredients. They may advertise matcher metadata, safety class, bounded defaults, and operator-configurable enablement, but they do not bypass the ingredient contract. Recipes may tune values inside the declared payload and operation schema; they must not widen schemas, invent new operations, or redefine provider-owned safety semantics.
 
 When an operation advertises `operation_metadata[operation].payload_schema`,
 PoundCake validates the filled `service_payload` against both schemas: first the

@@ -81,7 +81,6 @@ export const appSettingsSchema = strictObject({
   prometheus_use_crds: z.boolean(),
   prometheus_crd_namespace: z.string(),
   prometheus_url: z.string(),
-  git_enabled: z.boolean(),
   git_provider: z.string().nullable(),
   git_repo_url: z.string().nullable(),
   git_branch: z.string().nullable(),
@@ -177,6 +176,35 @@ export const prometheusRuleResourceRecordSchema = strictObject({
   raw: unknownRecordSchema,
 });
 export type PrometheusRuleResourceRecord = z.infer<typeof prometheusRuleResourceRecordSchema>;
+
+export const prometheusRuleDetailRecordSchema = strictObject({
+  service_type: z.string(),
+  name: z.string(),
+  namespace: z.string(),
+  labels: unknownRecordSchema,
+  annotations: unknownRecordSchema,
+  groups: z.array(prometheusRuleGroupSummarySchema),
+  group_count: z.number().int(),
+  rule_count: z.number().int(),
+  alert_count: z.number().int(),
+  recording_count: z.number().int(),
+  raw: unknownRecordSchema,
+  checked_at: z.string(),
+});
+export type PrometheusRuleDetailRecord = z.infer<typeof prometheusRuleDetailRecordSchema>;
+
+export const prometheusRuleRecordSchema = strictObject({
+  service_type: z.string(),
+  namespace: z.string(),
+  crd_name: z.string(),
+  group_name: z.string(),
+  rule_name: z.string(),
+  rule_kind: z.string(),
+  source: unknownRecordSchema.nullable().optional(),
+  rule_data: unknownRecordSchema,
+  checked_at: z.string(),
+});
+export type PrometheusRuleRecord = z.infer<typeof prometheusRuleRecordSchema>;
 
 export const prometheusRuleListResponseSchema = strictObject({
   service_type: z.string(),
@@ -457,8 +485,13 @@ export const incidentTimelineEventSchema = strictObject({
 });
 export type IncidentTimelineEvent = z.infer<typeof incidentTimelineEventSchema>;
 
+export const incidentTimelineOrderSchema = orderStatusRecordSchema.extend({
+  labels: unknownRecordSchema,
+});
+export type IncidentTimelineOrderRecord = z.infer<typeof incidentTimelineOrderSchema>;
+
 export const incidentTimelineResponseSchema = strictObject({
-  order: orderStatusRecordSchema,
+  order: incidentTimelineOrderSchema,
   events: z.array(incidentTimelineEventSchema),
 });
 export type IncidentTimelineResponse = z.infer<typeof incidentTimelineResponseSchema>;
@@ -538,6 +571,10 @@ export const suppressionStatusRecordSchema = strictObject({
   starts_at: z.string(),
   ends_at: z.string(),
   canceled_at: z.string().nullable().optional(),
+  source: z.string(),
+  source_service_type: z.string().nullable().optional(),
+  source_ref: z.string().nullable().optional(),
+  last_synced_at: z.string().nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -904,17 +941,31 @@ export type UIOperatorActionRequest = z.infer<typeof uiOperatorActionRequestSche
 export const uiOperatorActionResponseSchema = strictObject({
   status: z.string(),
 });
+export type UIOperatorActionResponse = z.infer<typeof uiOperatorActionResponseSchema>;
+
+export const operatorAuditRecordSchema = strictObject({
+  id: z.number().int(),
+  req_id: z.string().nullable().optional(),
+  action: z.string(),
+  surface: z.string(),
+  status: z.string(),
+  target: z.string().nullable().optional(),
+  actor_username: z.string().nullable().optional(),
+  actor_role: z.string().nullable().optional(),
+  details: unknownRecordSchema,
+  created_at: z.string(),
+});
+export type OperatorAuditRecord = z.infer<typeof operatorAuditRecordSchema>;
+export const operatorAuditRecordArraySchema = z.array(operatorAuditRecordSchema);
 
 export const suppressionCreateRequestSchema = strictObject({
   name: z.string().min(1),
   starts_at: z.string().min(1),
   ends_at: z.string().min(1),
-  scope: z.string().min(1),
   matchers: z.array(suppressionMatcherSchema),
   reason: z.string().nullable().optional(),
   created_by: z.string().nullable().optional(),
   summary_ticket_enabled: z.boolean(),
-  enabled: z.boolean(),
 });
 
 export const recipeStepRequestSchema = strictObject({

@@ -19,10 +19,12 @@ from api.schemas.schemas import (
     AuthRoleBindingCreate,
     AuthRoleBindingResponse,
     AuthRoleBindingUpdate,
+    CommunicationActivityRecord,
     CommunicationActivityStatusRecord,
     CommunicationPolicyResponse,
     CommunicationPolicyUpdate,
     DeleteResponse,
+    DishIngredientResponse,
     DeviceAuthorizationPollRequest,
     DeviceAuthorizationPollResponse,
     DeviceAuthorizationStartRequest,
@@ -32,17 +34,43 @@ from api.schemas.schemas import (
     HealthResponse,
     IncidentTimelineResponse,
     IngredientResponse,
+    IngredientStatusResponse,
+    ObservabilityActivityRecord,
     ObservabilityActivityStatusRecord,
     ObservabilityOverviewResponse,
     OrderStatusResponse,
+    PrometheusRuleDetailResponse,
+    PrometheusRuleListResponse,
+    PrometheusRuleRuleCreateRequest,
+    PrometheusRuleRuleResponse,
+    PrometheusRuleRuleUpdateRequest,
     RecipeCreate,
     RecipeDetailResponse,
+    RecipeIngredientStatusResponse,
+    RecipeStatusResponse,
     RecipeUpdate,
+    ScheduledTaskCreate,
+    ScheduledTaskResponse,
+    ScheduledTaskStatusResponse,
+    ScheduledTaskUpdate,
     SessionResponse,
+    ServicePluginActionResponse,
+    ServicePluginConfigurationResponse,
+    ServicePluginConfigurationUpdate,
+    ServicePluginConnectionTestRequest,
+    ServicePluginCredentialUpdate,
+    ServicePluginHealthResponse,
+    ServicePluginResponse,
+    ServicePluginSummaryResponse,
+    ServicePluginUpdate,
     SettingsResponse,
     SuppressionCreate,
     SuppressionDetailResponse,
     SuppressionResponse,
+    SuppressionStatsResponse,
+    SuppressionStatusResponse,
+    SuppressionUpdate,
+    RepoSyncResponse,
 )
 from api.core.http_client import request_with_retry_sync
 from cli.session import SessionStore, StoredSession
@@ -563,14 +591,21 @@ class PoundCakeClient:
 
     # Health and overview
     def health(self) -> HealthResponse:
-        # /readyz is a public endpoint (no auth required) for Kubernetes health probes.
-        # We must call it directly rather than through _request which would prepend /api/v1/.
-        resp = httpx.get(f"{self.base_url}/readyz", timeout=10.0)
-        resp.raise_for_status()
-        return self._validate_model(resp.json(), HealthResponse, "Unexpected health response format")
+        payload = self._request("GET", "/api/v1/health")
+        return self._validate_model(payload, HealthResponse, "Unexpected health response format")
 
     def ready(self) -> HealthResponse:
-        return self.health()
+        resp = httpx.get(f"{self.base_url}/api/v1/ready", timeout=10.0)
+        resp.raise_for_status()
+        return self._validate_model(
+            resp.json(), HealthResponse, "Unexpected readiness response format"
+        )
+
+    def health_status(self) -> HealthResponse:
+        payload = self._request("GET", "/api/v1/health/status")
+        return self._validate_model(
+            payload, HealthResponse, "Unexpected health status response format"
+        )
 
     def observability_overview(self) -> ObservabilityOverviewResponse:
         payload = self._request("GET", "/api/v1/observability/overview")
@@ -595,6 +630,23 @@ class PoundCakeClient:
             payload,
             ObservabilityActivityStatusRecord,
             "Unexpected observability activity response format",
+        )
+
+    def list_observability_activity_records(
+        self,
+        *,
+        activity_type: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ObservabilityActivityRecord]:
+        params: JSONObject = {"limit": limit, "offset": offset}
+        if activity_type:
+            params["type"] = activity_type
+        payload = self._request("GET", "/api/v1/observability/activity", params=params)
+        return self._validate_list(
+            payload,
+            ObservabilityActivityRecord,
+            "Unexpected observability activity detail response format",
         )
 
     # Incidents / orders
@@ -640,6 +692,14 @@ class PoundCakeClient:
             "Unexpected order timeline response format",
         )
 
+    def get_order_labels(self, order_id: int) -> JSONObject:
+        payload = self.get_order_timeline(order_id)
+        order = payload.order.model_dump(mode="json", by_alias=True)
+        labels = order.get("labels")
+        if not isinstance(labels, dict):
+            raise PoundCakeClientError("Order timeline did not include labels")
+        return labels
+
     # Communications activity
     def list_communications(
         self,
@@ -659,6 +719,26 @@ class PoundCakeClient:
             payload,
             CommunicationActivityStatusRecord,
             "Unexpected communications activity response format",
+        )
+
+    def list_communication_activity_records(
+        self,
+        *,
+        status: Optional[str] = None,
+        channel: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[CommunicationActivityRecord]:
+        params: JSONObject = {"limit": limit, "offset": offset}
+        if status:
+            params["status"] = status
+        if channel:
+            params["channel"] = channel
+        payload = self._request("GET", "/api/v1/communications/activity", params=params)
+        return self._validate_list(
+            payload,
+            CommunicationActivityRecord,
+            "Unexpected communications activity detail response format",
         )
 
     def get_communication(
@@ -693,6 +773,29 @@ class PoundCakeClient:
             "Unexpected suppressions response format",
         )
 
+    def list_suppression_statuses(
+        self,
+        *,
+        status: Optional[str] = None,
+        enabled: Optional[bool] = None,
+        scope: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[SuppressionStatusResponse]:
+        params: JSONObject = {"limit": limit, "offset": offset}
+        if status:
+            params["status"] = status
+        if enabled is not None:
+            params["enabled"] = str(enabled).lower()
+        if scope:
+            params["scope"] = scope
+        payload = self._request("GET", "/api/v1/suppressions/status", params=params)
+        return self._validate_list(
+            payload,
+            SuppressionStatusResponse,
+            "Unexpected suppression status response format",
+        )
+
     def get_suppression(self, suppression_id: int) -> SuppressionDetailResponse:
         payload = self._request("GET", f"/api/v1/suppressions/{suppression_id}")
         return self._validate_model(
@@ -720,6 +823,27 @@ class PoundCakeClient:
             response,
             SuppressionResponse,
             "Unexpected cancel suppression response format",
+        )
+
+    def update_suppression(self, suppression_id: int, payload: JSONObject) -> SuppressionResponse:
+        request_payload = self._validate_request_payload(
+            payload,
+            SuppressionUpdate,
+            "Invalid suppression update payload",
+        )
+        response = self._request("PATCH", f"/api/v1/suppressions/{suppression_id}", json=request_payload)
+        return self._validate_model(
+            response,
+            SuppressionResponse,
+            "Unexpected suppression update response format",
+        )
+
+    def get_suppression_stats(self, suppression_id: int) -> SuppressionStatsResponse:
+        payload = self._request("GET", f"/api/v1/suppressions/{suppression_id}/stats")
+        return self._validate_model(
+            payload,
+            SuppressionStatsResponse,
+            "Unexpected suppression stats response format",
         )
 
     # Workflow activity / dishes
@@ -757,6 +881,30 @@ class PoundCakeClient:
             "Unexpected dish ingredient status response format",
         )
 
+    def get_dish_ingredients(self, dish_id: int) -> list[DishIngredientResponse]:
+        payload = self._request("GET", f"/api/v1/dishes/{dish_id}/ingredients")
+        return self._validate_list(
+            payload,
+            DishIngredientResponse,
+            "Unexpected dish ingredient response format",
+        )
+
+    def get_dish_ingredient_history(self, dish_id: int) -> list[DishIngredientResponse]:
+        payload = self._request("GET", f"/api/v1/dishes/{dish_id}/ingredient-history")
+        return self._validate_list(
+            payload,
+            DishIngredientResponse,
+            "Unexpected dish ingredient history response format",
+        )
+
+    def get_order_execution_history(self, order_id: int) -> list[DishIngredientResponse]:
+        payload = self._request("GET", f"/api/v1/orders/{order_id}/execution-history")
+        return self._validate_list(
+            payload,
+            DishIngredientResponse,
+            "Unexpected order execution history response format",
+        )
+
     # Actions / ingredients
     def list_ingredients(
         self,
@@ -778,6 +926,23 @@ class PoundCakeClient:
             payload,
             IngredientResponse,
             "Unexpected ingredients response format",
+        )
+
+    def list_ingredient_statuses(
+        self,
+        *,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[IngredientStatusResponse]:
+        payload = self._request(
+            "GET",
+            "/api/v1/service-registry/ingredients/status",
+            params={"limit": limit, "offset": offset},
+        )
+        return self._validate_list(
+            payload,
+            IngredientStatusResponse,
+            "Unexpected ingredient status response format",
         )
 
     def get_ingredient(self, ingredient_id: int) -> IngredientResponse:
@@ -807,10 +972,51 @@ class PoundCakeClient:
             payload, RecipeDetailResponse, "Unexpected recipes response format"
         )
 
+    def list_recipe_statuses(
+        self,
+        *,
+        name: Optional[str] = None,
+        enabled: Optional[bool] = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[RecipeStatusResponse]:
+        params: JSONObject = {"limit": limit, "offset": offset}
+        if name:
+            params["name"] = name
+        if enabled is not None:
+            params["enabled"] = str(enabled).lower()
+        payload = self._request("GET", "/api/v1/recipes/status", params=params)
+        return self._validate_list(
+            payload, RecipeStatusResponse, "Unexpected recipe status response format"
+        )
+
     def get_recipe(self, recipe_id: int) -> RecipeDetailResponse:
         payload = self._request("GET", f"/api/v1/recipes/{recipe_id}")
         return self._validate_model(
             payload, RecipeDetailResponse, "Unexpected recipe response format"
+        )
+
+    def get_recipe_status(self, recipe_id: int) -> RecipeStatusResponse:
+        payload = self._request("GET", f"/api/v1/recipes/{recipe_id}/status")
+        return self._validate_model(
+            payload, RecipeStatusResponse, "Unexpected recipe status response format"
+        )
+
+    def get_recipe_ingredient_status(
+        self,
+        recipe_id: int,
+    ) -> list[RecipeIngredientStatusResponse]:
+        payload = self._request("GET", f"/api/v1/recipes/{recipe_id}/ingredient-status")
+        return self._validate_list(
+            payload,
+            RecipeIngredientStatusResponse,
+            "Unexpected recipe ingredient status response format",
+        )
+
+    def get_recipe_by_name(self, recipe_name: str) -> RecipeDetailResponse:
+        payload = self._request("GET", f"/api/v1/recipes/by-name/{recipe_name}")
+        return self._validate_model(
+            payload, RecipeDetailResponse, "Unexpected recipe-by-name response format"
         )
 
     def create_recipe(self, payload: JSONObject) -> RecipeDetailResponse:
@@ -887,16 +1093,349 @@ class PoundCakeClient:
             extra_headers={"Authorization": f"Bearer {self.webhook_token}"},
         )
 
-    def configure_plugin_config(self, plugin_type: str, config: JSONObject) -> JSONObject:
-        """PUT /plugins/{service_type}/configuration — update plugin config."""
+    def list_plugins(self) -> list[ServicePluginSummaryResponse]:
+        payload = self._request("GET", "/api/v1/plugins")
+        return self._validate_list(
+            payload,
+            ServicePluginSummaryResponse,
+            "Unexpected plugins response format",
+        )
+
+    def get_plugin(self, service_type: str) -> ServicePluginResponse:
+        payload = self._request("GET", f"/api/v1/plugins/{service_type}")
+        return self._validate_model(
+            payload,
+            ServicePluginResponse,
+            "Unexpected plugin response format",
+        )
+
+    def update_plugin(self, service_type: str, payload: JSONObject) -> ServicePluginResponse:
+        request_payload = self._validate_request_payload(
+            payload,
+            ServicePluginUpdate,
+            "Invalid plugin update payload",
+        )
+        response = self._request("PATCH", f"/api/v1/plugins/{service_type}", json=request_payload)
+        return self._validate_model(
+            response,
+            ServicePluginResponse,
+            "Unexpected plugin update response format",
+        )
+
+    def get_plugin_configuration(self, service_type: str) -> ServicePluginConfigurationResponse:
+        payload = self._request("GET", f"/api/v1/plugins/{service_type}/configuration")
+        return self._validate_model(
+            payload,
+            ServicePluginConfigurationResponse,
+            "Unexpected plugin configuration response format",
+        )
+
+    def update_plugin_configuration(
+        self,
+        service_type: str,
+        config: JSONObject,
+    ) -> ServicePluginConfigurationResponse:
+        request_payload = self._validate_request_payload(
+            {"config": config},
+            ServicePluginConfigurationUpdate,
+            "Invalid plugin configuration payload",
+        )
         response = self._request(
             "PUT",
-            f"/plugins/{plugin_type}/configuration",
-            json=config,
+            f"/api/v1/plugins/{service_type}/configuration",
+            json=request_payload,
         )
-        if isinstance(response, PydanticModel):
-            return cast(JSONObject, response.model_dump(mode="json", by_alias=True))
-        return cast(JSONObject, response)
+        return self._validate_model(
+            response,
+            ServicePluginConfigurationResponse,
+            "Unexpected plugin configuration update response format",
+        )
+
+    def update_plugin_credential(
+        self,
+        service_type: str,
+        payload: JSONObject,
+    ) -> ServicePluginConfigurationResponse:
+        request_payload = self._validate_request_payload(
+            payload,
+            ServicePluginCredentialUpdate,
+            "Invalid plugin credential payload",
+        )
+        response = self._request(
+            "PUT",
+            f"/api/v1/plugins/{service_type}/credentials",
+            json=request_payload,
+        )
+        return self._validate_model(
+            response,
+            ServicePluginConfigurationResponse,
+            "Unexpected plugin credential response format",
+        )
+
+    def test_plugin_connection(
+        self,
+        service_type: str,
+        *,
+        config: JSONObject | None = None,
+        credential_key_id: str = "default",
+    ) -> ServicePluginActionResponse:
+        request_payload = self._validate_request_payload(
+            {
+                "config": config,
+                "credential_key_id": credential_key_id,
+            },
+            ServicePluginConnectionTestRequest,
+            "Invalid plugin connection test payload",
+        )
+        response = self._request(
+            "POST",
+            f"/api/v1/plugins/{service_type}/test-connection",
+            json=request_payload,
+        )
+        return self._validate_model(
+            response,
+            ServicePluginActionResponse,
+            "Unexpected plugin test connection response format",
+        )
+
+    def get_plugin_health(self, service_type: str) -> ServicePluginHealthResponse:
+        payload = self._request("GET", f"/api/v1/plugins/{service_type}/health")
+        return self._validate_model(
+            payload,
+            ServicePluginHealthResponse,
+            "Unexpected plugin health response format",
+        )
+
+    def reload_prometheus_config(self) -> ServicePluginActionResponse:
+        payload = self._request("POST", "/api/v1/plugins/prometheus/reload")
+        return self._validate_model(
+            payload,
+            ServicePluginActionResponse,
+            "Unexpected Prometheus reload response format",
+        )
+
+    def list_prometheus_rules(self, *, namespace: str | None = None) -> PrometheusRuleListResponse:
+        params: JSONObject | None = None
+        if namespace:
+            params = {"namespace": namespace}
+        payload = self._request("GET", "/api/v1/plugins/k8s/prometheus-rules", params=params)
+        return self._validate_model(
+            payload,
+            PrometheusRuleListResponse,
+            "Unexpected Prometheus rules response format",
+        )
+
+    def get_prometheus_rule(
+        self,
+        *,
+        crd_name: str,
+        namespace: str | None = None,
+    ) -> PrometheusRuleDetailResponse:
+        params: JSONObject | None = {"namespace": namespace} if namespace else None
+        payload = self._request(
+            "GET",
+            f"/api/v1/plugins/k8s/prometheus-rules/{crd_name}",
+            params=params,
+        )
+        return self._validate_model(
+            payload,
+            PrometheusRuleDetailResponse,
+            "Unexpected Prometheus rule detail response format",
+        )
+
+    def get_prometheus_rule_rule(
+        self,
+        *,
+        crd_name: str,
+        group_name: str,
+        rule_name: str,
+        namespace: str | None = None,
+    ) -> PrometheusRuleRuleResponse:
+        params: JSONObject = {"group_name": group_name}
+        if namespace:
+            params["namespace"] = namespace
+        payload = self._request(
+            "GET",
+            f"/api/v1/plugins/k8s/prometheus-rules/{crd_name}/rules/{rule_name}",
+            params=params,
+        )
+        return self._validate_model(
+            payload,
+            PrometheusRuleRuleResponse,
+            "Unexpected Prometheus rule response format",
+        )
+
+    def update_prometheus_rule_rule(
+        self,
+        *,
+        crd_name: str,
+        rule_name: str,
+        group_name: str,
+        rule_data: JSONObject,
+        namespace: str | None = None,
+    ) -> PrometheusRuleRuleResponse:
+        params: JSONObject | None = {"namespace": namespace} if namespace else None
+        request_payload = self._validate_request_payload(
+            {"group_name": group_name, "rule_data": rule_data},
+            PrometheusRuleRuleUpdateRequest,
+            "Invalid Prometheus rule update payload",
+        )
+        payload = self._request(
+            "PUT",
+            f"/api/v1/plugins/k8s/prometheus-rules/{crd_name}/rules/{rule_name}",
+            params=params,
+            json=request_payload,
+        )
+        return self._validate_model(
+            payload,
+            PrometheusRuleRuleResponse,
+            "Unexpected Prometheus rule update response format",
+        )
+
+    def create_prometheus_rule_rule(
+        self,
+        *,
+        crd_name: str,
+        group_name: str,
+        rule_name: str,
+        rule_data: JSONObject,
+        namespace: str | None = None,
+    ) -> PrometheusRuleRuleResponse:
+        params: JSONObject | None = {"namespace": namespace} if namespace else None
+        request_payload = self._validate_request_payload(
+            {
+                "group_name": group_name,
+                "rule_name": rule_name,
+                "rule_data": rule_data,
+            },
+            PrometheusRuleRuleCreateRequest,
+            "Invalid Prometheus rule create payload",
+        )
+        payload = self._request(
+            "POST",
+            f"/api/v1/plugins/k8s/prometheus-rules/{crd_name}/rules",
+            params=params,
+            json=request_payload,
+        )
+        return self._validate_model(
+            payload,
+            PrometheusRuleRuleResponse,
+            "Unexpected Prometheus rule create response format",
+        )
+
+    def export_genestack_alert_updates(
+        self,
+        *,
+        crd_name: str,
+        group_name: str,
+        rule_name: str,
+        namespace: str | None = None,
+    ) -> RepoSyncResponse:
+        payload = self._request(
+            "POST",
+            "/api/v1/plugins/genestack_monitoring/export-alert-updates",
+            json={
+                "namespace": namespace,
+                "crd_name": crd_name,
+                "group_name": group_name,
+                "rule_name": rule_name,
+            },
+        )
+        return self._validate_model(
+            payload,
+            RepoSyncResponse,
+            "Unexpected Genestack alert export response format",
+        )
+
+    def list_scheduled_tasks(
+        self,
+        *,
+        task_type: str | None = None,
+        service_type: str | None = None,
+    ) -> list[ScheduledTaskResponse]:
+        params: JSONObject = {}
+        if task_type:
+            params["task_type"] = task_type
+        if service_type:
+            params["service_type"] = service_type
+        payload = self._request("GET", "/api/v1/scheduled-tasks", params=params or None)
+        return self._validate_list(
+            payload,
+            ScheduledTaskResponse,
+            "Unexpected scheduled tasks response format",
+        )
+
+    def list_scheduled_task_statuses(
+        self,
+        *,
+        task_type: str | None = None,
+        service_type: str | None = None,
+    ) -> list[ScheduledTaskStatusResponse]:
+        params: JSONObject = {}
+        if task_type:
+            params["task_type"] = task_type
+        if service_type:
+            params["service_type"] = service_type
+        payload = self._request("GET", "/api/v1/scheduled-tasks/status", params=params or None)
+        return self._validate_list(
+            payload,
+            ScheduledTaskStatusResponse,
+            "Unexpected scheduled task status response format",
+        )
+
+    def get_scheduled_task(self, task_id: int) -> ScheduledTaskResponse:
+        payload = self._request("GET", f"/api/v1/scheduled-tasks/{task_id}")
+        return self._validate_model(
+            payload,
+            ScheduledTaskResponse,
+            "Unexpected scheduled task response format",
+        )
+
+    def create_scheduled_task(self, payload: JSONObject) -> ScheduledTaskResponse:
+        request_payload = self._validate_request_payload(
+            payload,
+            ScheduledTaskCreate,
+            "Invalid scheduled task create payload",
+        )
+        response = self._request("POST", "/api/v1/scheduled-tasks", json=request_payload)
+        return self._validate_model(
+            response,
+            ScheduledTaskResponse,
+            "Unexpected scheduled task create response format",
+        )
+
+    def update_scheduled_task(self, task_id: int, payload: JSONObject) -> ScheduledTaskResponse:
+        request_payload = self._validate_request_payload(
+            payload,
+            ScheduledTaskUpdate,
+            "Invalid scheduled task update payload",
+        )
+        response = self._request(
+            "PATCH",
+            f"/api/v1/scheduled-tasks/{task_id}",
+            json=request_payload,
+        )
+        return self._validate_model(
+            response,
+            ScheduledTaskResponse,
+            "Unexpected scheduled task update response format",
+        )
+
+    def delete_scheduled_task(self, task_id: int) -> ScheduledTaskResponse:
+        response = self._request("DELETE", f"/api/v1/scheduled-tasks/{task_id}")
+        return self._validate_model(
+            response,
+            ScheduledTaskResponse,
+            "Unexpected scheduled task delete response format",
+        )
+
+    def run_scheduled_task_now(self, task_id: int) -> ScheduledTaskStatusResponse:
+        response = self._request("POST", f"/api/v1/scheduled-tasks/{task_id}/run-now")
+        return self._validate_model(
+            response,
+            ScheduledTaskStatusResponse,
+            "Unexpected scheduled task run-now response format",
+        )
 
     def get_activity_suppressed(self, suppression_id: int) -> Any:
         """GET /activity/suppressed?suppression_id={id}.

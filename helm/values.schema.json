@@ -548,6 +548,54 @@
         }
       }
     },
+    "bakery": {
+      "type": "object",
+      "properties": {
+        "config": {
+          "type": "object",
+          "properties": {
+            "activeProvider": {"type": "string"}
+          }
+        },
+        "client": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean", "default": false},
+            "baseUrl": {"type": "string"},
+            "verifySsl": {"type": "boolean", "default": true},
+            "requestTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 300},
+            "maxRetries": {"type": "integer", "minimum": 0, "maximum": 10},
+            "pollIntervalSeconds": {"type": "number", "minimum": 0.1, "maximum": 60},
+            "pollTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+            "pluginId": {"type": "string"},
+            "allowInsecureHttp": {"type": "boolean"},
+            "monitor": {
+              "type": "object",
+              "properties": {
+                "id": {"type": "string"},
+                "environmentLabel": {"type": "string"},
+                "region": {"type": "string"},
+                "clusterName": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}}
+              }
+            },
+            "auth": {
+              "type": "object",
+              "properties": {
+                "existingSecret": {"type": "string"},
+                "secretKeys": {
+                  "type": "object",
+                  "properties": {
+                    "keyId": {"type": "string"},
+                    "secret": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "auth": {
       "type": "object",
       "properties": {

@@ -259,10 +259,10 @@ alertmanager:
         memory: 256Mi
 
 kubeStateMetrics:
-  enabled: false
+  enabled: true
 
 kube-state-metrics:
-  enabled: false
+  enabled: true
 
 nodeExporter:
   enabled: false

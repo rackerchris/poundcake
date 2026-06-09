@@ -71,6 +71,7 @@ def test_alertmanager_templates_are_valid_service_plugin_templates() -> None:
     assert {template["service_exec"] for template in ALERTMANAGER_INGREDIENT_TEMPLATES} == {
         "health_check",
         "inspect",
+        "suppression",
         "sync_silences",
     }
     assert {recipe["name"] for recipe in ALERTMANAGER_RECIPE_TEMPLATES} == {
@@ -167,6 +168,55 @@ def test_alertmanager_adapter_validates_inspect_operations() -> None:
                 "inspect",
                 service_payload={"fingerprint": "root-fp"},
                 service_exec_parameters={"operation": "find_inhibited_by_source"},
+            )
+        )
+        is None
+    )
+
+
+def test_alertmanager_adapter_validates_suppression_operations() -> None:
+    adapter = AlertmanagerExecutionAdapter(transport=_transport())
+
+    assert (
+        adapter.validate(
+            _ctx(
+                "suppression",
+                service_exec_parameters={"operation": "not-real"},
+            )
+        )
+        == "alertmanager suppression operation must be one of: create, update, expire, get"
+    )
+    assert (
+        adapter.validate(
+            _ctx(
+                "suppression",
+                service_exec_parameters={"operation": "create"},
+                service_payload={"name": "maintenance"},
+            )
+        )
+        == "alertmanager suppression create/update requires service_payload.matchers"
+    )
+    assert (
+        adapter.validate(
+            _ctx(
+                "suppression",
+                service_exec_parameters={"operation": "expire"},
+                service_payload={},
+            )
+        )
+        == "alertmanager suppression expire requires service_payload.source_ref"
+    )
+    assert (
+        adapter.validate(
+            _ctx(
+                "suppression",
+                service_exec_parameters={"operation": "create"},
+                service_payload={
+                    "name": "maintenance",
+                    "starts_at": "2026-07-14T00:00:00+00:00",
+                    "ends_at": "2026-07-14T01:00:00+00:00",
+                    "matchers": [{"label_key": "alertname", "operator": "eq", "value": "Demo"}],
+                },
             )
         )
         is None
@@ -314,6 +364,141 @@ async def test_alertmanager_sync_silences_uses_bearer_auth() -> None:
         "url": "https://alertmanager.example.test/api/v2/silences",
         "kwargs": {"headers": {"Authorization": "Bearer secret-token"}},
     }
+
+
+@pytest.mark.asyncio
+async def test_alertmanager_create_suppression_posts_bounded_payload() -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeAsyncClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.setdefault("client_kwargs", kwargs)
+
+        async def __aenter__(self) -> "_FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            captured["post_url"] = url
+            captured["post_kwargs"] = kwargs
+            return httpx.Response(200, json={"silenceID": "sil-123"})
+
+        async def get(self, url: str, **kwargs: object) -> httpx.Response:
+            captured["get_url"] = url
+            captured["get_kwargs"] = kwargs
+            return httpx.Response(
+                200,
+                json={
+                    "id": "sil-123",
+                    "startsAt": "2026-07-14T00:00:00+00:00",
+                    "endsAt": "2026-07-14T01:00:00+00:00",
+                    "createdBy": "alice",
+                    "comment": "PoundCake suppression: Database maintenance\n---\nKernel patching",
+                    "matchers": [{"name": "alertname", "value": "NodeDown", "isRegex": False, "isEqual": True}],
+                    "status": {"state": "active"},
+                },
+            )
+
+    adapter = AlertmanagerExecutionAdapter(transport=_transport())
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+        result = await adapter.dispatch(
+            _ctx(
+                "suppression",
+                service_payload={
+                    "name": "Database maintenance",
+                    "reason": "Kernel patching",
+                    "starts_at": "2026-07-14T00:00:00+00:00",
+                    "ends_at": "2026-07-14T01:00:00+00:00",
+                    "created_by": "alice",
+                    "summary_ticket_enabled": True,
+                    "matchers": [{"label_key": "alertname", "operator": "eq", "value": "NodeDown"}],
+                },
+                service_exec_parameters={"operation": "create"},
+            )
+        )
+
+    assert result.status == "succeeded"
+    assert result.result is not None
+    assert result.result["operation"] == "create"
+    assert result.result["suppression"]["source_ref"] == "sil-123"
+    assert result.result["suppression"]["name"] == "Database maintenance"
+    assert result.result["suppression"]["reason"] == "Kernel patching"
+    assert captured["post_url"] == "https://alertmanager.example.test/api/v2/silences"
+    assert captured["post_kwargs"] == {
+        "json": {
+            "matchers": [{"name": "alertname", "value": "NodeDown", "isRegex": False, "isEqual": True}],
+            "startsAt": "2026-07-14T00:00:00+00:00",
+            "endsAt": "2026-07-14T01:00:00+00:00",
+            "createdBy": "alice",
+            "comment": "PoundCake suppression: Database maintenance\n---\nKernel patching",
+        }
+    }
+    assert captured["get_url"] == "https://alertmanager.example.test/api/v2/silence/sil-123"
+
+
+@pytest.mark.asyncio
+async def test_alertmanager_expire_suppression_reposts_silence_with_now_end() -> None:
+    captured: dict[str, object] = {}
+    get_calls = 0
+
+    class _FakeAsyncClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "_FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            captured["post_url"] = url
+            captured["post_kwargs"] = kwargs
+            return httpx.Response(200, json={"silenceID": "sil-123"})
+
+        async def get(self, url: str, **kwargs: object) -> httpx.Response:
+            nonlocal get_calls
+            get_calls += 1
+            captured[f"get_url_{get_calls}"] = url
+            captured[f"get_kwargs_{get_calls}"] = kwargs
+            state = "active" if get_calls == 1 else "expired"
+            return httpx.Response(
+                200,
+                json={
+                    "id": "sil-123",
+                    "startsAt": "2026-07-14T00:00:00+00:00",
+                    "endsAt": "2026-07-14T01:00:00+00:00",
+                    "createdBy": "alice",
+                    "comment": "PoundCake suppression: Database maintenance\n---\nKernel patching",
+                    "matchers": [{"name": "alertname", "value": "NodeDown", "isRegex": False, "isEqual": True}],
+                    "status": {"state": state},
+                },
+            )
+
+    adapter = AlertmanagerExecutionAdapter(transport=_transport())
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+        result = await adapter.dispatch(
+            _ctx(
+                "suppression",
+                service_payload={"source_ref": "sil-123"},
+                service_exec_parameters={"operation": "expire"},
+            )
+        )
+
+    assert result.status == "succeeded"
+    assert result.result is not None
+    assert result.result["operation"] == "expire"
+    assert result.result["suppression"]["status"] == "expired"
+    assert captured["post_url"] == "https://alertmanager.example.test/api/v2/silences"
+    assert captured["post_kwargs"]["json"]["id"] == "sil-123"
+    assert captured["get_url_1"] == "https://alertmanager.example.test/api/v2/silence/sil-123"
+    assert captured["get_url_2"] == "https://alertmanager.example.test/api/v2/silence/sil-123"
 
 
 @pytest.mark.asyncio

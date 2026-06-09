@@ -51,24 +51,6 @@ OrderProcessingStatus = Literal[
     "canceled",
 ]
 
-# Terminal statuses for dishes
-DishTerminalStatus = Literal[
-    "complete",
-    "failed",
-    "errored",
-    "timeout",
-    "canceled",
-]
-
-# Terminal statuses for orders
-OrderTerminalStatus = Literal[
-    "complete",
-    "failed",
-    "errored",
-    "timeout",
-    "canceled",
-]
-
 # =============================================================================
 # Alert Status Types
 # =============================================================================
@@ -154,24 +136,6 @@ RemediationOutcome = Literal[
     "succeeded",
     "failed",
     "none",
-]
-
-# =============================================================================
-# Sort Order Types
-# =============================================================================
-
-SortOrder = Literal[
-    "asc",
-    "desc",
-]
-
-# =============================================================================
-# Log Format Types
-# =============================================================================
-
-LogFormat = Literal[
-    "json",
-    "console",
 ]
 
 # =============================================================================

@@ -560,3 +560,149 @@ async def test_dispatch_order_skips_when_recipe_is_missing_even_if_global_comms_
 
     assert response.status == "skipped"
     assert response.reason == "No recipe for missing-recipe"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_order_resolving_phase_seeds_local_communication_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order = SimpleNamespace(
+        id=126,
+        req_id="req-resolving-local-comms",
+        processing_status="resolving",
+        alert_status="resolved",
+        alert_group_name="host-down",
+        remediation_outcome="succeeded",
+        raw_data={},
+        clear_timeout_sec=None,
+        clear_deadline_at=None,
+        clear_timed_out_at=None,
+        auto_close_eligible=False,
+        is_active=True,
+        updated_at=None,
+    )
+    local_comms = SimpleNamespace(
+        id=703,
+        ingredient=SimpleNamespace(ingredient_purpose="comms"),
+        run_phase="resolving",
+        run_condition="resolved_after_success",
+        service_payload={
+            "context": {
+                "poundcake_policy": {
+                    "route_id": "local-route",
+                    "service_type": "bakery",
+                    "destination_target": "ops",
+                    "provider_config": {},
+                    "enabled": True,
+                    "position": 1,
+                }
+            }
+        },
+    )
+    recipe = SimpleNamespace(
+        id=503,
+        name="host-down",
+        enabled=True,
+        clear_timeout_sec=None,
+        recipe_ingredients=[local_comms],
+    )
+    db = _DispatchDb([[order], [recipe], [], []])
+    captured: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def _noop_write_transaction(_db: object):
+        yield
+
+    def _seed(**kwargs: Any) -> list[object]:
+        captured["phase"] = kwargs["phase"]
+        captured["extra_recipe_ingredients"] = kwargs["extra_recipe_ingredients"]
+        captured["recipe"] = kwargs["recipe"]
+        return []
+
+    async def _global_policy_configured(_db: object) -> bool:
+        return True
+
+    async def _unexpected_global_recipe(_db: object) -> object:
+        raise AssertionError("global policy recipe should not be loaded when local comms exist")
+
+    monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
+    monkeypatch.setattr(orders_api, "global_policy_configured", _global_policy_configured)
+    monkeypatch.setattr(
+        orders_api, "get_global_policy_recipe_for_dispatch", _unexpected_global_recipe
+    )
+    monkeypatch.setattr(orders_api, "seed_dish_ingredients_for_phase", _seed)
+
+    response = await orders_api._dispatch_order_once(
+        request=SimpleNamespace(state=SimpleNamespace(req_id="req-resolving-local-comms")),
+        order_id=126,
+        db=db,  # type: ignore[arg-type]
+    )
+
+    assert response.status == "dispatched"
+    assert response.run_phase == "resolving"
+    assert captured["phase"] == "resolving"
+    assert captured["recipe"] is recipe
+    assert captured["extra_recipe_ingredients"] == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_order_resolving_phase_injects_global_communication_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order = SimpleNamespace(
+        id=127,
+        req_id="req-resolving-global-comms",
+        processing_status="resolving",
+        alert_status="resolved",
+        alert_group_name="host-down",
+        remediation_outcome="succeeded",
+        raw_data={},
+        clear_timeout_sec=None,
+        clear_deadline_at=None,
+        clear_timed_out_at=None,
+        auto_close_eligible=False,
+        is_active=True,
+        updated_at=None,
+    )
+    recipe = SimpleNamespace(
+        id=504,
+        name="host-down",
+        enabled=True,
+        clear_timeout_sec=None,
+        recipe_ingredients=[],
+    )
+    global_step = SimpleNamespace(id=704, ingredient=None)
+    global_recipe = SimpleNamespace(recipe_ingredients=[global_step])
+    db = _DispatchDb([[order], [recipe], [], []])
+    captured: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def _noop_write_transaction(_db: object):
+        yield
+
+    def _seed(**kwargs: Any) -> list[object]:
+        captured["phase"] = kwargs["phase"]
+        captured["extra_recipe_ingredients"] = kwargs["extra_recipe_ingredients"]
+        return []
+
+    async def _global_policy_configured(_db: object) -> bool:
+        return True
+
+    async def _global_policy_recipe(_db: object) -> object:
+        return global_recipe
+
+    monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
+    monkeypatch.setattr(orders_api, "global_policy_configured", _global_policy_configured)
+    monkeypatch.setattr(orders_api, "get_global_policy_recipe_for_dispatch", _global_policy_recipe)
+    monkeypatch.setattr(orders_api, "seed_dish_ingredients_for_phase", _seed)
+
+    response = await orders_api._dispatch_order_once(
+        request=SimpleNamespace(state=SimpleNamespace(req_id="req-resolving-global-comms")),
+        order_id=127,
+        db=db,  # type: ignore[arg-type]
+    )
+
+    assert response.status == "dispatched"
+    assert response.run_phase == "resolving"
+    assert captured["phase"] == "resolving"
+    assert captured["extra_recipe_ingredients"] == [global_step]

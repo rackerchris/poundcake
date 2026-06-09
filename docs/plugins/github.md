@@ -25,6 +25,9 @@ The optional credential is:
 - `credential_key_id=default`
 
 Credential payloads must include `token`, `access_token`, or `api_key`.
+Read-only public repository access can use the credential-manager
+`allow_public_read` flag without a token, but write operations such as
+`commit_and_pr` require one of those token fields.
 
 ## Operator configuration
 

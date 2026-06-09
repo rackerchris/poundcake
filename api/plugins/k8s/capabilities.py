@@ -1,0 +1,336 @@
+"""Composable Kubernetes capability templates."""
+
+from __future__ import annotations
+
+from api.types import JSONObject
+
+
+def load_k8s_capability_templates() -> tuple[JSONObject, ...]:
+    """Advertise bounded native Kubernetes capabilities."""
+    templates: list[JSONObject] = [
+        {
+            "capability_id": "k8s.remediation.kubernetes.kube-pod-container-restarts",
+            "ingredient_ref": {
+                "service_exec": "pod_action",
+                "destination_target": "kubernetes",
+                "task_key_template": "k8s-pod-action",
+            },
+            "operation": "delete",
+            "mode": "action",
+            "resource_kinds": ["pod"],
+            "trigger_match": {
+                "domains": ["kubernetes"],
+                "alert_groups": ["kube-pod-container-restarts"],
+                "phase": "remediation",
+            },
+            "required_inputs": ["namespace", "pod_name"],
+            "optional_inputs": ["evidence"],
+            "defaults": {
+                "service_payload": {
+                    "namespace": "{{ order.labels.namespace }}",
+                    "pod_name": "{{ order.labels.pod }}",
+                },
+                "service_exec_parameters": {
+                    "operation": "delete",
+                    "mutation_family": "pod_delete",
+                    "require_controller_owned": True,
+                },
+                "expected_outcome": {"success": True},
+                "expected_secs": 10,
+                "timeout": 120,
+                "role": "action_alert",
+            },
+            "safety_class": "safe_restart",
+            "requires_evidence": True,
+            "priority": 200,
+        },
+        {
+            "capability_id": "k8s.remediation.kubernetes.kube-pod-crash-looping",
+            "ingredient_ref": {
+                "service_exec": "pod_action",
+                "destination_target": "kubernetes",
+                "task_key_template": "k8s-pod-action",
+            },
+            "operation": "delete",
+            "mode": "action",
+            "resource_kinds": ["pod"],
+            "trigger_match": {
+                "domains": ["kubernetes"],
+                "alert_groups": ["kube-pod-crash-looping"],
+                "phase": "remediation",
+            },
+            "required_inputs": ["namespace", "pod_name"],
+            "optional_inputs": ["evidence"],
+            "defaults": {
+                "service_payload": {
+                    "namespace": "{{ order.labels.namespace }}",
+                    "pod_name": "{{ order.labels.pod }}",
+                },
+                "service_exec_parameters": {
+                    "operation": "delete",
+                    "mutation_family": "pod_delete",
+                    "require_controller_owned": True,
+                },
+                "expected_outcome": {"success": True},
+                "expected_secs": 10,
+                "timeout": 120,
+                "role": "action_alert",
+            },
+            "safety_class": "safe_restart",
+            "requires_evidence": True,
+            "priority": 200,
+        },
+        {
+            "capability_id": "k8s.remediation.kubernetes.kube-deployment-generation-mismatch",
+            "ingredient_ref": {
+                "service_exec": "deployment_action",
+                "destination_target": "kubernetes",
+                "task_key_template": "k8s-deployment-action",
+            },
+            "operation": "rollout_restart",
+            "mode": "action",
+            "resource_kinds": ["deployment"],
+            "trigger_match": {
+                "domains": ["kubernetes"],
+                "alert_groups": ["kube-deployment-generation-mismatch"],
+                "phase": "remediation",
+            },
+            "required_inputs": ["namespace", "deployment_name"],
+            "optional_inputs": ["evidence"],
+            "defaults": {
+                "service_payload": {
+                    "namespace": "{{ order.labels.namespace }}",
+                    "deployment_name": "{{ order.labels.deployment }}",
+                },
+                "service_exec_parameters": {
+                    "operation": "rollout_restart",
+                    "mutation_family": "deployment_rollout_restart",
+                },
+                "expected_outcome": {"success": True},
+                "expected_secs": 10,
+                "timeout": 180,
+                "role": "action_alert",
+            },
+            "safety_class": "safe_restart",
+            "requires_evidence": True,
+            "priority": 200,
+        },
+        {
+            "capability_id": "k8s.remediation.kubernetes.kube-deployment-replicas-mismatch",
+            "ingredient_ref": {
+                "service_exec": "deployment_action",
+                "destination_target": "kubernetes",
+                "task_key_template": "k8s-deployment-action",
+            },
+            "operation": "rollout_restart",
+            "mode": "action",
+            "resource_kinds": ["deployment"],
+            "trigger_match": {
+                "domains": ["kubernetes"],
+                "alert_groups": ["kube-deployment-replicas-mismatch"],
+                "phase": "remediation",
+            },
+            "required_inputs": ["namespace", "deployment_name"],
+            "optional_inputs": ["evidence"],
+            "defaults": {
+                "service_payload": {
+                    "namespace": "{{ order.labels.namespace }}",
+                    "deployment_name": "{{ order.labels.deployment }}",
+                },
+                "service_exec_parameters": {
+                    "operation": "rollout_restart",
+                    "mutation_family": "deployment_rollout_restart",
+                },
+                "expected_outcome": {"success": True},
+                "expected_secs": 10,
+                "timeout": 180,
+                "role": "action_alert",
+            },
+            "safety_class": "safe_restart",
+            "requires_evidence": True,
+            "priority": 200,
+        },
+        {
+            "capability_id": "k8s.remediation.kubernetes.kube-deployment-rollout-stuck",
+            "ingredient_ref": {
+                "service_exec": "deployment_action",
+                "destination_target": "kubernetes",
+                "task_key_template": "k8s-deployment-action",
+            },
+            "operation": "rollout_restart",
+            "mode": "action",
+            "resource_kinds": ["deployment"],
+            "trigger_match": {
+                "domains": ["kubernetes"],
+                "alert_groups": ["kube-deployment-rollout-stuck"],
+                "phase": "remediation",
+            },
+            "required_inputs": ["namespace", "deployment_name"],
+            "optional_inputs": ["evidence"],
+            "defaults": {
+                "service_payload": {
+                    "namespace": "{{ order.labels.namespace }}",
+                    "deployment_name": "{{ order.labels.deployment }}",
+                },
+                "service_exec_parameters": {
+                    "operation": "rollout_restart",
+                    "mutation_family": "deployment_rollout_restart",
+                },
+                "expected_outcome": {"success": True},
+                "expected_secs": 10,
+                "timeout": 180,
+                "role": "action_alert",
+            },
+            "safety_class": "safe_restart",
+            "requires_evidence": True,
+            "priority": 200,
+        },
+        {
+            "capability_id": "k8s.remediation.kubernetes.kube-statefulset-update-not-rolled-out",
+            "ingredient_ref": {
+                "service_exec": "workload_action",
+                "destination_target": "kubernetes",
+                "task_key_template": "k8s-workload-action",
+            },
+            "operation": "rollout_restart",
+            "mode": "action",
+            "resource_kinds": ["statefulset"],
+            "trigger_match": {
+                "domains": ["kubernetes"],
+                "alert_groups": ["kube-statefulset-update-not-rolled-out"],
+                "phase": "remediation",
+            },
+            "required_inputs": ["namespace", "kind", "name"],
+            "optional_inputs": ["evidence"],
+            "defaults": {
+                "service_payload": {
+                    "namespace": "{{ order.labels.namespace }}",
+                    "kind": "StatefulSet",
+                    "name": "{{ order.labels.statefulset }}",
+                },
+                "service_exec_parameters": {
+                    "operation": "rollout_restart",
+                    "mutation_family": "statefulset_rollout_restart",
+                },
+                "expected_outcome": {"success": True},
+                "expected_secs": 10,
+                "timeout": 180,
+                "role": "action_alert",
+            },
+            "safety_class": "safe_restart",
+            "requires_evidence": True,
+            "priority": 200,
+        },
+        {
+            "capability_id": "k8s.remediation.kubernetes.kube-daemonset-rollout-stuck",
+            "ingredient_ref": {
+                "service_exec": "workload_action",
+                "destination_target": "kubernetes",
+                "task_key_template": "k8s-workload-action",
+            },
+            "operation": "rollout_restart",
+            "mode": "action",
+            "resource_kinds": ["daemonset"],
+            "trigger_match": {
+                "domains": ["kubernetes"],
+                "alert_groups": ["kube-daemonset-rollout-stuck"],
+                "phase": "remediation",
+            },
+            "required_inputs": ["namespace", "kind", "name"],
+            "optional_inputs": ["evidence"],
+            "defaults": {
+                "service_payload": {
+                    "namespace": "{{ order.labels.namespace }}",
+                    "kind": "DaemonSet",
+                    "name": "{{ order.labels.daemonset }}",
+                },
+                "service_exec_parameters": {
+                    "operation": "rollout_restart",
+                    "mutation_family": "daemonset_rollout_restart",
+                },
+                "expected_outcome": {"success": True},
+                "expected_secs": 10,
+                "timeout": 180,
+                "role": "action_alert",
+            },
+            "safety_class": "safe_restart",
+            "requires_evidence": True,
+            "priority": 200,
+        },
+        {
+            "capability_id": "k8s.remediation.kubernetes.failed-job-cleanup",
+            "ingredient_ref": {
+                "service_exec": "failed_job_cleanup",
+                "destination_target": "kubernetes",
+                "task_key_template": "k8s-failed-job-cleanup",
+            },
+            "operation": "delete",
+            "mode": "action",
+            "resource_kinds": ["job"],
+            "required_inputs": ["namespace", "job_name"],
+            "optional_inputs": [],
+            "defaults": {
+                "service_exec_parameters": {
+                    "operation": "delete",
+                    "mutation_family": "failed_job_cleanup",
+                },
+                "expected_outcome": {"success": True},
+                "expected_secs": 10,
+                "timeout": 120,
+                "role": "action_alert",
+            },
+            "safety_class": "destructive",
+            "requires_evidence": True,
+        },
+        {
+            "capability_id": "k8s.remediation.kubernetes.scale-deployment",
+            "ingredient_ref": {
+                "service_exec": "resource_pressure_remediation",
+                "destination_target": "kubernetes",
+                "task_key_template": "k8s-resource-pressure-remediation",
+            },
+            "operation": "scale_deployment",
+            "mode": "action",
+            "resource_kinds": ["deployment"],
+            "required_inputs": ["namespace", "deployment_name", "replicas"],
+            "optional_inputs": [],
+            "defaults": {
+                "service_exec_parameters": {
+                    "operation": "scale_deployment",
+                    "mutation_family": "resource_pressure_scale_deployment",
+                },
+                "expected_outcome": {"success": True},
+                "expected_secs": 10,
+                "timeout": 120,
+                "role": "action_alert",
+            },
+            "safety_class": "bounded_scale",
+            "requires_evidence": True,
+        },
+        {
+            "capability_id": "k8s.remediation.kubernetes.patch-hpa-bounds",
+            "ingredient_ref": {
+                "service_exec": "resource_pressure_remediation",
+                "destination_target": "kubernetes",
+                "task_key_template": "k8s-resource-pressure-remediation",
+            },
+            "operation": "patch_hpa_bounds",
+            "mode": "action",
+            "resource_kinds": ["horizontalpodautoscaler"],
+            "required_inputs": ["namespace", "hpa_name"],
+            "optional_inputs": ["min_replicas", "max_replicas"],
+            "defaults": {
+                "service_exec_parameters": {
+                    "operation": "patch_hpa_bounds",
+                    "mutation_family": "resource_pressure_patch_hpa_bounds",
+                },
+                "expected_outcome": {"success": True},
+                "expected_secs": 10,
+                "timeout": 120,
+                "role": "action_alert",
+            },
+            "safety_class": "bounded_scale",
+            "requires_evidence": True,
+        },
+    ]
+    return tuple(templates)

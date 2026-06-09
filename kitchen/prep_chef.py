@@ -26,6 +26,107 @@ PREP_INTERVAL = int(os.getenv("PREP_INTERVAL", "5"))
 SYSTEM_REQ_ID = "SYSTEM-PREP-CHEF"
 POLLER_RETRIES = get_settings().poller_http_retries
 POLL_LIMIT = int(os.getenv("PREP_CHEF_LIMIT", "10"))
+DISPATCHABLE_ORDER_QUERIES = (
+    {"processing_status": "new"},
+    {"processing_status": "resolving", "alert_status": "resolved"},
+)
+
+
+def _fetch_dispatchable_orders(loop_limit: int) -> list[dict]:
+    orders: list[dict] = []
+    for query in DISPATCHABLE_ORDER_QUERIES:
+        start_time = time.time()
+        params = {**query, "limit": loop_limit}
+        resp = service_helpers.request_control_plane_sync(
+            "GET",
+            f"{API_URL}/orders",
+            params=params,
+            req_id=SYSTEM_REQ_ID,
+            timeout=10,
+            retries=POLLER_RETRIES,
+        )
+        latency_ms = int((time.time() - start_time) * 1000)
+        if resp.status_code != 200:
+            logger.error(
+                "Failed to fetch orders",
+                extra={
+                    "req_id": SYSTEM_REQ_ID,
+                    "method": "GET",
+                    "status": query["processing_status"],
+                    "alert_status": query.get("alert_status"),
+                    "status_code": resp.status_code,
+                    "latency_ms": latency_ms,
+                },
+            )
+            continue
+
+        fetched = resp.json()
+        if not isinstance(fetched, list):
+            continue
+        orders.extend(item for item in fetched if isinstance(item, dict))
+    return orders
+
+
+def _dispatch_orders(orders: list[dict]) -> None:
+    seen_order_ids: set[object] = set()
+    for order in orders:
+        order_id = order.get("id")
+        if order_id in seen_order_ids:
+            continue
+        seen_order_ids.add(order_id)
+        req_id = order.get("req_id", "UNKNOWN")
+        processing_status = order.get("processing_status")
+
+        logger.info(
+            "Preparing order for cooking",
+            extra={"req_id": req_id, "order_id": order_id},
+        )
+
+        start_time = time.time()
+        cook_resp = service_helpers.request_control_plane_sync(
+            "POST",
+            f"{API_URL}/cook/orders/{order_id}",
+            req_id=req_id,
+            timeout=15,
+            retries=POLLER_RETRIES,
+        )
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        if cook_resp.status_code in [200, 201]:
+            cook_status = "unknown"
+            try:
+                cook_status = cook_resp.json().get("status", "unknown")
+            except Exception:
+                cook_status = "unknown"
+            logger.info(
+                "Order prepared",
+                extra={
+                    "req_id": req_id,
+                    "order_id": order_id,
+                    "processing_status": processing_status,
+                    "cook_status": cook_status,
+                    "method": "POST",
+                    "status_code": cook_resp.status_code,
+                    "latency_ms": latency_ms,
+                },
+            )
+        else:
+            logger.error(
+                "Cook preparation failed",
+                extra={
+                    "req_id": req_id,
+                    "order_id": order_id,
+                    "processing_status": processing_status,
+                    "method": "POST",
+                    "status_code": cook_resp.status_code,
+                    "latency_ms": latency_ms,
+                    "response": cook_resp.text,
+                },
+            )
+
+
+def _run_once(loop_limit: int) -> None:
+    _dispatch_orders(_fetch_dispatchable_orders(loop_limit))
 
 
 def prep_loop() -> None:
@@ -56,32 +157,7 @@ def prep_loop() -> None:
             time.sleep(loop_interval)
             continue
         try:
-            start_time = time.time()
-            resp = service_helpers.request_control_plane_sync(
-                "GET",
-                f"{API_URL}/orders",
-                params={"processing_status": "new", "limit": loop_limit},
-                req_id=SYSTEM_REQ_ID,
-                timeout=10,
-                retries=POLLER_RETRIES,
-            )
-            latency_ms = int((time.time() - start_time) * 1000)
-            if resp.status_code != 200:
-                logger.error(
-                    "Failed to fetch orders",
-                    extra={
-                        "req_id": SYSTEM_REQ_ID,
-                        "method": "GET",
-                        "status": "new",
-                        "status_code": resp.status_code,
-                        "latency_ms": latency_ms,
-                    },
-                )
-                orders = []
-            else:
-                fetched = resp.json()
-                orders = fetched if isinstance(fetched, list) else []
-
+            _run_once(loop_limit)
             if api_unavailable_since is not None:
                 downtime_sec = int(time.time() - api_unavailable_since)
                 logger.info(
@@ -89,59 +165,6 @@ def prep_loop() -> None:
                     extra={"req_id": SYSTEM_REQ_ID, "downtime_sec": downtime_sec},
                 )
                 api_unavailable_since = None
-
-            for order in orders:
-                req_id = order.get("req_id", "UNKNOWN")
-                order_id = order.get("id")
-                processing_status = order.get("processing_status")
-
-                # Pass the original Request ID to the next hop
-                logger.info(
-                    "Preparing order for cooking",
-                    extra={"req_id": req_id, "order_id": order_id},
-                )
-
-                start_time = time.time()
-                cook_resp = service_helpers.request_control_plane_sync(
-                    "POST",
-                    f"{API_URL}/cook/orders/{order_id}",
-                    req_id=req_id,
-                    timeout=15,
-                    retries=POLLER_RETRIES,
-                )
-                latency_ms = int((time.time() - start_time) * 1000)
-
-                if cook_resp.status_code in [200, 201]:
-                    cook_status = "unknown"
-                    try:
-                        cook_status = cook_resp.json().get("status", "unknown")
-                    except Exception:
-                        cook_status = "unknown"
-                    logger.info(
-                        "Order prepared",
-                        extra={
-                            "req_id": req_id,
-                            "order_id": order_id,
-                            "processing_status": processing_status,
-                            "cook_status": cook_status,
-                            "method": "POST",
-                            "status_code": cook_resp.status_code,
-                            "latency_ms": latency_ms,
-                        },
-                    )
-                else:
-                    logger.error(
-                        "Cook preparation failed",
-                        extra={
-                            "req_id": req_id,
-                            "order_id": order_id,
-                            "processing_status": processing_status,
-                            "method": "POST",
-                            "status_code": cook_resp.status_code,
-                            "latency_ms": latency_ms,
-                            "response": cook_resp.text,
-                        },
-                    )
 
         except Exception as e:
             if api_unavailable_since is None:

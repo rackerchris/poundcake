@@ -88,11 +88,7 @@ class BakeryClientConfig:
             .strip()
             .lower()
             in {"1", "true", "yes"},
-            plugin_id=(
-                os.getenv("POUNDCAKE_BAKERY_PLUGIN_ID", "").strip()
-                or os.getenv("POUNDCAKE_INSTANCE_ID", "").strip()
-                or "poundcake/bakery-plugin"
-            ),
+            plugin_id=os.getenv("POUNDCAKE_BAKERY_PLUGIN_ID", "poundcake/bakery-plugin").strip(),
             environment_label=os.getenv("POUNDCAKE_BAKERY_PLUGIN_ENVIRONMENT_LABEL", ""),
             region=os.getenv("POUNDCAKE_BAKERY_PLUGIN_REGION", ""),
             cluster_name=os.getenv("POUNDCAKE_BAKERY_PLUGIN_CLUSTER_NAME", ""),
@@ -143,14 +139,6 @@ def _bakery_plugin_id() -> str:
     return current_bakery_config().plugin_id.strip() or "poundcake/bakery-plugin"
 
 
-def _bakery_bootstrap_key_id() -> str:
-    return os.getenv("POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID", "").strip()
-
-
-def _bakery_bootstrap_key() -> str:
-    return os.getenv("POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY", "").strip()
-
-
 def _bakery_request_timeout_seconds() -> int:
     return current_bakery_config().timeout_seconds
 
@@ -193,15 +181,7 @@ def validate_transport_config() -> str | None:
 
 def validate_bootstrap_config() -> str | None:
     config_error = validate_transport_config()
-    if config_error:
-        return config_error
-    if _bakery_auth_mode() == "hmac":
-        if not _bakery_bootstrap_key_id() or not _bakery_bootstrap_key():
-            return (
-                "POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID and "
-                "POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY are required for bakery hmac auth"
-            )
-    return None
+    return config_error
 
 
 class _BakeryTicketModel(BaseModel):
@@ -279,10 +259,6 @@ async def _load_bootstrap_hmac_credential() -> BakeryBootstrapCredential | None:
         credential_key_id=BAKERY_CREDENTIAL_KEY_ID,
     )
     if payload is None:
-        key_id = _bakery_bootstrap_key_id()
-        secret = _bakery_bootstrap_key()
-        if key_id and secret:
-            return BakeryBootstrapCredential(hmac_key_id=key_id, hmac_secret=secret)
         return None
     normalized = dict(payload)
     if "hmac_key_id" not in normalized and "key_id" in normalized:
@@ -468,8 +444,7 @@ async def bootstrap_monitor_credential(
     if _bakery_auth_mode() == "hmac" and bootstrap_credential is None:
         config_error = (
             "Bakery bootstrap HMAC credential is required for bakery hmac auth "
-            "(configure bakery_bootstrap_hmac or POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID/"
-            "POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY)"
+            "(configure bakery_bootstrap_hmac through credential-manager)"
         )
         await mark_adapter_credential_error(service_type="bakery", error=config_error)
         raise ServicePluginCredentialError(config_error)

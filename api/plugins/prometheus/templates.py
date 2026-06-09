@@ -99,6 +99,16 @@ PROMETHEUS_INGREDIENT_TEMPLATES[1]["service_exec_parameters"] = {
         "range_query": {"label": "Range query", "description": "Run a range PromQL query."},
     },
 }
+PROMETHEUS_INGREDIENT_TEMPLATES[2]["service_exec_parameters"] = {
+    "operation": "reload_config",
+    "allowed_operations": ["reload_config"],
+    "operation_metadata": {
+        "reload_config": {
+            "label": "Reload config",
+            "description": "Trigger Prometheus to reload its current rule and config state.",
+        }
+    },
+}
 
 
 PROMETHEUS_RECIPE_TEMPLATES: tuple[JSONObject, ...] = (

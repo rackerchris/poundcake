@@ -18,28 +18,29 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = [
-    "click>=8.1.0",
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.32.0",
-    "sqlalchemy>=2.0.36",
-    "GitPython>=3.1.47",
-    "greenlet>=3.0.3",
-    "alembic>=1.14.0",
-    "pymysql>=1.1.1",
-    "aiomysql>=0.2.0",
-    "cryptography>=46.0.7",
-    "ldap3>=2.9.1",
-    "requests>=2.33.0",
-    "httpx>=0.28.0",
-    "jsonschema>=4.23.0",
-    "pydantic>=2.10.0",
-    "pydantic-settings>=2.7.0",
-    "python-jose[cryptography]>=3.5.0",
-    "python-json-logger>=3.2.0",
-    "python-multipart>=0.0.26",
-    "python-dateutil>=2.9.0",
-    "PyYAML>=6.0.2",
-    "prometheus-client>=0.21.0",
+    "click>=8.4.2,<9.0.0",
+    "fastapi>=0.128.7,<0.129.0",
+    "uvicorn[standard]>=0.51.0,<0.52.0",
+    "sqlalchemy>=2.0.51,<3.0.0",
+    "GitPython>=3.1.50,<4.0.0",
+    "greenlet>=3.5.3,<4.0.0",
+    "pymysql>=1.2.0,<2.0.0",
+    "aiomysql>=0.3.2,<0.4.0",
+    "cryptography>=46.0.7,<47.0.0",
+    "ldap3>=2.9.1,<3.0.0",
+    "requests>=2.34.2,<3.0.0",
+    "httpx>=0.28.1,<0.29.0",
+    "jsonschema>=4.26.0,<5.0.0",
+    "pydantic>=2.13.4,<3.0.0",
+    "pydantic-settings>=2.14.2,<3.0.0",
+    "python-jose[cryptography]>=3.5.0,<4.0.0",
+    "python-json-logger>=4.1.0,<5.0.0",
+    "python-multipart>=0.0.32,<0.1.0",
+    "python-dateutil>=2.9.0.post0,<3.0.0",
+    "PyYAML>=6.0.3,<7.0.0",
+    "prometheus-client>=0.25.0,<0.26.0",
+    "slowapi>=0.1.10,<0.2.0",
+    "kubernetes>=35.0.0,<36.0.0",
 ]
 
 [project.scripts]
@@ -47,17 +48,20 @@ cakectl = "cli.main:main"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3.0",
-    "pytest-asyncio>=0.24.0",
-    "pytest-cov>=6.0.0",
-    "httpx>=0.28.0",
-    "black>=24.10.0",
-    "ruff>=0.8.0",
-    "mypy>=1.13.0",
-    "pre-commit>=3.8.0",
-    "types-PyYAML>=6.0.12",
-    "types-requests>=2.32.0",
-    "types-python-dateutil>=2.9.0",
+    "pytest>=8.4.2,<9.0.0",
+    "pytest-asyncio>=0.26.0,<0.27.0",
+    "pytest-cov>=6.3.0,<7.0.0",
+    "httpx>=0.28.1,<0.29.0",
+    "black>=24.10.0,<25.0.0",
+    "ruff>=0.15.21,<0.16.0",
+    "mypy>=1.20.2,<2.0.0",
+    "pre-commit>=3.8.0,<4.0.0",
+    "types-PyYAML>=6.0.12.20260518,<7.0.0",
+    "types-requests>=2.33.0.20260518,<3.0.0",
+    "types-python-dateutil>=2.9.0.20260518,<3.0.0",
+    "pytest-mock>=3.15.1,<4.0.0",
+    "pyright>=1.1.411,<2.0.0",
+    "yamllint>=1.38.0,<2.0.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -81,7 +85,6 @@ disallow_untyped_defs = true
 module = [
     "api.api.*",
     "api.main",
-    "api.migrate",
 ]
 disallow_untyped_defs = false
 
@@ -108,7 +111,6 @@ module = [
     "api.api.recipes",
     "api.api.auth",
     "api.api.dishes",
-    "api.api.v1.*",
     "api.models.models",
     "api.validation.query_params",
 ]
@@ -121,7 +123,6 @@ module = [
     "kubernetes.*",
     "git",
     "git.*",
-    "api.models.models_simple",
 ]
 ignore_missing_imports = true
 
@@ -149,6 +150,5 @@ extend-exclude = '''
   | \.venv
   | build
   | dist
-  | alembic
 )/
 '''

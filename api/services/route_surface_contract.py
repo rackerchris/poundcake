@@ -43,6 +43,7 @@ GUARDED_ROUTE_PREFIXES: tuple[str, ...] = (
     "/api/v1/plugins",
     "/api/v1/suppressions",
     "/api/v1/activity",
+    "/api/v1/ui",
 )
 
 
@@ -100,6 +101,9 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
         "GET", "/api/v1/communications/activity/status", RouteSurface.REPORTING_STATUS, "reader"
     ),
     RouteSurfaceEntry(
+        "GET", "/api/v1/ui/operator-actions", RouteSurface.CONFIGURATION_EDITOR, "reader"
+    ),
+    RouteSurfaceEntry(
         "GET", "/api/v1/activity/suppressed", RouteSurface.ADMIN_OBSERVABILITY, "reader"
     ),
     RouteSurfaceEntry("GET", "/api/v1/recipes/", RouteSurface.CONFIGURATION_EDITOR, "operator"),
@@ -140,6 +144,36 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
     RouteSurfaceEntry("GET", "/api/v1/plugins", RouteSurface.CONFIGURATION_EDITOR, "reader"),
     RouteSurfaceEntry(
         "GET", "/api/v1/plugins/k8s/prometheus-rules", RouteSurface.CONFIGURATION_EDITOR, "reader"
+    ),
+    RouteSurfaceEntry(
+        "GET",
+        "/api/v1/plugins/k8s/prometheus-rules/{crd_name}",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "reader",
+    ),
+    RouteSurfaceEntry(
+        "GET",
+        "/api/v1/plugins/k8s/prometheus-rules/{crd_name}/rules/{rule_name}",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "reader",
+    ),
+    RouteSurfaceEntry(
+        "PUT",
+        "/api/v1/plugins/k8s/prometheus-rules/{crd_name}/rules/{rule_name}",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "operator",
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/plugins/k8s/prometheus-rules/{crd_name}/rules",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "operator",
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/plugins/genestack_monitoring/export-alert-updates",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "operator",
     ),
     RouteSurfaceEntry(
         "GET", "/api/v1/plugins/{service_type}", RouteSurface.CONFIGURATION_EDITOR, "reader"

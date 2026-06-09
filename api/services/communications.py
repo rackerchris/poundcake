@@ -40,28 +40,6 @@ ALERTMANAGER_REQUIRED_ANNOTATION_FIELDS = {
     "description",
 }
 
-ALERTMANAGER_OPTIONAL_LABEL_FIELDS = {
-    "instance",
-    "service",
-    "team",
-    "environment",
-    "cluster",
-    "namespace",
-    "job",
-    "region",
-}
-
-ALERTMANAGER_OPTIONAL_ANNOTATION_FIELDS = {
-    "runbook_url",
-    "dashboard_url",
-    "playbook_url",
-    "investigation_url",
-    "silence_url",
-    "customer_impact",
-    "suggested_action",
-}
-
-
 def normalize_destination_type(value: str | None) -> str:
     return str(value or "").strip().lower()
 

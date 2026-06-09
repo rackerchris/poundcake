@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from starlette.requests import Request
 
 from api.api.plugins import _empty_helper_metadata, _summary_from_row
 from api.api.plugins import _credential_configured
 from api.api.plugins import _helper_metadata
-from api.api.plugins import _prometheus_rule_resource_from_crd, list_kubernetes_prometheus_rules
+from api.api.plugins import (
+    create_kubernetes_prometheus_rule_rule,
+    _prometheus_rule_resource_from_crd,
+    export_genestack_alert_updates,
+    get_kubernetes_prometheus_rule,
+    get_kubernetes_prometheus_rule_rule,
+    list_kubernetes_prometheus_rules,
+    reload_prometheus_plugin_rule_state,
+    update_kubernetes_prometheus_rule_rule,
+)
 from api.api.plugins import get_plugin_configuration, get_plugin_health, update_plugin_configuration
 from api.api.plugins import test_plugin_connection as run_plugin_connection_test
 from api.api.plugins import update_plugin_credential
 from api.api.plugins import update_service_plugin
 from api.models.models import ScheduledTask, ServicePlugin
 from api.schemas.schemas import (
+    GenestackAlertExportRequest,
+    PrometheusRuleRuleCreateRequest,
+    PrometheusRuleRuleUpdateRequest,
     ServicePluginConnectionTestRequest,
     ServicePluginConfigurationUpdate,
     ServicePluginUpdate,
@@ -21,6 +33,7 @@ from api.schemas.schemas import (
 from api.plugins.dummy.plugin import get_plugin as get_dummy_plugin
 from api.plugins.genestack_monitoring.plugin import get_plugin as get_genestack_plugin
 from api.plugins.alertmanager.plugin import get_plugin as get_alertmanager_plugin
+from api.plugins.k8s.plugin import get_plugin as get_k8s_plugin
 from api.plugins.prometheus.plugin import get_plugin as get_prometheus_plugin
 from api.plugins.stackstorm.plugin import get_plugin as get_stackstorm_plugin
 from api.plugins.base import ExecutionAdapter
@@ -30,6 +43,7 @@ from api.plugins.types import (
     ExecutionResult,
     PluginHealthResult,
 )
+from api.services.credential_manager import AdapterCredentialResult, ServicePluginCredentialError
 from fastapi import HTTPException
 import pytest
 from api.core.time import utc_now_db
@@ -52,14 +66,14 @@ def test_plugin_api_reports_missing_helper_capabilities() -> None:
     assert metadata["helper_available"] is False
     assert metadata["helper_capabilities"] == []
     assert metadata["required_helper_capabilities"] == {
-        "github": ["repo.list", "repo.read"],
+        "github": ["pull_request.create", "repo.list", "repo.read", "repo.write"],
         "k8s": ["k8s.prometheusrules.manage"],
-        "prometheus": ["alert_rules.parse"],
+        "prometheus": ["alert_rules.parse", "alert_rules.render"],
     }
     assert metadata["missing_helper_capabilities"] == {
-        "github": ["repo.list", "repo.read"],
+        "github": ["pull_request.create", "repo.list", "repo.read", "repo.write"],
         "k8s": ["k8s.prometheusrules.manage"],
-        "prometheus": ["alert_rules.parse"],
+        "prometheus": ["alert_rules.parse", "alert_rules.render"],
     }
 
 
@@ -190,12 +204,10 @@ class _SecretRequest:
         return self.body
 
 
-class _CredentialPresenceDb:
-    def __init__(self, credential: object | None) -> None:
-        self.credential = credential
-
-    async def execute(self, _statement: object) -> _Result:
-        return _Result(self.credential)
+def _credential_presence_result(configured: bool) -> AdapterCredentialResult | None:
+    if not configured:
+        return None
+    return AdapterCredentialResult(payload={"token": "configured"}, allow_public_read=False)
 
 
 def _stackstorm_plugin_row() -> ServicePlugin:
@@ -274,21 +286,27 @@ async def test_plugin_api_returns_stackstorm_operator_configuration(monkeypatch)
         "verify_ssl": True,
     }
 
-    @asynccontextmanager
-    async def credential_session():
-        yield _CredentialPresenceDb(object())
+    async def read_credential_with_policy(**_kwargs: object) -> AdapterCredentialResult | None:
+        return _credential_presence_result(True)
 
     monkeypatch.setattr(
         "api.api.plugins._plugin_by_service_type", lambda _service_type: get_stackstorm_plugin()
     )
-    monkeypatch.setattr("api.api.plugins.credential_manager_db_session", credential_session)
+    monkeypatch.setattr(
+        "api.api.plugins.read_adapter_credential_with_policy", read_credential_with_policy
+    )
 
     response = await get_plugin_configuration(
         "stackstorm", db=_StackStormConfigDb(row)  # type: ignore[arg-type]
     )
 
     assert response.service_type == "stackstorm"
-    assert response.config == row.plugin_config
+    assert response.config == {
+        "url": "http://stackstorm-api.poundcake.svc.cluster.local:9101",
+        "verify_ssl": True,
+        "capabilities_enabled": {},
+        "capability_overrides": {},
+    }
     assert response.credential_key_id == "default"
     assert response.credential_configured is True
 
@@ -297,14 +315,15 @@ async def test_plugin_api_returns_stackstorm_operator_configuration(monkeypatch)
 async def test_plugin_api_updates_stackstorm_config_without_credentials(monkeypatch) -> None:
     row = _stackstorm_plugin_row()
 
-    @asynccontextmanager
-    async def credential_session():
-        yield _CredentialPresenceDb(None)
+    async def read_credential_with_policy(**_kwargs: object) -> AdapterCredentialResult | None:
+        return _credential_presence_result(False)
 
     monkeypatch.setattr(
         "api.api.plugins._plugin_by_service_type", lambda _service_type: get_stackstorm_plugin()
     )
-    monkeypatch.setattr("api.api.plugins.credential_manager_db_session", credential_session)
+    monkeypatch.setattr(
+        "api.api.plugins.read_adapter_credential_with_policy", read_credential_with_policy
+    )
     db = _StackStormConfigDb(row)
 
     response = await update_plugin_configuration(
@@ -317,7 +336,100 @@ async def test_plugin_api_updates_stackstorm_config_without_credentials(monkeypa
     )
 
     assert db.committed is True
-    assert row.plugin_config == {"url": "http://stackstorm-api:9101", "verify_ssl": False}
+    assert row.plugin_config == {
+        "url": "http://stackstorm-api:9101",
+        "verify_ssl": False,
+        "capabilities_enabled": {},
+        "capability_overrides": {},
+    }
+    assert response.config == row.plugin_config
+
+
+@pytest.mark.asyncio
+async def test_plugin_api_returns_k8s_operator_configuration(monkeypatch) -> None:
+    row = _external_plugin_row("k8s")
+    row.plugin_config = {
+        "namespace": "monitoring",
+    }
+
+    async def read_credential_with_policy(**_kwargs: object) -> AdapterCredentialResult | None:
+        return _credential_presence_result(False)
+
+    monkeypatch.setattr(
+        "api.api.plugins._plugin_by_service_type", lambda _service_type: get_k8s_plugin()
+    )
+    monkeypatch.setattr(
+        "api.api.plugins.read_adapter_credential_with_policy", read_credential_with_policy
+    )
+
+    response = await get_plugin_configuration(
+        "k8s", db=_StackStormConfigDb(row)  # type: ignore[arg-type]
+    )
+
+    assert response.service_type == "k8s"
+    assert response.config == {
+        "namespace": "monitoring",
+        "capabilities_enabled": {},
+        "capability_overrides": {},
+    }
+    assert response.credential_key_id == "default"
+    assert response.credential_configured is False
+
+
+@pytest.mark.asyncio
+async def test_plugin_api_updates_k8s_config_with_capability_overrides(monkeypatch) -> None:
+    row = _external_plugin_row("k8s")
+
+    async def read_credential_with_policy(**_kwargs: object) -> AdapterCredentialResult | None:
+        return _credential_presence_result(False)
+
+    monkeypatch.setattr(
+        "api.api.plugins._plugin_by_service_type", lambda _service_type: get_k8s_plugin()
+    )
+    monkeypatch.setattr(
+        "api.api.plugins.read_adapter_credential_with_policy", read_credential_with_policy
+    )
+    db = _StackStormConfigDb(row)
+
+    response = await update_plugin_configuration(
+        "k8s",
+        ServicePluginConfigurationUpdate(
+            config={
+                "namespace": "monitoring",
+                "capabilities_enabled": {
+                    "k8s.remediation.kubernetes.kube-pod-crash-looping": True,
+                },
+                "capability_overrides": {
+                    "k8s.remediation.kubernetes.kube-pod-crash-looping": {
+                        "defaults": {
+                            "service_payload": {
+                                "namespace": "override-namespace",
+                            }
+                        }
+                    }
+                },
+            },
+        ),
+        db=db,  # type: ignore[arg-type]
+        _context=object(),
+    )
+
+    assert db.committed is True
+    assert row.plugin_config == {
+        "namespace": "monitoring",
+        "capabilities_enabled": {
+            "k8s.remediation.kubernetes.kube-pod-crash-looping": True,
+        },
+        "capability_overrides": {
+            "k8s.remediation.kubernetes.kube-pod-crash-looping": {
+                "defaults": {
+                    "service_payload": {
+                        "namespace": "override-namespace",
+                    }
+                }
+            }
+        },
+    }
     assert response.config == row.plugin_config
 
 
@@ -337,14 +449,15 @@ async def test_plugin_api_updates_monitoring_operator_config(
 ) -> None:
     row = _external_plugin_row(service_type)
 
-    @asynccontextmanager
-    async def credential_session():
-        yield _CredentialPresenceDb(None)
+    async def read_credential_with_policy(**_kwargs: object) -> AdapterCredentialResult | None:
+        return _credential_presence_result(False)
 
     monkeypatch.setattr(
         "api.api.plugins._plugin_by_service_type", lambda _service_type: plugin_factory()
     )
-    monkeypatch.setattr("api.api.plugins.credential_manager_db_session", credential_session)
+    monkeypatch.setattr(
+        "api.api.plugins.read_adapter_credential_with_policy", read_credential_with_policy
+    )
     db = _StackStormConfigDb(row)
 
     response = await update_plugin_configuration(
@@ -367,16 +480,17 @@ async def test_plugin_api_updates_monitoring_operator_config(
 
 
 @pytest.mark.asyncio
-async def test_credential_configured_uses_credential_manager_session(monkeypatch) -> None:
+async def test_credential_configured_uses_credential_manager_policy_reader(monkeypatch) -> None:
     row = _stackstorm_plugin_row()
     captured: dict[str, object] = {}
 
-    @asynccontextmanager
-    async def credential_session():
-        captured["opened"] = True
-        yield _CredentialPresenceDb(object())
+    async def read_credential_with_policy(**kwargs: object) -> AdapterCredentialResult | None:
+        captured.update(kwargs)
+        return _credential_presence_result(True)
 
-    monkeypatch.setattr("api.api.plugins.credential_manager_db_session", credential_session)
+    monkeypatch.setattr(
+        "api.api.plugins.read_adapter_credential_with_policy", read_credential_with_policy
+    )
 
     configured = await _credential_configured(
         row=row,
@@ -385,7 +499,31 @@ async def test_credential_configured_uses_credential_manager_session(monkeypatch
     )
 
     assert configured is True
-    assert captured == {"opened": True}
+    assert captured == {
+        "service_type": "stackstorm",
+        "credential_type": "stackstorm_api_key",
+        "credential_key_id": "default",
+    }
+
+
+@pytest.mark.asyncio
+async def test_credential_configured_returns_false_when_policy_reader_rejects(monkeypatch) -> None:
+    row = _stackstorm_plugin_row()
+
+    async def read_credential_with_policy(**_kwargs: object) -> AdapterCredentialResult | None:
+        raise ServicePluginCredentialError("credential reader denied")
+
+    monkeypatch.setattr(
+        "api.api.plugins.read_adapter_credential_with_policy", read_credential_with_policy
+    )
+
+    configured = await _credential_configured(
+        row=row,
+        credential_type="stackstorm_api_key",
+        credential_key_id="default",
+    )
+
+    assert configured is False
 
 
 class _ConnectionTestAdapter(ExecutionAdapter):
@@ -431,28 +569,76 @@ class _ConnectionTestAdapter(ExecutionAdapter):
 class _PrometheusRuleHelper:
     def __init__(self) -> None:
         self.namespace = "monitoring"
+        self.crd = {
+            "metadata": {
+                "name": "demo-rules",
+                "namespace": "monitoring",
+                "labels": {"release": "poundcake-prometheus"},
+                "annotations": {
+                    "poundcake.io/alert-rule-sources": (
+                        '{"DemoAlert": {"file": "alerts/demo.yaml", "format": "spec.groups"}}'
+                    )
+                },
+            },
+            "spec": {
+                "groups": [
+                    {
+                        "name": "demo",
+                        "rules": [
+                            {"alert": "DemoAlert", "expr": "vector(1)"},
+                            {"record": "demo:up:sum", "expr": "sum(up)"},
+                        ],
+                    }
+                ]
+            },
+        }
 
     async def list_prometheus_rules(self) -> list[dict[str, object]]:
-        return [
-            {
-                "metadata": {
-                    "name": "demo-rules",
-                    "namespace": self.namespace,
-                    "labels": {"release": "poundcake-prometheus"},
-                },
-                "spec": {
-                    "groups": [
-                        {
-                            "name": "demo",
-                            "rules": [
-                                {"alert": "DemoAlert", "expr": "vector(1)"},
-                                {"record": "demo:up:sum", "expr": "sum(up)"},
-                            ],
-                        }
-                    ]
-                },
-            }
-        ]
+        return [self.crd]
+
+    async def get_prometheus_rule(self, crd_name: str) -> dict[str, object] | None:
+        if crd_name == "demo-rules":
+            return self.crd
+        return None
+
+    async def update_rule_in_named_crd(
+        self,
+        *,
+        crd_name: str,
+        group_name: str,
+        rule_name: str,
+        rule_data: dict[str, object],
+        source_metadata: object | None = None,
+    ) -> dict[str, object]:
+        _ = source_metadata
+        if crd_name != "demo-rules":
+            return {"status": "error", "message": "not found"}
+        rules = self.crd["spec"]["groups"][0]["rules"]
+        for idx, rule in enumerate(rules):
+            if rule.get("alert") == rule_name or rule.get("record") == rule_name:
+                rules[idx] = rule_data
+                return {"status": "success", "message": "updated"}
+        return {"status": "error", "message": "not found"}
+
+    async def add_rule_to_named_crd(
+        self,
+        *,
+        crd_name: str,
+        group_name: str,
+        rule_name: str,
+        rule_data: dict[str, object],
+        source_metadata: object | None = None,
+    ) -> dict[str, object]:
+        _ = source_metadata
+        if crd_name != "demo-rules":
+            return {"status": "error", "message": "not found"}
+        groups = self.crd["spec"]["groups"]
+        for group in groups:
+            if group.get("name") == group_name:
+                group.setdefault("rules", []).append(rule_data)
+                return {"status": "success", "message": "created"}
+        groups.append({"name": group_name, "rules": [rule_data]})
+        return {"status": "success", "message": "created"}
 
 
 class _PrometheusRuleAdapter(ExecutionAdapter):
@@ -498,8 +684,19 @@ async def test_plugin_api_test_connection_is_adapter_only(monkeypatch) -> None:
         ),
     )
 
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/plugins/connection/test-connection",
+            "headers": [],
+        }
+    )
+    request.state.req_id = "TEST-PLUGIN-CONNECTION"
+
     response = await run_plugin_connection_test(
         "connection",
+        request,
         payload=ServicePluginConnectionTestRequest(config={"url": "http://configured.test"}),
         db=_StackStormConfigDb(row),  # type: ignore[arg-type]
         _context=object(),
@@ -627,6 +824,269 @@ async def test_plugin_api_lists_prometheus_rules_through_k8s_adapter(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_plugin_api_reads_one_prometheus_rule_crd(monkeypatch) -> None:
+    row = _external_plugin_row("k8s")
+    adapter = _PrometheusRuleAdapter(namespace="default")
+
+    async def fake_external_plugin_row_or_404(
+        _db: object, _service_type: str
+    ) -> tuple[object, object, object]:
+        return row, object(), adapter
+
+    monkeypatch.setattr(
+        "api.api.plugins._external_plugin_row_or_404",
+        fake_external_plugin_row_or_404,
+    )
+
+    response = await get_kubernetes_prometheus_rule("demo-rules", namespace="monitoring", db=object())
+
+    assert response.name == "demo-rules"
+    assert response.rule_count == 2
+
+
+@pytest.mark.asyncio
+async def test_plugin_api_reads_one_prometheus_rule_entry(monkeypatch) -> None:
+    row = _external_plugin_row("k8s")
+    adapter = _PrometheusRuleAdapter(namespace="default")
+
+    async def fake_external_plugin_row_or_404(
+        _db: object, _service_type: str
+    ) -> tuple[object, object, object]:
+        return row, object(), adapter
+
+    monkeypatch.setattr(
+        "api.api.plugins._external_plugin_row_or_404",
+        fake_external_plugin_row_or_404,
+    )
+
+    response = await get_kubernetes_prometheus_rule_rule(
+        "demo-rules",
+        "DemoAlert",
+        group_name="demo",
+        namespace="monitoring",
+        db=object(),
+    )
+
+    assert response.rule_name == "DemoAlert"
+    assert response.source == {"file": "alerts/demo.yaml", "format": "spec.groups"}
+
+
+@pytest.mark.asyncio
+async def test_plugin_api_updates_one_prometheus_rule_entry(monkeypatch) -> None:
+    row = _external_plugin_row("k8s")
+    adapter = _PrometheusRuleAdapter(namespace="default")
+
+    async def fake_external_plugin_row_or_404(
+        _db: object, _service_type: str
+    ) -> tuple[object, object, object]:
+        return row, object(), adapter
+
+    monkeypatch.setattr(
+        "api.api.plugins._external_plugin_row_or_404",
+        fake_external_plugin_row_or_404,
+    )
+    reloads: list[str] = []
+
+    async def fake_reload(**kwargs: object) -> None:
+        reloads.append(str(kwargs["req_id"]))
+
+    monkeypatch.setattr("api.api.plugins._reload_prometheus_rule_state", fake_reload)
+    request = Request(
+        {
+            "type": "http",
+            "method": "PUT",
+            "path": "/api/v1/plugins/k8s/prometheus-rules/demo-rules/rules/DemoAlert",
+            "headers": [],
+        }
+    )
+    request.state.req_id = "TEST-PROM-RELOAD"
+
+    response = await update_kubernetes_prometheus_rule_rule(
+        "demo-rules",
+        "DemoAlert",
+        payload=PrometheusRuleRuleUpdateRequest(
+            group_name="demo",
+            rule_data={"alert": "DemoAlert", "expr": "vector(2)"},
+        ),
+        request=request,
+        namespace="monitoring",
+        db=object(),
+        orchestrator=object(),
+        _context=object(),
+    )
+
+    assert response.rule_data["expr"] == "vector(2)"
+    assert reloads == ["TEST-PROM-RELOAD"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_api_creates_one_prometheus_rule_entry_and_reloads(monkeypatch) -> None:
+    row = _external_plugin_row("k8s")
+    adapter = _PrometheusRuleAdapter(namespace="default")
+
+    async def fake_external_plugin_row_or_404(
+        _db: object, _service_type: str
+    ) -> tuple[object, object, object]:
+        return row, object(), adapter
+
+    monkeypatch.setattr(
+        "api.api.plugins._external_plugin_row_or_404",
+        fake_external_plugin_row_or_404,
+    )
+    reloads: list[str] = []
+
+    async def fake_reload(**kwargs: object) -> None:
+        reloads.append(str(kwargs["req_id"]))
+
+    monkeypatch.setattr("api.api.plugins._reload_prometheus_rule_state", fake_reload)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/plugins/k8s/prometheus-rules/demo-rules/rules",
+            "headers": [],
+        }
+    )
+    request.state.req_id = "TEST-PROM-CREATE"
+
+    response = await create_kubernetes_prometheus_rule_rule(
+        "demo-rules",
+        payload=PrometheusRuleRuleCreateRequest(
+            group_name="demo",
+            rule_name="NewAlert",
+            rule_data={"alert": "NewAlert", "expr": "vector(3)"},
+        ),
+        request=request,
+        namespace="monitoring",
+        db=object(),
+        orchestrator=object(),
+        _context=object(),
+    )
+
+    assert response.rule_name == "NewAlert"
+    assert response.rule_data["expr"] == "vector(3)"
+    assert reloads == ["TEST-PROM-CREATE"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_api_reloads_prometheus_rule_state(monkeypatch) -> None:
+    row = _external_plugin_row("prometheus")
+
+    async def fake_external_plugin_row_or_404(
+        _db: object, _service_type: str
+    ) -> tuple[object, object, object]:
+        return row, object(), _ConnectionTestAdapter(url="https://prom.example.test")
+
+    async def fake_reload_prometheus_rules(**kwargs: object) -> ExecutionResult:
+        assert kwargs["req_id"] == "TEST-PROM-MANUAL-RELOAD"
+        assert kwargs["operator_config"] == {"url": "https://prom.example.test"}
+        return ExecutionResult(
+            service_type="prometheus",
+            status="succeeded",
+            result={
+                "success": True,
+                "status": "success",
+                "message": "Prometheus configuration reloaded",
+            },
+            raw={"success": True},
+        )
+
+    monkeypatch.setattr(
+        "api.api.plugins._external_plugin_row_or_404",
+        fake_external_plugin_row_or_404,
+    )
+    monkeypatch.setattr(
+        "api.api.plugins.reload_prometheus_rules",
+        fake_reload_prometheus_rules,
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/plugins/prometheus/reload",
+            "headers": [],
+        }
+    )
+    request.state.req_id = "TEST-PROM-MANUAL-RELOAD"
+
+    response = await reload_prometheus_plugin_rule_state(
+        request=request,
+        db=object(),
+        orchestrator=object(),  # type: ignore[arg-type]
+        _context=object(),
+    )
+
+    assert response.service_type == "prometheus"
+    assert response.status == "success"
+    assert response.message == "Prometheus configuration reloaded"
+
+
+class _ExportAdapter(_PrometheusRuleAdapter):
+    service_type = "genestack_monitoring"
+
+    def validate(self, ctx: ExecutionContext) -> str | None:
+        return None
+
+    async def dispatch(self, ctx: ExecutionContext) -> ExecutionResult:
+        return ExecutionResult(
+            service_type="genestack_monitoring",
+            status="succeeded",
+            result={
+                "status": "succeeded",
+                "message": "Prepared Genestack alert update.",
+                "branch": "poundcake/demo",
+                "pull_request": {"number": 12, "url": "https://example.test/pr/12"},
+                "exported": {"files": 1, "rule_name": "DemoAlert"},
+                "skipped": {"missing_source_metadata": 0},
+                "warnings": [],
+            },
+            raw={"success": True},
+        )
+
+    async def poll(self, ctx: ExecutionContext, service_exec_id: str) -> ExecutionResult:
+        raise AssertionError("not used")
+
+    def health_check(self) -> PluginHealthResult:
+        return PluginHealthResult(service_type="genestack_monitoring", status="healthy")
+
+
+@pytest.mark.asyncio
+async def test_plugin_api_exports_genestack_alert_updates_through_orchestrator(monkeypatch) -> None:
+    row = _external_plugin_row("genestack_monitoring")
+    adapter = _ExportAdapter()
+
+    async def fake_external_plugin_row_or_404(
+        _db: object, _service_type: str
+    ) -> tuple[object, object, object]:
+        return row, object(), adapter
+
+    class _Orchestrator:
+        async def dispatch(self, ctx: ExecutionContext) -> ExecutionResult:
+            return await adapter.dispatch(ctx)
+
+    monkeypatch.setattr(
+        "api.api.plugins._external_plugin_row_or_404",
+        fake_external_plugin_row_or_404,
+    )
+
+    response = await export_genestack_alert_updates(
+        payload=GenestackAlertExportRequest(
+            namespace="monitoring",
+            crd_name="demo-rules",
+            group_name="demo",
+            rule_name="DemoAlert",
+        ),
+        request=type("Request", (), {"state": type("State", (), {"req_id": "req-1"})()})(),
+        db=object(),
+        orchestrator=_Orchestrator(),  # type: ignore[arg-type]
+        _context=object(),
+    )
+
+    assert response.branch == "poundcake/demo"
+    assert response.pull_request is not None
+
+
+@pytest.mark.asyncio
 async def test_plugin_api_updates_stackstorm_credential_through_credential_manager(
     monkeypatch,
 ) -> None:
@@ -641,11 +1101,12 @@ async def test_plugin_api_updates_stackstorm_credential_through_credential_manag
     )
     monkeypatch.setattr("api.api.plugins.write_adapter_credential", save_credential)
 
-    @asynccontextmanager
-    async def credential_session():
-        yield _CredentialPresenceDb(None)
+    async def read_credential_with_policy(**_kwargs: object) -> AdapterCredentialResult | None:
+        return _credential_presence_result(False)
 
-    monkeypatch.setattr("api.api.plugins.credential_manager_db_session", credential_session)
+    monkeypatch.setattr(
+        "api.api.plugins.read_adapter_credential_with_policy", read_credential_with_policy
+    )
     db = _StackStormConfigDb(row)
 
     response = await update_plugin_credential(
@@ -687,11 +1148,12 @@ async def test_plugin_api_updates_any_adapter_credential_through_credential_mana
     monkeypatch.setattr("api.api.plugins._plugin_by_service_type", lambda _service_type: plugin)
     monkeypatch.setattr("api.api.plugins.write_adapter_credential", save_credential)
 
-    @asynccontextmanager
-    async def credential_session():
-        yield _CredentialPresenceDb(object())
+    async def read_credential_with_policy(**_kwargs: object) -> AdapterCredentialResult | None:
+        return _credential_presence_result(True)
 
-    monkeypatch.setattr("api.api.plugins.credential_manager_db_session", credential_session)
+    monkeypatch.setattr(
+        "api.api.plugins.read_adapter_credential_with_policy", read_credential_with_policy
+    )
     db = _StackStormConfigDb(row)
 
     response = await update_plugin_credential(

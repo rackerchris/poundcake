@@ -9,12 +9,14 @@ import pytest
 from api.plugins.bakery.adapter import BakeryExecutionAdapter, _payload_with_dish_evidence
 from api.plugins.bakery import client
 from api.plugins.bakery.client import BakeryClientConfig, BakeryHealth, BakeryMonitorCredential
+from api.plugins.bakery.contract import CommunicationOpenRequest
 from api.plugins.bakery.templates import (
     BAKERY_SCHEDULED_TASKS,
     communication_routes,
     ingredient_templates,
     recipe_templates,
 )
+from api.plugins.bakery.capabilities import load_bakery_capability_templates
 from api.plugins.catalog import get_enabled_plugins
 from api.plugins.contract import validate_payload_schema
 from api.services.credentials import decrypt_payload, encrypt_payload
@@ -24,17 +26,27 @@ from shared.hmac import build_hmac_signing_payload, hmac_sha256_hex
 
 
 def test_bakery_manifest_validates(monkeypatch) -> None:
-    monkeypatch.setenv("POUNDCAKE_ENABLED_PLUGINS", "dummy,bakery")
+    monkeypatch.setenv("POUNDCAKE_ENABLED_PLUGINS", "bakery")
     plugins = get_enabled_plugins()
     bakery = next(plugin for plugin in plugins if plugin.service_type == "bakery")
+    validated = validate_service_plugin(bakery, directory_name="bakery")
 
-    assert validate_service_plugin(bakery, directory_name="bakery") is bakery
-    assert bakery.plugin_tier == "supported"
-    assert bakery.plugin_log_key == "bakery"
-    assert bakery.bootstrap_factory is None
-    assert len(bakery.ingredient_templates) == 2
-    assert len(bakery.recipe_templates) == 1
-    assert len(bakery.communication_routes) == 1
+    assert validated.service_type == "bakery"
+    assert validated.plugin_tier == "supported"
+    assert validated.plugin_log_key == "bakery"
+    assert validated.bootstrap_factory is None
+    assert len(validated.ingredient_templates) == 2
+    assert len(validated.recipe_templates) == 1
+    assert len(validated.communication_routes) == 1
+    assert len(validated.capability_templates) == 1
+
+
+def test_bakery_plugin_excludes_dummy_when_both_are_configured(monkeypatch) -> None:
+    monkeypatch.setenv("POUNDCAKE_ENABLED_PLUGINS", "dummy,bakery")
+
+    plugins = get_enabled_plugins()
+
+    assert [plugin.service_type for plugin in plugins] == ["bakery"]
 
 
 def test_bakery_templates_advertise_default_global_comms_route(monkeypatch) -> None:
@@ -78,6 +90,15 @@ def test_bakery_templates_are_valid_service_plugin_templates() -> None:
         validate_payload_schema(template["payload_schema"])
 
 
+def test_bakery_capability_templates_match_communication_ingredient() -> None:
+    capability = load_bakery_capability_templates()[0]
+
+    assert capability["capability_id"] == "bakery.communication.open.default"
+    assert capability["ingredient_ref"]["service_exec"] == "communication"
+    assert capability["operation"] == "open"
+    assert capability["mode"] == "communication"
+
+
 def test_bakery_payload_aggregates_dish_evidence_context() -> None:
     ctx = ExecutionContext(
         service_type="bakery",
@@ -106,6 +127,44 @@ def test_bakery_payload_aggregates_dish_evidence_context() -> None:
     assert payload["context"]["order_id"] == 42
     assert payload["context"]["evidence"][0]["service_type"] == "prometheus"
     assert payload["context"]["execution_context"] == {"bakery_ticket_id": "TICKET-1"}
+
+
+def test_bakery_payload_includes_empty_evidence_list_when_dish_context_exists() -> None:
+    ctx = ExecutionContext(
+        service_type="bakery",
+        service_exec="communication",
+        req_id="unit-test",
+        context={
+            "dish": {
+                "evidence": [],
+                "context_updates": {"bakery_ticket_id": "TICKET-1"},
+            }
+        },
+    )
+
+    payload = _payload_with_dish_evidence(
+        {"source": "genestack_monitoring", "context": {"order_id": 42}},
+        ctx,
+    )
+
+    assert payload["context"]["order_id"] == 42
+    assert payload["context"]["evidence"] == []
+    assert payload["context"]["execution_context"] == {"bakery_ticket_id": "TICKET-1"}
+
+
+def test_bakery_open_contract_accepts_standardized_state_field() -> None:
+    request = CommunicationOpenRequest.model_validate(
+        {
+            "title": "Managed remediation opened",
+            "description": "PoundCake opened a remediation communication.",
+            "message": "Crash loop detected",
+            "source": "genestack_monitoring",
+            "state": "updated",
+            "context": {"order_id": 347, "evidence": []},
+        }
+    )
+
+    assert request.state == "updated"
 
 
 def test_bakery_hmac_headers_match_shared_contract(monkeypatch) -> None:
@@ -137,8 +196,6 @@ def test_bakery_transport_requires_https_outside_dev(monkeypatch) -> None:
     monkeypatch.delenv("TESTING", raising=False)
     monkeypatch.delenv("POUNDCAKE_BAKERY_ALLOW_INSECURE_HTTP", raising=False)
     monkeypatch.setenv("POUNDCAKE_BAKERY_BASE_URL", "http://bakery.example.com")
-    monkeypatch.setenv("POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID", "bootstrap")
-    monkeypatch.setenv("POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY", "secret")
 
     assert client.validate_transport_config() == (
         "POUNDCAKE_BAKERY_BASE_URL must use https outside test/dev"
@@ -147,8 +204,6 @@ def test_bakery_transport_requires_https_outside_dev(monkeypatch) -> None:
 
 def test_bakery_adapter_exposes_operator_connection_config(monkeypatch) -> None:
     monkeypatch.setenv("POUNDCAKE_BAKERY_BASE_URL", "https://bakery.example.com")
-    monkeypatch.delenv("POUNDCAKE_BAKERY_PLUGIN_ID", raising=False)
-    monkeypatch.delenv("POUNDCAKE_INSTANCE_ID", raising=False)
     monkeypatch.setenv("HOSTNAME", "pod-ephemeral-name")
     adapter = BakeryExecutionAdapter()
 
@@ -164,7 +219,7 @@ def test_bakery_adapter_exposes_operator_connection_config(monkeypatch) -> None:
             "poll_interval_seconds": "1.5",
             "poll_timeout_seconds": "90",
             "allow_insecure_http": True,
-            "plugin_id": "dev/poundcake/bakery",
+            "plugin_id": "rackspace/kronos-poundcake",
             "tags": "dev,kind",
         }
     )
@@ -179,7 +234,7 @@ def test_bakery_adapter_exposes_operator_connection_config(monkeypatch) -> None:
         "poll_interval_seconds": 1.5,
         "poll_timeout_seconds": 90,
         "allow_insecure_http": True,
-        "plugin_id": "dev/poundcake/bakery",
+        "plugin_id": "rackspace/kronos-poundcake",
         "tags": "dev,kind",
     }
     assert config["plugin_id"] == "poundcake/bakery-plugin"
@@ -210,7 +265,7 @@ def test_bakery_adapter_validates_monitor_hmac_payload() -> None:
             "bakery_monitor_hmac",
             {
                 "monitor_uuid": "monitor-1",
-                "monitor_id": "dev/poundcake/bakery",
+                "monitor_id": "rackspace/kronos-poundcake",
                 "hmac_key_id": "key-1",
                 "hmac_secret": "secret",
             },
@@ -261,7 +316,7 @@ async def test_bakery_bootstrap_uses_configured_bootstrap_hmac_credential(monkey
         def json(self) -> dict[str, object]:
             return {
                 "monitor_uuid": "monitor-uuid",
-                "monitor_id": "dev/poundcake/bakery",
+                "monitor_id": "rackspace/kronos-poundcake",
                 "hmac_key_id": "active-id",
                 "hmac_secret": "active-secret",
             }
@@ -276,7 +331,7 @@ async def test_bakery_bootstrap_uses_configured_bootstrap_hmac_credential(monkey
     token = client.set_bakery_client_config(
         BakeryClientConfig(
             base_url="https://bakery.example.com",
-            plugin_id="dev/poundcake/bakery",
+            plugin_id="rackspace/kronos-poundcake",
         )
     )
     monkeypatch.setattr(client, "read_adapter_credential_payload", read_adapter_credential_payload)

@@ -148,7 +148,6 @@ def test_external_plugins_expose_operator_config_contract(monkeypatch) -> None:
         "k8s",
         "prometheus",
         "stackstorm",
-        "dummy",
     }
     for service_type, schema in configurable.items():
         assert schema["type"] == "object"

@@ -13,17 +13,22 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
 from collections.abc import Mapping
+from dataclasses import dataclass
 
+from api.plugins.genestack_monitoring.helper_contracts import (
+    require_github_reader_helper,
+    require_k8s_helper,
+    require_prometheus_helper,
+)
 from api.plugins.genestack_monitoring.remediation_profiles import (
     MANAGED_REMEDIATION_MARKER,
     remediation_step_specs,
 )
-from api.plugins.github.client import GitHubClient
-from api.plugins.k8s.helper import KubernetesHelper
-from api.plugins.prometheus.helper import PrometheusAlertRuleHelper
-from api.services.alert_rule_repo import AlertRuleSource
+from api.services.alert_rule_repo import (
+    AlertRuleSource,
+    load_alert_rule_sources_from_annotations,
+)
 from api.services.plugin_bootstrap import PluginBootstrapError
 from api.services.plugin_operations import (
     RecipePayload,
@@ -31,7 +36,7 @@ from api.services.plugin_operations import (
 )
 from api.types import JSONObject
 
-DEFAULT_REPO = "rackerlabs/genestack-monitoring"
+DEFAULT_REPO = "rackerchris/genestack-monitoring"
 DEFAULT_BRANCH = "main"
 DEFAULT_ALERTS_PATH = "alerts"
 MANAGED_MARKER = "[managed-by:poundcake-genestack-monitoring]"
@@ -46,13 +51,34 @@ class ContentSyncPrepareResult:
     warning_recipes_skipped: int
     warning_recipes_disabled: int
     warning_recipes_preserved_nonmanaged: int
+    recipes_published: int
+    recipes_degraded_to_review: int
+    recipes_skipped_missing_capability: int
+    recipes_skipped_missing_ingredient: int
+    recipe_outcomes: dict[str, str]
     remediation_profiles_applied: int
     remediation_profiles_skipped_missing_ingredients: int
     processed: int
 
 
+@dataclass(frozen=True)
+class AlertExportPrepareResult:
+    """Structured result for outbound Genestack alert export."""
+
+    repo: str
+    base_branch: str
+    branch: str
+    files: dict[str, str]
+    message: str
+    skipped: dict[str, int]
+    warnings: list[str]
+    selected_rule: str
+
+
 async def sync_genestack_monitoring_content_prepare(
     helpers: Mapping[str, object],
+    *,
+    capabilities: list[JSONObject] | None = None,
 ) -> ContentSyncPrepareResult:
     """Read Genestack Monitoring alerts and build recipe/ingredient payloads.
 
@@ -66,21 +92,18 @@ async def sync_genestack_monitoring_content_prepare(
     It does NOT touch the database.  Callers should pass the returned
     ``recipes`` list to ``plugin_operations.upsert_recipes()``.
     """
-    helper = helpers.get("github")
-    if not isinstance(helper, GitHubClient):
-        raise PluginBootstrapError(
-            "genestack_monitoring content_sync requires enabled github plugin helper"
-        )
-    prometheus_helper = helpers.get("prometheus")
-    if not isinstance(prometheus_helper, PrometheusAlertRuleHelper):
-        raise PluginBootstrapError(
-            "genestack_monitoring content_sync requires enabled prometheus plugin helper"
-        )
-    k8s_helper = helpers.get("k8s")
-    if not isinstance(k8s_helper, KubernetesHelper):
-        raise PluginBootstrapError(
-            "genestack_monitoring content_sync requires enabled k8s plugin helper"
-        )
+    helper = require_github_reader_helper(
+        helpers,
+        operation="genestack_monitoring content_sync",
+    )
+    prometheus_helper = require_prometheus_helper(
+        helpers,
+        operation="genestack_monitoring content_sync",
+    )
+    k8s_helper = require_k8s_helper(
+        helpers,
+        operation="genestack_monitoring content_sync",
+    )
 
     repo = os.getenv("POUNDCAKE_GENESTACK_MONITORING_REPO", DEFAULT_REPO).strip() or DEFAULT_REPO
     branch = (
@@ -121,6 +144,11 @@ async def sync_genestack_monitoring_content_prepare(
     warning_recipes_skipped = 0
     warning_recipes_disabled = 0
     warning_recipes_preserved_nonmanaged = 0
+    recipes_published = 0
+    recipes_degraded_to_review = 0
+    recipes_skipped_missing_capability = 0
+    recipes_skipped_missing_ingredient = 0
+    recipe_outcomes: dict[str, str] = {}
     remediation_profiles_applied = 0
     remediation_profiles_skipped_missing_ingredients = 0
 
@@ -154,28 +182,15 @@ async def sync_genestack_monitoring_content_prepare(
             alerts_path=alerts_path,
         )
 
-        specs = remediation_step_specs(alert_name, str(record.get("path") or ""))
+        specs = remediation_step_specs(
+            alert_name,
+            str(record.get("path") or ""),
+            rule_data,
+            capabilities=capabilities or [],
+        )
         if not specs:
-            continue
-
-        # Check whether all required ingredients exist by looking them up
-        # through the plugin_operations helper (RBAC-checked read).
-        ingredient_ok = True
-        for spec in specs:
-            ingredient_key = (
-                spec.service_type,
-                spec.service_exec,
-                spec.task_key_template,
-            )
-            # Validation against the plugin operation helper — the adapter
-            # will perform this read during dispatch; we keep the check here
-            # for pre-flight validation but defer the actual DB read to
-            # the plugin_operations.get_ingredient() function.
-            # For the prepare phase we just note the expected keys.
-            _ = ingredient_key
-
-        if not ingredient_ok:
-            remediation_profiles_skipped_missing_ingredients += 1
+            recipes_skipped_missing_capability += 1
+            recipe_outcomes[alert_name] = "skipped_missing_capability"
             continue
 
         recipe_steps: list[RecipeStepPayload] = []
@@ -213,6 +228,12 @@ async def sync_genestack_monitoring_content_prepare(
             )
         )
 
+        outcome = _recipe_publication_outcome_for_specs(specs)
+        recipe_outcomes[alert_name] = outcome
+        if outcome == "published_managed_recipe":
+            recipes_published += 1
+        else:
+            recipes_degraded_to_review += 1
         remediation_profiles_applied += 1
 
     return ContentSyncPrepareResult(
@@ -221,11 +242,131 @@ async def sync_genestack_monitoring_content_prepare(
         warning_recipes_skipped=warning_recipes_skipped,
         warning_recipes_disabled=warning_recipes_disabled,
         warning_recipes_preserved_nonmanaged=warning_recipes_preserved_nonmanaged,
+        recipes_published=recipes_published,
+        recipes_degraded_to_review=recipes_degraded_to_review,
+        recipes_skipped_missing_capability=recipes_skipped_missing_capability,
+        recipes_skipped_missing_ingredient=recipes_skipped_missing_ingredient,
+        recipe_outcomes=recipe_outcomes,
         remediation_profiles_applied=remediation_profiles_applied,
         remediation_profiles_skipped_missing_ingredients=(
             remediation_profiles_skipped_missing_ingredients
         ),
         processed=len(alert_records),
+    )
+
+
+async def export_genestack_alert_updates_prepare(
+    helpers: Mapping[str, object],
+    *,
+    crd_name: str,
+    group_name: str,
+    rule_name: str,
+    namespace: str = "",
+) -> AlertExportPrepareResult:
+    """Build an in-memory repo update for one Genestack-managed alert rule."""
+    require_github_reader_helper(helpers, operation="genestack_monitoring alert export")
+    prometheus_helper = require_prometheus_helper(
+        helpers,
+        operation="genestack_monitoring alert export",
+    )
+    k8s_helper = require_k8s_helper(
+        helpers,
+        operation="genestack_monitoring alert export",
+    )
+
+    repo = os.getenv("POUNDCAKE_GENESTACK_MONITORING_REPO", DEFAULT_REPO).strip() or DEFAULT_REPO
+    base_branch = (
+        os.getenv("POUNDCAKE_GENESTACK_MONITORING_BRANCH", DEFAULT_BRANCH).strip() or DEFAULT_BRANCH
+    )
+    alerts_path = (
+        os.getenv("POUNDCAKE_GENESTACK_MONITORING_ALERTS_PATH", DEFAULT_ALERTS_PATH).strip()
+        or DEFAULT_ALERTS_PATH
+    ).strip("/")
+
+    rule_records = _rule_records_from_crds(await k8s_helper.list_prometheus_rules())
+    selected = next(
+        (
+            record
+            for record in rule_records
+            if record["crd_name"] == crd_name
+            and record["group_name"] == group_name
+            and record["rule_name"] == rule_name
+        ),
+        None,
+    )
+    if selected is None:
+        raise PluginBootstrapError(
+            f"PrometheusRule {crd_name}/{group_name}/{rule_name} was not found in current CRD state"
+        )
+
+    selected_namespace = str(selected.get("namespace") or "").strip()
+    if namespace.strip() and selected_namespace and selected_namespace != namespace.strip():
+        raise PluginBootstrapError(
+            f"Selected rule is in namespace {selected_namespace}, not requested namespace {namespace}"
+        )
+
+    source = selected.get("source")
+    if not isinstance(source, AlertRuleSource):
+        raise PluginBootstrapError(
+            f"Rule {rule_name!r} does not have Genestack source metadata and cannot be exported"
+        )
+    relative_path = source.relative_path.strip()
+    if not relative_path or not (
+        relative_path == alerts_path or relative_path.startswith(f"{alerts_path}/")
+    ):
+        raise PluginBootstrapError(
+            f"Rule {rule_name!r} is not mapped to the configured Genestack alerts path"
+        )
+
+    records_for_file = [
+        (
+            str(record["group_name"]),
+            dict(record["rule_data"]),
+            record["source"],
+        )
+        for record in rule_records
+        if isinstance(record.get("source"), AlertRuleSource)
+        and record["source"].relative_path == relative_path
+    ]
+    if not records_for_file:
+        raise PluginBootstrapError(
+            f"No current CRD-backed rules were found for Genestack source file {relative_path}"
+        )
+
+    document = prometheus_helper.render_document(records_for_file, relative_path=relative_path)
+    content = prometheus_helper.dump_document(document, relative_path=relative_path)
+    branch = _export_branch_name(rule_name)
+    warnings: list[str] = []
+    skipped = {
+        "missing_source_metadata": len(
+            [record for record in rule_records if record.get("source") is None]
+        ),
+        "non_genestack_rules": len(
+            [
+                record
+                for record in rule_records
+                if isinstance(record.get("source"), AlertRuleSource)
+                and not (
+                    record["source"].relative_path == alerts_path
+                    or record["source"].relative_path.startswith(f"{alerts_path}/")
+                )
+            ]
+        ),
+    }
+    if skipped["missing_source_metadata"]:
+        warnings.append("Some live rules were skipped because they do not have source metadata.")
+
+    return AlertExportPrepareResult(
+        repo=repo,
+        base_branch=base_branch,
+        branch=branch,
+        files={relative_path: content},
+        message=(
+            f"Prepared Genestack alert update for {rule_name} from {selected_namespace or namespace or 'configured namespace'}."
+        ),
+        skipped=skipped,
+        warnings=warnings,
+        selected_rule=rule_name,
     )
 
 
@@ -238,9 +379,12 @@ def _alert_records_from_content(
     content: str,
     path: str,
     *,
-    helper: PrometheusAlertRuleHelper | None = None,
+    helper: object,
 ) -> list[JSONObject]:
-    parser = helper or PrometheusAlertRuleHelper()
+    parser = require_prometheus_helper(
+        {"prometheus": helper},
+        operation=f"genestack_monitoring parse {path}",
+    )
     try:
         return [
             record
@@ -257,6 +401,51 @@ def _source_from_record(record: JSONObject) -> AlertRuleSource:
         source_format=str(record.get("source_format") or "").strip(),
         wrapper_key=str(record.get("wrapper_key") or "").strip() or None,
     )
+
+
+def _rule_records_from_crds(crds: list[JSONObject]) -> list[JSONObject]:
+    records: list[JSONObject] = []
+    for crd in crds:
+        metadata = crd.get("metadata") if isinstance(crd.get("metadata"), dict) else {}
+        spec = crd.get("spec") if isinstance(crd.get("spec"), dict) else {}
+        groups = spec.get("groups") if isinstance(spec.get("groups"), list) else []
+        sources = load_alert_rule_sources_from_annotations(metadata.get("annotations"))
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_name = str(group.get("name") or "").strip()
+            rules = group.get("rules") if isinstance(group.get("rules"), list) else []
+            for raw_rule in rules:
+                if not isinstance(raw_rule, dict):
+                    continue
+                rule_name = str(raw_rule.get("alert") or raw_rule.get("record") or "").strip()
+                if not rule_name:
+                    continue
+                records.append(
+                    {
+                        "namespace": str(metadata.get("namespace") or "").strip(),
+                        "crd_name": str(metadata.get("name") or "").strip(),
+                        "group_name": group_name,
+                        "rule_name": rule_name,
+                        "rule_data": dict(raw_rule),
+                        "source": sources.get(rule_name),
+                    }
+                )
+    return records
+
+
+def _export_branch_name(rule_name: str) -> str:
+    slug = _alert_name_slug(rule_name)[:48].strip("-") or "alert-rule"
+    return f"poundcake/genestack-alert-update-{slug}"
+
+
+def _recipe_publication_outcome_for_specs(specs: list[RemediationStepSpec]) -> str:
+    action_steps = [spec for spec in specs if str(spec.role) == "action_alert"]
+    if not action_steps:
+        return "degraded_to_review"
+    if all(spec.service_type == "bakery" and spec.service_exec == "communication" for spec in action_steps):
+        return "degraded_to_review"
+    return "published_managed_recipe"
 
 
 def _is_warning_alert(alert_name: str, rule_data: JSONObject) -> bool:

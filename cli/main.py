@@ -9,15 +9,9 @@
 from __future__ import annotations
 
 import sys
-import os
-from pathlib import Path
 from typing import Optional
 
 import click
-
-# Support installed console scripts plus legacy module/direct-script execution.
-if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from cli.client import PoundCakeClient
 from cli.commands import (
@@ -27,8 +21,11 @@ from cli.commands import (
     communications,
     dishes,
     ingredients,
+    observability,
     orders,
     overview,
+    settings,
+    scheduled_tasks,
     suppressions,
     recipes,
 )
@@ -96,9 +93,6 @@ def cli(
 ) -> None:
     """PoundCake CLI - operate orders, recipes, and communications."""
     ctx.ensure_object(dict)
-    legacy_api_key = os.getenv("POUNDCAKE_API_KEY")
-    if legacy_api_key:
-        raise click.UsageError("`POUNDCAKE_API_KEY` is no longer supported; use `POUNDCAKE_TOKEN`.")
 
     ctx.obj["client"] = PoundCakeClient(
         url,
@@ -121,11 +115,15 @@ cli.add_command(dishes.dishes)
 cli.add_command(comm_policy.comm_policy)
 cli.add_command(recipes.recipes)
 cli.add_command(ingredients.ingredients)
+cli.add_command(settings.settings)
+cli.add_command(observability.observability)
 cli.add_command(health_cmd.ready_cmd)
 cli.add_command(health_cmd.health_cmd)
+cli.add_command(health_cmd.health_status_cmd)
 cli.add_command(webhook_cmd.webhook)
-cli.add_command(plugin_cmd.plugin)
+cli.add_command(plugin_cmd.plugins)
 cli.add_command(activity_cmd.activity)
+cli.add_command(scheduled_tasks.scheduled_tasks)
 
 
 def main() -> None:

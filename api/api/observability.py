@@ -77,7 +77,6 @@ def _order_matches_activity_scope(
 ) -> bool:
     return order_matches_filters(
         raw_data=order.raw_data,
-        labels=order.labels,
         order_scope=order_scope,
         order_type=order_type,
     )
@@ -219,17 +218,12 @@ async def get_communication_activity_status(
     ]
 
 
-@limiter.limit(get_settings().rate_limit_default)
-@router.get("/observability/activity", response_model=list[ObservabilityActivityRecord])
-async def get_observability_activity(
-    request: Request,
+async def _get_observability_activity_records(
     params: ObservabilityActivityQueryParams = Depends(
         validate_query_params(ObservabilityActivityQueryParams)
     ),
     db: AsyncSession = Depends(get_db),
-    _context: object = Depends(require_reader),
 ) -> list[ObservabilityActivityRecord]:
-    _ = request.state.req_id
     records: list[ObservabilityActivityRecord] = []
     fetch_count = params.limit + params.offset
     effective_scope = _effective_order_scope(
@@ -370,6 +364,20 @@ async def get_observability_activity(
 
 
 @limiter.limit(get_settings().rate_limit_default)
+@router.get("/observability/activity", response_model=list[ObservabilityActivityRecord])
+async def get_observability_activity(
+    request: Request,
+    params: ObservabilityActivityQueryParams = Depends(
+        validate_query_params(ObservabilityActivityQueryParams)
+    ),
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_reader),
+) -> list[ObservabilityActivityRecord]:
+    _ = request.state.req_id
+    return await _get_observability_activity_records(params=params, db=db)
+
+
+@limiter.limit(get_settings().rate_limit_default)
 @router.get(
     "/observability/activity/status",
     response_model=list[ObservabilityActivityStatusRecord],
@@ -383,7 +391,7 @@ async def get_observability_activity_status(
     _context: object = Depends(require_reader),
 ) -> list[ObservabilityActivityStatusRecord]:
     _ = request.state.req_id
-    records = await get_observability_activity(params=params, db=db)
+    records = await _get_observability_activity_records(params=params, db=db)
     return [
         ObservabilityActivityStatusRecord(
             type=row.type,

@@ -4,7 +4,7 @@
 
 This guide is for developers changing PoundCake itself. It focuses on the local Python environment, plugin and plugin adapter development, and validation against local containers. Production Helm operations live in [OPERATOR.md](OPERATOR.md).
 
-For runtime architecture, see [ARCHITECTURE.md](ARCHITECTURE.md). For the service plugin contract, see [SERVICE_PLUGIN_CONTRACT.md](SERVICE_PLUGIN_CONTRACT.md). For per-plugin requirements and support tiers, see [plugins/README.md](plugins/README.md). For schema and migration work, see [DATABASE.md](DATABASE.md). For auth and internal RBAC, see [AUTH_RBAC.md](AUTH_RBAC.md).
+For runtime architecture, see [ARCHITECTURE.md](ARCHITECTURE.md). For the service plugin contract, see [SERVICE_PLUGIN_CONTRACT.md](SERVICE_PLUGIN_CONTRACT.md). For per-plugin requirements and support tiers, see [plugins/README.md](plugins/README.md). For database and startup-job behavior, see [DATABASE.md](DATABASE.md). For auth and internal RBAC, see [AUTH_RBAC.md](AUTH_RBAC.md).
 
 ## Development Prerequisites
 
@@ -116,7 +116,13 @@ COMPOSE="docker compose" bash docker/devstack/create.sh
 COMPOSE="docker-compose" bash docker/devstack/create.sh
 ```
 
-The script waits for `/live`, `/ready`, and the UI, then prints dummy plugin health, service registry ingredients, and recipes.
+The script waits for `/livez`, `/readyz`, and the UI, then prints dummy plugin health, service registry ingredients, and recipes.
+
+For Helm devstack work, keep local adapter and test credentials in the
+gitignored shell file `helm/devstack/.devstack-secrets.sh`. The tracked starter
+template is `helm/devstack/devstack-secrets.example.sh`, and
+`bash helm/devstack/refresh-local-secrets.sh` can snapshot current devstack
+auth/webhook/StackStorm secrets into the local file for repeated testing.
 
 Run dummy e2e scenarios against the running stack:
 
@@ -217,3 +223,17 @@ bash docker/devstack/destroy.sh
 If your code change affects the Helm chart, rendered environment variables, or production deployment behavior, also run the Helm checks listed in [OPERATOR.md](OPERATOR.md).
 
 If a change affects a specific plugin, add or update tests around that plugin's manifest, adapter normalization, template validation, and scheduled health behavior.
+
+For Helm/devstack changes that touch live Kubernetes alerting or managed
+Genestack rule flow, also run the cluster-backed shell coverage that matches the
+surface you changed:
+
+```bash
+bash tests/run_genestack_content_sync_k8s_e2e.sh
+bash tests/run_genestack_managed_recipe_e2e.sh
+bash tests/run_prometheus_rule_reload_order_e2e.sh
+```
+
+The Prometheus rule reload runner validates the operator path from editing a
+managed `PrometheusRule` through Prometheus reload, cluster alert generation,
+and PoundCake order execution in the local Kind devstack.

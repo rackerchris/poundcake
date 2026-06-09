@@ -8,7 +8,7 @@ This doc describes the current auth shape after the PoundCake 2.0 service plugin
 
 ## Auth Layers
 
-- Public paths bypass auth for edge liveness/readiness, metrics, and login/device/OIDC bootstrap.
+- Public paths bypass auth for edge liveness/readiness, metrics, and public auth entrypoints.
 - Human sessions resolve to one of `reader`, `operator`, or `admin`.
 - Internal HMAC requests resolve to `service` plus registered service plugin metadata.
 - Raw service-token requests do not create an internal service principal.
@@ -36,7 +36,7 @@ The application health routes `/api/v1/live`, `/api/v1/ready`, and `/api/v1/heal
 |---|---:|---:|
 | edge liveness/readiness, metrics, docs, static assets | public | n/a |
 | `/api/v1/live`, `/api/v1/ready`, `/api/v1/health` | reader | n/a |
-| login, OIDC, and device flow bootstrap | public | public bootstrap |
+| login, OIDC, and device flow auth entrypoints | public | public auth entrypoints |
 | `/api/v1/auth/me`, logout | reader | reader |
 | `/api/v1/auth/principals`, `/api/v1/auth/bindings` | admin | admin |
 | `/api/v1/plugins` summary and stored health | reader | operator for runtime knobs |
@@ -81,7 +81,7 @@ The UI exposes RBAC policy management at `/config/access` as the `RBAC` configur
 
 Control-plane routes are classified by payload sensitivity:
 
-- `public`: unauthenticated probes, docs/static, auth bootstrap, and webhook ingress with route-level bearer validation.
+- `public`: unauthenticated probes, docs/static, public auth entrypoints, and webhook ingress with route-level bearer validation.
 - `reporting/status`: redacted list and drilldown views for operators and readers.
 - `configuration/editor`: desired-state detail reads and writes. Operators own recipes, safe runtime tuning, and non-secret adapter configuration. Admins own adapter credentials, RBAC, read-only plugin-owned ingredient template inspection during conversion, and scheduled task payload definitions.
 - `admin/observability`: full dish ingredient execution history for incident/debug review. This is read-only, preserves internal service mutation boundaries, and redacts obvious secret-bearing nested keys from payload/result JSON.

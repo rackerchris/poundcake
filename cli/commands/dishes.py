@@ -66,6 +66,30 @@ def _dish_detail_table(payload: JSONObject) -> str:
     )
 
 
+def _dish_ingredient_history_table(rows: list[JSONObject]) -> str:
+    return render_sections(
+        [
+            (
+                "Dish Ingredients",
+                [
+                    {
+                        "id": item.get("id"),
+                        "recipe_ingredient_id": item.get("recipe_ingredient_id"),
+                        "service_type": item.get("service_type"),
+                        "service_exec": item.get("service_exec"),
+                        "status": item.get("service_exec_status"),
+                        "attempt": item.get("attempt"),
+                        "service_exec_id": item.get("service_exec_id"),
+                        "started_at": item.get("service_exec_start_time"),
+                        "completed_at": item.get("service_exec_completed_time"),
+                    }
+                    for item in rows
+                ],
+            )
+        ]
+    )
+
+
 @click.group(name="dishes")
 def dishes() -> None:
     """Inspect dish execution."""
@@ -148,4 +172,34 @@ def show_dish(ctx: click.Context, dish_id: int) -> None:
         print_output(payload, output_format, table_renderer=_dish_detail_table)
     except PoundCakeClientError as exc:
         print_error(f"Failed to show dish: {exc}")
+        raise click.Abort() from exc
+
+
+@dishes.command("ingredients")
+@click.argument("dish_id", type=int)
+@click.pass_context
+def show_dish_ingredients(ctx: click.Context, dish_id: int) -> None:
+    """Show admin dish ingredient rows for a dish."""
+    client = get_client(ctx)
+    output_format = get_output_format(ctx)
+    try:
+        payload = client.get_dish_ingredients(dish_id)
+        print_output(payload, output_format, table_renderer=_dish_ingredient_history_table)
+    except PoundCakeClientError as exc:
+        print_error(f"Failed to show dish ingredients: {exc}")
+        raise click.Abort() from exc
+
+
+@dishes.command("ingredient-history")
+@click.argument("dish_id", type=int)
+@click.pass_context
+def show_dish_ingredient_history(ctx: click.Context, dish_id: int) -> None:
+    """Show admin dish ingredient execution history."""
+    client = get_client(ctx)
+    output_format = get_output_format(ctx)
+    try:
+        payload = client.get_dish_ingredient_history(dish_id)
+        print_output(payload, output_format, table_renderer=_dish_ingredient_history_table)
+    except PoundCakeClientError as exc:
+        print_error(f"Failed to show dish ingredient history: {exc}")
         raise click.Abort() from exc

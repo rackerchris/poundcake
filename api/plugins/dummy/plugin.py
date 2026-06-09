@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from api.plugins.dummy.capabilities import load_dummy_capability_templates
 from api.plugins.dummy.bootstrap import bootstrap_dummy_helper_validation
 from api.plugins.dummy.helper import get_dummy_helper
 from api.plugins.dummy.templates import (
@@ -33,6 +34,7 @@ def get_plugin() -> ServicePlugin:
         recipe_templates=DUMMY_RECIPE_TEMPLATES,
         communication_routes=DUMMY_COMMUNICATION_ROUTES,
         scheduled_tasks=DUMMY_SCHEDULED_TASKS,
+        capability_templates=load_dummy_capability_templates(),
         helper_factory=get_dummy_helper,
         helper_capabilities=("dummy.echo",),
         required_helper_capabilities={"dummy": ("dummy.echo",)},

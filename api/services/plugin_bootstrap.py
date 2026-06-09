@@ -34,7 +34,7 @@ from api.services.credentials import (
     ServicePluginCredentialError,
     decrypt_service_identity_payload,
 )
-from api.services.credential_manager import mark_adapter_credential_error, write_adapter_credential
+from api.services.credential_manager import mark_adapter_credential_error
 from api.services.service_identity import upsert_internal_hmac_credential
 from api.plugins.contract import (
     ServicePluginContractError,
@@ -53,7 +53,6 @@ from api.schemas.schemas import IngredientTemplateRegistration, ScheduledTaskCre
 from api.services.recipe_ingredient_cleanup import delete_recipe_ingredients_safely
 from api.services.ingredient_registry import (
     IngredientRegistrationConflictError,
-    ingredient_contract_from_row,
     ingredient_identity_map,
     register_ingredient_templates,
 )
@@ -76,11 +75,6 @@ assert {service_type for service_type, *_rest in INTERNAL_PLUGIN_DEFAULTS} == IN
 INTERNAL_HMAC_CREDENTIAL_TYPE = "internal_control_plane_hmac"
 STACKSTORM_CREDENTIAL_TYPE = "stackstorm_api_key"
 logger = get_logger(__name__)
-
-# Shared registration helpers remain available under the historic module-level
-# name so existing bootstrap tests and diagnostics keep a stable read surface.
-_ingredient_contract_from_row = ingredient_contract_from_row
-
 
 @asynccontextmanager
 async def _maybe_transaction(db: AsyncSession | None) -> AsyncIterator[None]:
@@ -133,6 +127,7 @@ def _capabilities_hash(plugin: ServicePluginManifest) -> str:
     payload: JSONObject = {
         "service_type": plugin.service_type,
         "ingredient_templates": list(plugin.ingredient_templates),
+        "capability_templates": list(plugin.capability_templates),
         "recipe_templates": list(plugin.recipe_templates),
         "scheduled_tasks": list(plugin.scheduled_tasks),
     }
@@ -141,7 +136,7 @@ def _capabilities_hash(plugin: ServicePluginManifest) -> str:
 
 
 def _internal_plugin_defaults() -> list[tuple[str, int, int | None]]:
-    plugins = [
+    return [
         (
             service_type,
             _env_positive_int(interval_env_name, interval_default),
@@ -159,14 +154,6 @@ def _internal_plugin_defaults() -> list[tuple[str, int, int | None]]:
             limit_default,
         ) in INTERNAL_PLUGIN_DEFAULTS
     ]
-    if os.getenv("POUNDCAKE_UI_PROXY_INTERNAL_PLUGIN_ENABLED", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        plugins.append(("ui-proxy", _env_positive_int("UI_PROXY_INTERVAL", 30), None))
-    return plugins
 
 
 def _env_positive_int(name: str, default: int) -> int:
@@ -183,44 +170,18 @@ def _new_internal_hmac_secret() -> str:
     return secrets.token_urlsafe(48)
 
 
-def _stackstorm_bootstrap_api_key() -> str:
-    value = os.getenv("POUNDCAKE_STACKSTORM_API_KEY", "").strip()
-    if value:
-        return value
-    key_file = os.getenv("POUNDCAKE_STACKSTORM_API_KEY_FILE", "/app/config/st2_api_key").strip()
-    if not key_file:
-        return ""
-    try:
-        return Path(key_file).read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-
-
 async def _import_stackstorm_api_key_credential(
     db: AsyncSession,
     plugins: list[ServicePluginManifest],
 ) -> JSONObject:
     if not any(plugin.service_type.strip().lower() == "stackstorm" for plugin in plugins):
         return {"processed": 0, "imported": 0, "errors": 0, "reason": "stackstorm plugin disabled"}
-    api_key = _stackstorm_bootstrap_api_key()
-    if not api_key:
-        return {"processed": 1, "imported": 0, "errors": 0, "reason": "api key unavailable"}
-    try:
-        await write_adapter_credential(
-            service_type="stackstorm",
-            credential_type=STACKSTORM_CREDENTIAL_TYPE,
-            credential_key_id="default",
-            payload={"api_key": api_key, "st2_api_key": api_key},
-        )
-    except ServicePluginCredentialError as exc:
-        await _mark_service_plugin_failed(
-            db,
-            service_type="stackstorm",
-            message=f"StackStorm API key credential import failed: {exc}",
-            credential_failed=True,
-        )
-        return {"processed": 1, "imported": 0, "errors": 1, "error": str(exc)}
-    return {"processed": 1, "imported": 1, "errors": 0}
+    return {
+        "processed": 1,
+        "imported": 0,
+        "errors": 0,
+        "reason": "manual credential provisioning required",
+    }
 
 
 def _internal_hmac_key_id(service_type: str) -> str:
@@ -1059,7 +1020,12 @@ async def bootstrap_plugin_registry(db: AsyncSession) -> JSONObject:
             authority="dishwasher",
         )
         communication_route_stats = _deferred_route_sync_stats(
-            processed=sum(len(plugin.communication_routes) for plugin in enabled_plugins),
+            processed=sum(
+                1
+                for plugin in enabled_plugins
+                for template in plugin.capability_templates
+                if str(template.get("mode") or "").strip().lower() == "communication"
+            ),
             authority="dishwasher",
         )
     plugin_hook_stats = await _run_plugin_bootstrap_hooks(db, enabled_plugins)

@@ -22,12 +22,12 @@ IMAGE_PULL_SECRET_NAME="${POUNDCAKE_IMAGE_PULL_SECRET_NAME:-registry-creds}"
 CREATE_IMAGE_PULL_SECRET="${POUNDCAKE_CREATE_IMAGE_PULL_SECRET:-true}"
 IMAGE_PULL_SECRET_EMAIL="${POUNDCAKE_IMAGE_PULL_SECRET_EMAIL:-noreply@local}"
 
-BASE_OVERRIDES="${POUNDCAKE_BASE_OVERRIDES:-/opt/poundcake/base-helm-configs/poundcake/poundcake-helm-overrides.yaml}"
-GLOBAL_OVERRIDES_DIR="${POUNDCAKE_GLOBAL_OVERRIDES_DIR:-/etc/poundcake/helm-configs/global_overrides}"
-SERVICE_CONFIG_DIR="${POUNDCAKE_SERVICE_CONFIG_DIR:-/etc/poundcake/helm-configs/poundcake}"
-POST_RENDERER="${POUNDCAKE_HELM_POST_RENDERER:-/etc/poundcake/kustomize/kustomize.sh}"
+BASE_OVERRIDES="${POUNDCAKE_BASE_OVERRIDES:-/opt/genestack/base-helm-configs/poundcake/poundcake-helm-overrides.yaml}"
+GLOBAL_OVERRIDES_DIR="${POUNDCAKE_GLOBAL_OVERRIDES_DIR:-/etc/genestack/helm-configs/global_overrides}"
+SERVICE_CONFIG_DIR="${POUNDCAKE_SERVICE_CONFIG_DIR:-/etc/genestack/helm-configs/poundcake}"
+POST_RENDERER="${POUNDCAKE_HELM_POST_RENDERER:-/etc/genestack/kustomize/kustomize.sh}"
 POST_RENDERER_ARGS="${POUNDCAKE_HELM_POST_RENDERER_ARGS:-poundcake/overlay}"
-POST_RENDERER_OVERLAY_DIR="${POUNDCAKE_HELM_POST_RENDERER_OVERLAY_DIR:-/etc/poundcake/kustomize/poundcake/overlay}"
+POST_RENDERER_OVERLAY_DIR="${POUNDCAKE_HELM_POST_RENDERER_OVERLAY_DIR:-/etc/genestack/kustomize/poundcake/overlay}"
 
 VALIDATE="${POUNDCAKE_HELM_VALIDATE:-false}"
 INSTALL_DEBUG="${POUNDCAKE_INSTALL_DEBUG:-false}"
@@ -142,7 +142,9 @@ Environment overrides:
 
 Image repositories/tags/digests:
   - Configure these in Helm values files or override files only.
-  - Default active override dir: /etc/poundcake/helm-configs/poundcake/
+  - Default layers: /opt/genestack/base-helm-configs/poundcake/, then
+    /etc/genestack/helm-configs/global_overrides/, then
+    /etc/genestack/helm-configs/poundcake/.
   - Image env vars and image --set overrides are intentionally not supported.
 
 Runtime deployment settings:
@@ -248,8 +250,8 @@ resolve_operator_version_from_config() {
     candidate_files+=("${VERSION_FILE}")
   fi
   candidate_files+=(
-    "/etc/poundcake/helm-chart-version.yaml"
-    "/etc/poundcake/helm-chart-versions.yaml"
+    "/etc/genestack/helm-chart-version.yaml"
+    "/etc/genestack/helm-chart-versions.yaml"
   )
 
   local candidate=""
@@ -541,8 +543,8 @@ resolve_chart_version() {
     candidate_files+=("${VERSION_FILE}")
   fi
   candidate_files+=(
-    "/etc/poundcake/helm-chart-version.yaml"
-    "/etc/poundcake/helm-chart-versions.yaml"
+    "/etc/genestack/helm-chart-version.yaml"
+    "/etc/genestack/helm-chart-versions.yaml"
   )
 
   local candidate

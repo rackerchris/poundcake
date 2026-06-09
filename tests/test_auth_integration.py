@@ -14,6 +14,7 @@ from api.api.auth import (
     require_admin,
     require_service,
 )
+from api.core.rate_limit import reset_internal_rate_limits
 from api.services.auth_service import (
     AuthContext,
     _MEMORY_STATE,
@@ -28,11 +29,12 @@ def _enable_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POUNDCAKE_AUTH_ENABLED", "true")
     monkeypatch.setenv("POUNDCAKE_AUTH_USERNAME", "testadmin")
     monkeypatch.setenv("POUNDCAKE_AUTH_PASSWORD", "testpass123")
-    monkeypatch.setenv("TESTING", "false")
     get_settings.cache_clear()
     _MEMORY_STATE.clear()
+    reset_internal_rate_limits()
     yield
     _MEMORY_STATE.clear()
+    reset_internal_rate_limits()
     get_settings.cache_clear()
 
 
@@ -40,8 +42,10 @@ def _enable_auth_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def _clear_settings_cache() -> None:
     get_settings.cache_clear()
     _MEMORY_STATE.clear()
+    reset_internal_rate_limits()
     yield
     _MEMORY_STATE.clear()
+    reset_internal_rate_limits()
     get_settings.cache_clear()
 
 
@@ -135,12 +139,47 @@ async def test_global_auth_rejects_unauthenticated_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_testing_env_no_longer_bypasses_global_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TESTING", "true")
+    get_settings.cache_clear()
+    _MEMORY_STATE.clear()
+    request = _request(method="GET", path="/api/v1/recipes/")
+    db = _mock_db()
+
+    with pytest.raises(Exception) as exc_info:
+        await require_auth_if_enabled(request, session_token=None, db=db)
+
+    assert exc_info.value.status_code == 401  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_auth_disabled_still_returns_local_admin_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POUNDCAKE_AUTH_ENABLED", "false")
+    get_settings.cache_clear()
+    _MEMORY_STATE.clear()
+    request = _request(method="GET", path="/api/v1/recipes/")
+    db = _mock_db()
+
+    context = await require_auth_if_enabled(request, session_token=None, db=db)
+
+    assert context is not None
+    assert context.username == "poundcake"
+    assert context.role == "admin"
+    assert context.is_superuser is True
+
+
+@pytest.mark.asyncio
 async def test_global_auth_allows_public_paths_without_auth() -> None:
     """Verify public paths bypass auth even when auth is enabled."""
     for path in (
         "/api/v1/auth/login",
         "/api/v1/auth/providers",
         "/api/v1/webhook",
+        "/metrics",
         "/livez",
         "/readyz",
     ):
@@ -204,8 +243,38 @@ async def test_require_service_rejects_anonymous(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(Exception) as exc_info:
         context = await require_auth_if_enabled(request, session_token=None, db=db)
-        await require_service(context=context)
+        await require_service(request, context=context)
     assert exc_info.value.status_code == 401  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_require_service_enforces_internal_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POUNDCAKE_RATE_LIMIT_INTERNAL", "1/minute")
+    get_settings.cache_clear()
+    reset_internal_rate_limits()
+
+    request = _request(method="POST", path="/api/v1/internal/service-registry/ingredients/bulk")
+    request.scope["route"] = type("Route", (), {"path": "/api/v1/internal/service-registry/ingredients/bulk"})()
+    context = AuthContext(
+        provider="service",
+        subject_id="timer-subject",
+        username="timer",
+        display_name="Timer",
+        groups=[],
+        role="service",
+        principal_type="service",
+        permissions=[],
+        service_type="timer",
+    )
+
+    allowed = await require_service(request, context=context)
+    assert allowed is context
+
+    with pytest.raises(Exception) as exc_info:
+        await require_service(request, context=context)
+    assert exc_info.value.status_code == 429  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio
@@ -318,11 +387,11 @@ async def test_local_superuser_login_rejects_wrong_password(
         await authenticate_password_provider("local", "testadmin", "wrongpassword")
 
 
-def test_force_secure_cookie_defaults_to_false() -> None:
-    """Verify force_secure_cookie defaults to False in config."""
+def test_force_secure_cookie_defaults_to_true() -> None:
+    """Verify force_secure_cookie defaults to True in config."""
     from api.core.config import settings
 
-    assert settings.force_secure_cookie is False
+    assert settings.force_secure_cookie is True
 
 
 def test_allowed_origins_env_parses_json_array(monkeypatch: pytest.MonkeyPatch) -> None:

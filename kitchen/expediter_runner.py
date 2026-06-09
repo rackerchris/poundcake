@@ -166,7 +166,7 @@ def _post_reconcile(row: JSONObject, payload: JSONObject, req_id: str) -> JSONOb
     row_id = row.get("id")
     response = request_control_plane_sync(
         "POST",
-        f"{API_BASE_URL}/dish-ingredients/{row_id}/reconcile",
+        f"{API_BASE_URL}/dish-ingredients/{row_id}/execution-reconcile",
         json=payload,
         req_id=req_id,
         timeout=10,

@@ -3,17 +3,27 @@
 
 set -euo pipefail
 
+TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${TESTS_DIR}/.." && pwd)"
+DEVSTACK_SECRETS_LOADER="${PROJECT_ROOT}/helm/devstack/load-local-secrets.sh"
+if [ -f "${DEVSTACK_SECRETS_LOADER}" ]; then
+  # shellcheck source=/dev/null
+  . "${DEVSTACK_SECRETS_LOADER}"
+fi
+
 : "${API_URL:=http://127.0.0.1:8000/api/v1}"
 : "${API_ROOT_URL:=}"
-: "${AUTH_USERNAME:=admin}"
-: "${AUTH_PASSWORD:=cjK1c6tYTsUYf8cDHmE49FjS}"
-: "${AUTH_PROVIDER:=local}"
+: "${AUTH_USERNAME:=}"
+: "${AUTH_PASSWORD:=}"
+: "${AUTH_PROVIDER:=}"
 : "${WEBHOOK_BEARER_TOKEN:=}"
 : "${TEST_TIMEOUT_SEC:=60}"
 : "${POLL_INTERVAL_SEC:=1}"
 : "${DEBUG:=0}"
-: "${CAKECTL:=cakectl}"
+: "${CAKECTL:=}"
 : "${CAKECTL_URL:=}"
+: "${KUBECTL_BIN:=}"
+: "${PORT_FORWARD_LOG:=/tmp/poundcake-test-port-forward.log}"
 
 log_info() {
   echo "[INFO] $*"
@@ -37,12 +47,89 @@ require_cmd() {
   fi
 }
 
+detect_cakectl() {
+  local configured="${CAKECTL:-}"
+  local candidate
+
+  if [ -n "${configured}" ]; then
+    if [ -x "${configured}" ]; then
+      printf '%s\n' "${configured}"
+      return 0
+    fi
+    log_error "CAKECTL is set but not executable: ${configured}"
+    exit 1
+  fi
+
+  if command -v cakectl >/dev/null 2>&1; then
+    command -v cakectl
+    return 0
+  fi
+
+  for candidate in \
+    "/Users/chris.breu/code/poundcake/.venv/bin/cakectl" \
+    "$(pwd)/.venv/bin/cakectl"
+  do
+    if [ -x "${candidate}" ]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  log_error "cakectl is required"
+  exit 1
+}
+
+detect_kubectl() {
+  local configured="${KUBECTL_BIN:-}"
+  local candidate
+
+  if [ -n "${configured}" ]; then
+    if [ -x "${configured}" ]; then
+      printf '%s\n' "${configured}"
+      return 0
+    fi
+    log_error "KUBECTL_BIN is set but not executable: ${configured}"
+    exit 1
+  fi
+
+  if command -v kubectl >/dev/null 2>&1; then
+    command -v kubectl
+    return 0
+  fi
+
+  for candidate in /opt/homebrew/bin/kubectl /usr/local/bin/kubectl; do
+    if [ -x "${candidate}" ]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  log_error "kubectl is required for local port-forwarding"
+  exit 1
+}
+
 # Ensure the Kind API port-forward is active
 # This is idempotent: it only starts the process if port 8000 is not listening.
 ensure_port_forward() {
+  local api_root="${API_ROOT_URL:-${API_URL%/api/v1}}"
+  if curl -sf "${api_root}/readyz" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  case "${api_root}" in
+    http://127.0.0.1:8000|http://localhost:8000)
+      ;;
+    *)
+      debug_log "skipping automatic port-forward for non-default API root ${api_root}"
+      return 0
+      ;;
+  esac
+
   if ! curl -sf http://127.0.0.1:8000/readyz >/dev/null 2>&1; then
     debug_log "starting kind port-forward to poundcake-api:8000"
-    nohup /opt/homebrew/bin/kubectl port-forward svc/poundcake-api -n poundcake 8000:8000 --address 127.0.0.1 >/dev/null 2>&1 &
+    : > "${PORT_FORWARD_LOG}"
+    nohup "${KUBECTL_BIN}" port-forward svc/poundcake-api -n poundcake 8000:8000 --address 127.0.0.1 \
+      >"${PORT_FORWARD_LOG}" 2>&1 &
     disown
   fi
 }
@@ -100,16 +187,14 @@ api_request_json() {
 wait_for_api_ready() {
   local start now
   local api_root="${API_ROOT_URL:-${API_URL%/api/v1}}"
-  local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
-  local cake_flags="${cf:--u ${api_root}}"
   start=$(date +%s)
 
   ensure_port_forward
 
   while true; do
-    local status
-    if status=$(${CAKECTL} ${cake_flags} -f json ready 2>/dev/null); then
-      local ready_status
+    local status=""
+    if status="$(curl -fsS "${api_root}/readyz" 2>/dev/null)"; then
+      local ready_status=""
       ready_status="$(echo "${status}" | jq -r '.status // ""' 2>/dev/null || true)"
       if [ "${ready_status}" = "healthy" ]; then
         return 0
@@ -118,7 +203,11 @@ wait_for_api_ready() {
     now=$(date +%s)
     if [ $((now - start)) -ge "${TEST_TIMEOUT_SEC}" ]; then
       log_error "Timed out waiting for ready health check"
-      echo "${status}" >&2
+      echo "${status:-no output}" >&2
+      if [ -s "${PORT_FORWARD_LOG}" ]; then
+        log_error "Last port-forward log lines:"
+        tail -n 20 "${PORT_FORWARD_LOG}" >&2 || true
+      fi
       exit 1
     fi
     sleep "${POLL_INTERVAL_SEC}"
@@ -153,7 +242,7 @@ wait_for_plugin_health() {
   start=$(date +%s)
   while true; do
     local health status
-    health="$(${CAKECTL} ${cake_flags} -f json plugin health "${service_type}" 2>/dev/null)" || true
+    health="$(${CAKECTL} ${cake_flags} -f json plugins health "${service_type}" 2>/dev/null)" || true
     status="$(echo "${health}" | jq -r '.health_status' 2>/dev/null)" || status="unknown"
     if [ "${status}" = "${expected}" ]; then
       printf '%s' "${health}"
@@ -365,6 +454,9 @@ configure_webhook_token() {
     --arg token "${WEBHOOK_BEARER_TOKEN}" \
     '{config: {webhook_bearer_token: $token}}')"
 
-  ${CAKECTL} -u "${API_URL%/api/v1}" -f json plugin configuration alertmanager \
+  ${CAKECTL} -u "${API_URL%/api/v1}" -f json plugins config set alertmanager \
     --config-json "${payload}" >/dev/null 2>&1
 }
+
+CAKECTL="$(detect_cakectl)"
+KUBECTL_BIN="$(detect_kubectl)"

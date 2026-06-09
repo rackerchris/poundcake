@@ -85,6 +85,72 @@ class KubernetesHelper:
         except Exception:
             return None
 
+    async def get_rule_from_crd(
+        self,
+        *,
+        crd_name: str,
+        group_name: str,
+        rule_name: str,
+    ) -> JSONObject | None:
+        crd = await self.get_prometheus_rule(crd_name)
+        if crd is None:
+            return None
+        return _find_rule_in_crd(crd, group_name=group_name, rule_name=rule_name)
+
+    async def update_rule_in_named_crd(
+        self,
+        *,
+        crd_name: str,
+        group_name: str,
+        rule_name: str,
+        rule_data: JSONObject,
+        source_metadata: AlertRuleSource | None = None,
+    ) -> JSONObject:
+        existing = await self.get_prometheus_rule(crd_name)
+        if existing is None:
+            return {"status": "error", "message": f"PrometheusRule CRD '{crd_name}' not found"}
+        if _find_rule_in_crd(existing, group_name=group_name, rule_name=rule_name) is None:
+            return {
+                "status": "error",
+                "message": (
+                    f"Rule '{rule_name}' not found in group '{group_name}' within CRD '{crd_name}'"
+                ),
+            }
+        return await self._update_rule_in_crd(
+            existing,
+            rule_name=rule_name,
+            group_name=group_name,
+            rule_data=rule_data,
+            source_metadata=source_metadata,
+        )
+
+    async def add_rule_to_named_crd(
+        self,
+        *,
+        crd_name: str,
+        group_name: str,
+        rule_name: str,
+        rule_data: JSONObject,
+        source_metadata: AlertRuleSource | None = None,
+    ) -> JSONObject:
+        existing = await self.get_prometheus_rule(crd_name)
+        if existing is None:
+            return {"status": "error", "message": f"PrometheusRule CRD '{crd_name}' not found"}
+        if _find_rule_in_crd(existing, group_name=group_name, rule_name=rule_name) is not None:
+            return {
+                "status": "error",
+                "message": (
+                    f"Rule '{rule_name}' already exists in group '{group_name}' within CRD '{crd_name}'"
+                ),
+            }
+        return await self._update_rule_in_crd(
+            existing,
+            rule_name=rule_name,
+            group_name=group_name,
+            rule_data=rule_data,
+            source_metadata=source_metadata,
+        )
+
     async def create_or_update_rule(
         self,
         *,
@@ -126,12 +192,8 @@ class KubernetesHelper:
         group_name: str,
     ) -> JSONObject | None:
         for crd in await self.list_prometheus_rules():
-            for group in crd.get("spec", {}).get("groups", []):
-                if group.get("name") != group_name:
-                    continue
-                for rule in group.get("rules", []):
-                    if rule.get("alert") == rule_name:
-                        return crd
+            if _find_rule_in_crd(crd, group_name=group_name, rule_name=rule_name) is not None:
+                return crd
         return None
 
     async def list_pods(self, *, namespace: str, label_selector: str = "") -> list[JSONObject]:
@@ -1494,7 +1556,7 @@ class KubernetesHelper:
 
         rules = target_group.setdefault("rules", [])
         for idx, rule in enumerate(rules):
-            if rule.get("alert") == rule_name:
+            if _rule_identity(rule) == rule_name:
                 rules[idx] = rule_data
                 break
         else:
@@ -1576,7 +1638,7 @@ class KubernetesHelper:
                 continue
             rules = group.get("rules", [])
             for idx, rule in enumerate(list(rules)):
-                if rule.get("alert") == rule_name:
+                if _rule_identity(rule) == rule_name:
                     del rules[idx]
                     found = True
                     break
@@ -1642,6 +1704,37 @@ def _is_missing_prometheus_rule_crd_error(exc: Exception) -> bool:
         and "monitoring.coreos.com" in combined
         and ("not found" in combined or "notfound" in combined)
     )
+
+
+def _rule_identity(rule: object) -> str:
+    if not isinstance(rule, dict):
+        return ""
+    return str(rule.get("alert") or rule.get("record") or "").strip()
+
+
+def _find_rule_in_crd(
+    crd: JSONObject,
+    *,
+    group_name: str,
+    rule_name: str,
+) -> JSONObject | None:
+    spec = crd.get("spec")
+    if not isinstance(spec, dict):
+        return None
+    groups = spec.get("groups")
+    if not isinstance(groups, list):
+        return None
+    for group in groups:
+        if not isinstance(group, dict) or group.get("name") != group_name:
+            continue
+        rules = group.get("rules")
+        if not isinstance(rules, list):
+            return None
+        for rule in rules:
+            if isinstance(rule, dict) and _rule_identity(rule) == rule_name:
+                return dict(rule)
+        return None
+    return None
 
 
 def _kubernetes_api_version(api_client: object) -> str | None:

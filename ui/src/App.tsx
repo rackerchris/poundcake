@@ -65,13 +65,14 @@ import type {
   IngredientRecord,
   ObservabilityOverviewResponse,
   OrderStatusRecord,
+  PrometheusRuleRecord,
   PrometheusRuleResourceRecord,
   RepoSyncResponse,
   RecipeRecord,
   ScheduledTaskStatusRecord,
   ServicePluginConfigurationRecord,
   ServicePluginSummaryRecord,
-  SuppressionRecord,
+  SuppressionStatusRecord,
 } from "./contracts";
 import {
   appSettingsSchema,
@@ -94,10 +95,12 @@ import {
   ingredientRecordArraySchema,
   ingredientRecordSchema,
   observabilityActivityStatusRecordArraySchema,
+  operatorAuditRecordArraySchema,
   observabilityOverviewResponseSchema,
   orderStatusRecordArraySchema,
   orderStatusRecordSchema,
   prometheusRuleListResponseSchema,
+  prometheusRuleRecordSchema,
   recipeCreateRequestSchema,
   recipeRecordArraySchema,
   recipeRecordSchema,
@@ -129,6 +132,8 @@ interface ToastMessage {
   tone: "success" | "error";
   message: string;
 }
+
+type AlertRuleEditorRecord = PrometheusRuleRecord & { key: string };
 
 const workflowStepSchema = z.object({
   ingredient_id: z.coerce.number().min(1, "Choose an ingredient template"),
@@ -168,12 +173,29 @@ const suppressionSchema = z.object({
   reason: z.string().optional(),
   starts_at: z.string().min(1, "Start time is required"),
   ends_at: z.string().min(1, "End time is required"),
-  scope: z.string().min(1),
   summary_ticket_enabled: z.boolean(),
   matcher_key: z.string().optional(),
   matcher_operator: z.string().min(1),
   matcher_value: z.string().optional(),
 });
+
+function suppressionFormDefaults(prefill?: {
+  name?: string;
+  reason?: string;
+  matcher_key?: string;
+  matcher_value?: string;
+}) {
+  return {
+    name: prefill?.name || "",
+    reason: prefill?.reason || "",
+    starts_at: "",
+    ends_at: "",
+    summary_ticket_enabled: true,
+    matcher_key: prefill?.matcher_key || "alertname",
+    matcher_operator: "eq",
+    matcher_value: prefill?.matcher_value || "",
+  };
+}
 
 const communicationsPolicySchema = z.object({
   routes: z.array(communicationRouteSchema),
@@ -269,10 +291,10 @@ function SessionGate() {
               <Route path="/orders/:orderId" element={<OrdersPage />} />
               <Route path="/communication-routes" element={<CommunicationRoutesPage />} />
               <Route path="/suppressions" element={<SuppressionsPage />} />
+              <Route path="/operator-audit" element={<OperatorAuditPage />} />
               <Route path="/execution-activity" element={<ExecutionActivityPage />} />
               <Route path="/system-activity" element={<SystemActivityPage />} />
               <Route path="/config/alerts" element={<AlertRulesPage />} />
-              <Route path="/config/alert-rules" element={<AlertRulesPage />} />
               <Route path="/config/plugins" element={<PluginsPage />} />
               <Route path="/config/plugins/:serviceType" element={<PluginsPage />} />
               <Route path="/config/communication-policy" element={<CommunicationPolicyPage />} />
@@ -588,6 +610,7 @@ function ShellLayout() {
               { to: "/orders", label: "Orders" },
               { to: "/communication-routes", label: "Communication Routes" },
               { to: "/suppressions", label: "Suppressions" },
+              { to: "/operator-audit", label: "Operator Audit" },
               { to: "/execution-activity", label: "Work Execution Activity" },
               { to: "/system-activity", label: "System Activity" },
             ]}
@@ -621,9 +644,6 @@ function ShellLayout() {
           <div className="topbar-meta">
             <StatusBadge status={pluginHealthStatus}>
               {pluginHealthLabel}
-            </StatusBadge>
-            <StatusBadge status={settings.git_enabled ? "active" : "new"}>
-              {settings.git_enabled ? "GitHub sync enabled" : "GitHub sync disabled"}
             </StatusBadge>
           </div>
         </header>
@@ -726,7 +746,10 @@ function OverviewPage() {
                 <Link className="feed-row" to={`/orders/${incident.id}`} key={incident.id}>
                   <div>
                     <strong>{incident.alert_group_name}</strong>
-                    <p>{incident.instance || "No instance"} • {incident.severity || "unknown severity"}</p>
+                    <p>
+                      {titleize(incident.order_type)} • {incident.instance || "No instance"} •{" "}
+                      {incident.severity || "unknown severity"}
+                    </p>
                   </div>
                   <StatusBadge status={incident.processing_status}>{incident.processing_status}</StatusBadge>
                 </Link>
@@ -829,6 +852,31 @@ function PluginsPage() {
   const [operatorCredentialInputs, setOperatorCredentialInputs] = useState<Record<string, string>>({});
   const [operatorCredentialTouched, setOperatorCredentialTouched] = useState(false);
   const [operatorCredentialField, setOperatorCredentialField] = useState("token");
+  const [pendingPluginControlReview, setPendingPluginControlReview] = useState<{
+    summary: Array<{ label: string; value: string }>;
+    changes: ReviewChangeRow[];
+    payload: {
+      plugin?: {
+        enabled?: boolean;
+        run_interval_seconds?: number;
+        query_limit?: number;
+        health_check_interval_seconds?: number;
+      };
+      scheduledTasks?: Array<{
+        id: number;
+        is_enabled?: boolean;
+        run_interval_seconds?: number;
+      }>;
+    };
+    requireText?: string;
+    consequence?: string;
+  } | null>(null);
+  const [pendingAdapterReview, setPendingAdapterReview] = useState<{
+    summary: Array<{ label: string; value: string }>;
+    changes: ReviewChangeRow[];
+    requireText?: string;
+    consequence?: string;
+  } | null>(null);
   const [scheduledTaskInputs, setScheduledTaskInputs] = useState<
     Record<number, { enabled: boolean; interval: string }>
   >({});
@@ -928,6 +976,16 @@ function PluginsPage() {
       if (!selectedPlugin) {
         throw new Error("No plugin selected");
       }
+      logOperatorAction({
+        surface: "configuration.plugins",
+        action: "save_plugin_controls",
+        status: "attempt",
+        target: selectedPlugin.service_type,
+        details: {
+          plugin_fields: Object.keys(values.plugin || {}),
+          scheduled_task_updates: (values.scheduledTasks || []).map((task) => task.id),
+        },
+      });
       if (values.plugin && Object.keys(values.plugin).length) {
         await apiPatch(
           `/api/v1/plugins/${encodeURIComponent(selectedPlugin.service_type)}`,
@@ -946,12 +1004,36 @@ function PluginsPage() {
         ),
       );
     },
-    onSuccess: async () => {
-      notify("success", "Plugin configuration updated.");
+    onSuccess: async (_response, values) => {
+      logOperatorAction({
+        surface: "configuration.plugins",
+        action: "save_plugin_controls",
+        status: "success",
+        target: selectedPlugin?.service_type,
+        details: {
+          plugin_fields: Object.keys(values.plugin || {}),
+          scheduled_task_updates: (values.scheduledTasks || []).map((task) => task.id),
+        },
+      });
+      setPendingPluginControlReview(null);
+      notify("success", "Plugin controls updated. Verify plugin health and scheduled task status after this change.");
       await queryClient.invalidateQueries({ queryKey: ["settings", "auth-me", "service-plugins"] });
       await queryClient.invalidateQueries({ queryKey: ["scheduled-tasks"] });
     },
-    onError: (error) => notify("error", getErrorMessage(error)),
+    onError: (error, values) => {
+      logOperatorAction({
+        surface: "configuration.plugins",
+        action: "save_plugin_controls",
+        status: "failure",
+        target: selectedPlugin?.service_type,
+        details: {
+          plugin_fields: Object.keys(values.plugin || {}),
+          scheduled_task_updates: (values.scheduledTasks || []).map((task) => task.id),
+          error: getErrorMessage(error),
+        },
+      });
+      notify("error", getErrorMessage(error));
+    },
   });
 
   const saveOperatorPluginConfigMutation = useMutation({
@@ -989,6 +1071,17 @@ function PluginsPage() {
       return response;
     },
     onSuccess: async (response) => {
+      logOperatorAction({
+        surface: "configuration.plugins",
+        action: "save_adapter_connection",
+        status: "success",
+        target: response.service_type,
+        details: {
+          credential_configured: response.credential_configured,
+          credential_key_id: response.credential_key_id,
+          config_field_count: Object.keys(response.config || {}).length,
+        },
+      });
       queryClient.setQueryData(
         ["plugin-configuration", response.service_type],
         response,
@@ -999,11 +1092,23 @@ function PluginsPage() {
       setOperatorCredentialInput("");
       setOperatorCredentialInputs({});
       setOperatorCredentialTouched(false);
+      setPendingAdapterReview(null);
       await queryClient.invalidateQueries({ queryKey: ["plugin-configuration"] });
       await queryClient.invalidateQueries({ queryKey: ["settings", "auth-me", "service-plugins"] });
-      notify("success", "Plugin connection configuration saved.");
+      notify("success", "Plugin connection configuration saved. Verify plugin health and run a connection test if this adapter is already active.");
     },
-    onError: (error) => notify("error", getErrorMessage(error)),
+    onError: (error) => {
+      logOperatorAction({
+        surface: "configuration.plugins",
+        action: "save_adapter_connection",
+        status: "failure",
+        target: selectedPlugin?.service_type,
+        details: {
+          error: getErrorMessage(error),
+        },
+      });
+      notify("error", getErrorMessage(error));
+    },
   });
 
   const runScheduledTaskNowMutation = useMutation({
@@ -1195,9 +1300,118 @@ function PluginsPage() {
       notify("success", "No plugin changes to save.");
       return;
     }
-    updatePluginMutation.mutate({
+    const mutationPayload = {
       plugin: Object.keys(payload).length ? payload : undefined,
       scheduledTasks: scheduledTaskUpdates,
+    };
+    const pluginWillBeDisabled = mutationPayload.plugin?.enabled === false;
+    const pluginChanges = mutationPayload.plugin
+      ? reviewChangeRows(
+        {
+          enabled: selectedPlugin.enabled,
+          run_interval_seconds: selectedPlugin.run_interval_seconds,
+          query_limit: selectedPlugin.query_limit,
+          health_check_interval_seconds: selectedPlugin.health_check_interval_seconds,
+        },
+        mutationPayload.plugin,
+        {
+          enabled: "Plugin enabled",
+          run_interval_seconds: "Run interval (sec)",
+          query_limit: "Query limit",
+          health_check_interval_seconds: "Health interval (sec)",
+        },
+      )
+      : [];
+    const scheduledTaskChanges = scheduledTaskUpdates.flatMap((taskPayload) => {
+      const currentTask = scheduledTasksQuery.data?.find((item) => item.id === taskPayload.id);
+      if (!currentTask) {
+        return [];
+      }
+      const nextTask = {
+        is_enabled: taskPayload.is_enabled ?? currentTask.is_enabled,
+        run_interval_seconds: taskPayload.run_interval_seconds ?? currentTask.run_interval_seconds,
+      };
+      return reviewChangeRows(
+        {
+          is_enabled: currentTask.is_enabled,
+          run_interval_seconds: currentTask.run_interval_seconds,
+        },
+        nextTask,
+        {
+          is_enabled: `${currentTask.task_key} enabled`,
+          run_interval_seconds: `${currentTask.task_key} interval (sec)`,
+        },
+      );
+    });
+    setPendingPluginControlReview({
+      changes: [...pluginChanges, ...scheduledTaskChanges],
+      payload: mutationPayload,
+      requireText: pluginWillBeDisabled ? "disable" : undefined,
+      consequence: pluginWillBeDisabled
+        ? "Disabling this adapter pauses new adapter-owned work and health execution until it is re-enabled."
+        : undefined,
+      summary: [
+        { label: "Plugin", value: selectedPlugin.service_type },
+        {
+          label: "Plugin fields",
+          value: Object.keys(mutationPayload.plugin || {}).length
+            ? Object.keys(mutationPayload.plugin || {}).join(", ")
+            : "No direct plugin field changes",
+        },
+        {
+          label: "Scheduled task updates",
+          value: scheduledTaskUpdates.length ? String(scheduledTaskUpdates.length) : "0",
+        },
+      ],
+    });
+  };
+  const openAdapterReview = () => {
+    if (!selectedPlugin) {
+      return;
+    }
+    const nextConfig = serializeUiConfig(operatorConfigInput, operatorConfigQuery.data?.config_schema);
+    const changedFields = changedConfigFieldCount(operatorConfigQuery.data?.config || {}, nextConfig);
+    const rotatingCredential = Boolean(operatorCredentialDirty);
+    const adapterChanges = reviewChangeRows(
+      operatorConfigQuery.data?.config || {},
+      nextConfig,
+    );
+    if ((operatorConfigQuery.data?.credential_key_id || "default") !== requestedCredentialKeyId) {
+      adapterChanges.push({
+        label: "Credential key ID",
+        before: reviewValue(operatorConfigQuery.data?.credential_key_id || "default"),
+        after: reviewValue(requestedCredentialKeyId),
+      });
+    }
+    if (rotatingCredential) {
+      adapterChanges.push({
+        label: "Credential material",
+        before: "Current credential",
+        after: "Rotate to new credential",
+      });
+    }
+    logOperatorAction({
+      surface: "configuration.plugins",
+      action: "save_adapter_connection",
+      status: "attempt",
+      target: selectedPlugin.service_type,
+      details: {
+        changed_config_fields: changedFields,
+        rotating_credential: rotatingCredential,
+      },
+    });
+    setPendingAdapterReview({
+      changes: adapterChanges,
+      requireText: rotatingCredential ? "save" : undefined,
+      consequence: rotatingCredential
+        ? "Saving with new credential material rotates the adapter credential for future connection use."
+        : undefined,
+      summary: [
+        { label: "Plugin", value: selectedPlugin.service_type },
+        { label: "Changed config fields", value: String(changedFields) },
+        { label: "Credential update", value: rotatingCredential ? "Yes" : "No" },
+        { label: "Credential key ID", value: requestedCredentialKeyId },
+      ],
     });
   };
   const pluginGroups = [
@@ -1650,7 +1864,7 @@ function PluginsPage() {
                           className="primary-button"
                           disabled={!canSaveOperatorPluginConfig || saveOperatorPluginConfigMutation.isPending}
                           type="button"
-                          onClick={() => saveOperatorPluginConfigMutation.mutate()}
+                          onClick={openAdapterReview}
                         >
                           {saveOperatorPluginConfigMutation.isPending ? "Saving..." : "Save"}
                         </button>
@@ -1733,6 +1947,38 @@ function PluginsPage() {
           )}
         </Panel>
       </div>
+      {pendingPluginControlReview ? (
+        <ReviewChangesDialog
+          changes={pendingPluginControlReview.changes}
+          confirmLabel="Save plugin changes"
+          consequence={pendingPluginControlReview.consequence}
+          impact="These plugin control changes affect runtime scheduling and adapter state immediately after save."
+          isPending={updatePluginMutation.isPending}
+          onCancel={() => setPendingPluginControlReview(null)}
+          onConfirm={() => updatePluginMutation.mutate(pendingPluginControlReview.payload)}
+          pendingLabel="Saving..."
+          requireText={pendingPluginControlReview.requireText}
+          summary={pendingPluginControlReview.summary}
+          title="Review plugin control changes"
+          verificationHint="Check Plugins and scheduled task status after save to confirm the adapter cadence and health state you expect."
+        />
+      ) : null}
+      {pendingAdapterReview ? (
+        <ReviewChangesDialog
+          changes={pendingAdapterReview.changes}
+          confirmLabel="Save adapter connection"
+          consequence={pendingAdapterReview.consequence}
+          impact="Saved adapter connection changes are used by future plugin connection tests and runtime work."
+          isPending={saveOperatorPluginConfigMutation.isPending}
+          onCancel={() => setPendingAdapterReview(null)}
+          onConfirm={() => saveOperatorPluginConfigMutation.mutate()}
+          pendingLabel="Saving..."
+          requireText={pendingAdapterReview.requireText}
+          summary={pendingAdapterReview.summary}
+          title="Review adapter connection changes"
+          verificationHint="Run a connection test or verify plugin health after save if this adapter is already active."
+        />
+      ) : null}
     </div>
   );
 }
@@ -1868,6 +2114,7 @@ function OrdersPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [statusFilter, setStatusFilter] = useState("");
+  const [orderTypeFilter, setOrderTypeFilter] = useState("");
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
 
@@ -1895,6 +2142,9 @@ function OrdersPage() {
     if (statusFilter && incident.processing_status !== statusFilter) {
       return false;
     }
+    if (orderTypeFilter && incident.order_type !== orderTypeFilter) {
+      return false;
+    }
     if (!deferredSearch) {
       return true;
     }
@@ -1903,6 +2153,7 @@ function OrdersPage() {
       incident.instance,
       incident.severity,
       incident.req_id,
+      incident.order_type,
     ]
       .filter(Boolean)
       .join(" ")
@@ -1938,7 +2189,7 @@ function OrdersPage() {
     <div className="page-stack">
       <PageHeader
         title="Orders"
-        description="Track webhook orders created from alerts, then drill into dish execution and communication routes."
+        description="Track alert-based and system-scheduled orders, then drill into dish execution and communication routes."
       />
 
       <div className="toolbar">
@@ -1953,12 +2204,21 @@ function OrdersPage() {
             <option value="canceled">Canceled</option>
           </select>
         </label>
+        <label>
+          Source
+          <select value={orderTypeFilter} onChange={(event) => setOrderTypeFilter(event.target.value)}>
+            <option value="">All</option>
+            <option value="webhook_alert">Alert-based</option>
+            <option value="scheduled_task">System-scheduled</option>
+            <option value="manual">Manual</option>
+          </select>
+        </label>
         <label className="toolbar-search">
           Search
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Alert name, instance, request id"
+            placeholder="Alert name, instance, request id, source"
           />
         </label>
       </div>
@@ -1977,8 +2237,8 @@ function OrdersPage() {
                   <div>
                     <strong>{incident.alert_group_name}</strong>
                     <p>
-                      {incident.instance || "No instance"} • {incident.severity || "unknown severity"} •{" "}
-                      {incident.communication_route_count} route(s)
+                      {titleize(incident.order_type)} • {incident.instance || "No instance"} •{" "}
+                      {incident.severity || "unknown severity"} • {incident.communication_route_count} route(s)
                     </p>
                   </div>
                   <div className="feed-meta">
@@ -2023,6 +2283,10 @@ function IncidentDetail({
   highlightedDishId?: string;
 }) {
   const order = data.order;
+  const navigate = useNavigate();
+  const principal = usePrincipal();
+  const canEditSuppressions = canManageSuppressions(principal);
+  const orderLabels = Object.entries(order.labels || {}).filter(([, value]) => value !== null && value !== "");
 
   return (
     <div className="detail-stack">
@@ -2036,6 +2300,7 @@ function IncidentDetail({
           </p>
         </div>
         <div className="drilldown-status-list">
+          <StatusListItem label="Source" value={titleize(order.order_type)} />
           <StatusListItem label="Lifecycle" value={order.processing_status} />
           <StatusListItem label="Alert state" value={order.alert_status} />
           <StatusListItem label="Lifetime" value={order.order_lifetime_secs === null || order.order_lifetime_secs === undefined ? "Running" : `${order.order_lifetime_secs}s`} />
@@ -2046,11 +2311,54 @@ function IncidentDetail({
 
       <div className="kv-grid">
         <KeyValue label="Request ID" value={order.req_id} />
+        <KeyValue label="Order source" value={titleize(order.order_type)} />
         <KeyValue label="Counter" value={String(order.counter)} />
         <KeyValue label="Order lifetime" value={order.order_lifetime_secs === null || order.order_lifetime_secs === undefined ? "Running" : `${order.order_lifetime_secs}s`} />
         <KeyValue label="Auto-close eligible" value={String(order.auto_close_eligible)} />
         <KeyValue label="Clear deadline" value={formatLongDate(order.clear_deadline_at)} />
       </div>
+
+      <section>
+        <div className="section-heading">
+          <h4>Alert Labels</h4>
+          <p>
+            These source labels can be copied into suppression matchers to cover related alerts, such as a host or cluster during planned maintenance.
+          </p>
+        </div>
+        {orderLabels.length ? (
+          <div className="order-label-list">
+            {orderLabels.map(([key, value]) => (
+              <div className="order-label-row" key={key}>
+                <div>
+                  <strong>{key}</strong>
+                  <p>{String(value)}</p>
+                </div>
+                {canEditSuppressions ? (
+                  <button
+                    className="ghost-button"
+                    type="button"
+                    onClick={() => {
+                      const next = new URLSearchParams();
+                      next.set("label_key", key);
+                      next.set("label_value", String(value));
+                      next.set("name", `${order.alert_group_name} (${key})`);
+                      next.set(
+                        "reason",
+                        `Suppression prepared from order #${order.id} using label ${key}=${String(value)}`,
+                      );
+                      navigate(`/suppressions?${next.toString()}`);
+                    }}
+                  >
+                    Create suppression
+                  </button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyState message="This order did not include alert labels." />
+        )}
+      </section>
 
       <section>
         <div className="section-heading">
@@ -2101,8 +2409,12 @@ function CommunicationRoutesPage() {
   const deferredSearch = useDeferredValue(search);
 
   const query = useQuery({
-    queryKey: ["communications-activity"],
-    queryFn: () => apiGet("/api/v1/communications/activity?limit=200", communicationActivityRecordArraySchema),
+    queryKey: ["communications-activity-status"],
+    queryFn: () =>
+      apiGet(
+        "/api/v1/communications/activity/status?limit=200",
+        communicationActivityStatusRecordArraySchema,
+      ),
   });
 
   if (query.isLoading) {
@@ -2126,9 +2438,11 @@ function CommunicationRoutesPage() {
     const haystack = [
       item.reference_name,
       item.destination,
-      item.ticket_id,
-      item.provider_reference_id,
       item.channel,
+      item.reference_id,
+      item.reference_type,
+      item.remote_state,
+      item.lifecycle_state,
     ]
       .filter(Boolean)
       .join(" ")
@@ -2143,7 +2457,7 @@ function CommunicationRoutesPage() {
     <div className="page-stack">
       <PageHeader
         title="Communication Routes"
-        description="Unified outbound history for ticketing and chat channels, with ticket numbers, provider references, and latest delivery state."
+        description="Reader-safe outbound history for ticketing and chat channels, with channel, destination, and latest delivery state."
       />
       <div className="toolbar">
         <label>
@@ -2188,7 +2502,7 @@ function CommunicationRoutesPage() {
                   <strong>{item.reference_name || item.reference_id}</strong>
                   <p>
                     {titleize(item.channel)} • {item.destination || "No destination"} •{" "}
-                    {item.ticket_id || item.provider_reference_id || "Pending reference"}
+                    {(item.remote_state || item.lifecycle_state || "unknown").replace(/_/g, " ")}
                   </p>
                 </div>
                 <div className="feed-meta">
@@ -2202,22 +2516,18 @@ function CommunicationRoutesPage() {
           </div>
         </Panel>
 
-        <Panel title="Selected route" subtitle="Current status, provider references, and last known error.">
+        <Panel title="Selected route" subtitle="Current reader-safe status and last observed delivery state.">
           {selected ? (
             <div className="detail-stack">
               <DetailList>
+                <DetailRow label="Reference name" value={selected.reference_name || selected.reference_id} />
                 <DetailRow label="Reference type" value={selected.reference_type} />
+                <DetailRow label="Reference ID" value={selected.reference_id} />
                 <DetailRow label="Channel" value={titleize(selected.channel)} />
                 <DetailRow label="Destination" value={selected.destination || "-"} />
-                <DetailRow label="Ticket number" value={selected.ticket_id || "-"} />
-                <DetailRow label="Provider reference" value={selected.provider_reference_id || "-"} />
-                <DetailRow label="Operation ID" value={selected.operation_id || "-"} />
                 <DetailRow label="Lifecycle state" value={selected.lifecycle_state || "-"} />
                 <DetailRow label="Remote state" value={selected.remote_state || "-"} />
-                <DetailRow label="Writable" value={selected.writable === null || selected.writable === undefined ? "-" : String(selected.writable)} />
-                <DetailRow label="Reopenable" value={selected.reopenable === null || selected.reopenable === undefined ? "-" : String(selected.reopenable)} />
                 <DetailRow label="Last update" value={formatLongDate(selected.updated_at)} />
-                <DetailRow label="Last error" value={selected.last_error || "-"} />
               </DetailList>
             </div>
           ) : (
@@ -2233,12 +2543,18 @@ function SuppressionsPage() {
   const notify = useToast();
   const principal = usePrincipal();
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [pendingCancellation, setPendingCancellation] = useState<SuppressionStatusRecord | null>(null);
   const canEdit = canManageSuppressions(principal);
+  const prefillMatcherKey = searchParams.get("label_key") || "";
+  const prefillMatcherValue = searchParams.get("label_value") || "";
+  const prefillName = searchParams.get("name") || "";
+  const prefillReason = searchParams.get("reason") || "";
+  const hasPrefill = Boolean(prefillMatcherKey && prefillMatcherValue);
 
   const suppressionsQuery = useQuery({
-    queryKey: ["suppressions"],
-    queryFn: () => apiGet("/api/v1/suppressions?limit=100", suppressionRecordArraySchema),
+    queryKey: ["suppressions-status"],
+    queryFn: () => apiGet("/api/v1/suppressions/status?limit=100", suppressionStatusRecordArraySchema),
   });
   const recipesQuery = useQuery({
     queryKey: ["suppression-recipes"],
@@ -2247,17 +2563,12 @@ function SuppressionsPage() {
 
   const form = useForm<z.infer<typeof suppressionSchema>>({
     resolver: zodResolver(suppressionSchema),
-    defaultValues: {
-      name: "",
-      reason: "",
-      starts_at: "",
-      ends_at: "",
-      scope: "matchers",
-      summary_ticket_enabled: true,
-      matcher_key: "alertname",
-      matcher_operator: "eq",
-      matcher_value: "",
-    },
+    defaultValues: suppressionFormDefaults({
+      name: prefillName,
+      reason: prefillReason,
+      matcher_key: prefillMatcherKey,
+      matcher_value: prefillMatcherValue,
+    }),
   });
   const matcherKey = form.watch("matcher_key");
   const matcherOperator = form.watch("matcher_operator");
@@ -2266,6 +2577,17 @@ function SuppressionsPage() {
     .filter(Boolean)
     .sort((left, right) => left.localeCompare(right));
 
+  useEffect(() => {
+    form.reset(
+      suppressionFormDefaults({
+        name: prefillName,
+        reason: prefillReason,
+        matcher_key: prefillMatcherKey,
+        matcher_value: prefillMatcherValue,
+      }),
+    );
+  }, [form, prefillMatcherKey, prefillMatcherValue, prefillName, prefillReason]);
+
   const createMutation = useMutation({
     mutationFn: async (values: z.infer<typeof suppressionSchema>) => {
       const request = suppressionCreateRequestSchema.parse({
@@ -2273,12 +2595,10 @@ function SuppressionsPage() {
         reason: values.reason || null,
         starts_at: values.starts_at,
         ends_at: values.ends_at,
-        scope: values.scope,
-        enabled: true,
         created_by: "ui-v2",
         summary_ticket_enabled: values.summary_ticket_enabled,
         matchers:
-          values.scope === "matchers" && values.matcher_key
+          values.matcher_key
             ? [
                 {
                   label_key: values.matcher_key,
@@ -2292,29 +2612,57 @@ function SuppressionsPage() {
     },
     onSuccess: async () => {
       notify("success", "Suppression created.");
-      form.reset({
-        name: "",
-        reason: "",
-        starts_at: "",
-        ends_at: "",
-        scope: "matchers",
-        summary_ticket_enabled: true,
-        matcher_key: "alertname",
-        matcher_operator: "eq",
-        matcher_value: "",
-      });
-      await queryClient.invalidateQueries({ queryKey: ["suppressions"] });
+      if (hasPrefill) {
+        const next = new URLSearchParams(searchParams);
+        next.delete("label_key");
+        next.delete("label_value");
+        next.delete("name");
+        next.delete("reason");
+        setSearchParams(next, { replace: true });
+      } else {
+        form.reset(suppressionFormDefaults());
+      }
+      await queryClient.invalidateQueries({ queryKey: ["suppressions-status"] });
     },
     onError: (error) => notify("error", getErrorMessage(error)),
   });
 
   const cancelMutation = useMutation({
-    mutationFn: (id: number) => apiPost(`/api/v1/suppressions/${id}/cancel`, suppressionRecordSchema),
-    onSuccess: async () => {
-      notify("success", "Suppression canceled.");
-      await queryClient.invalidateQueries({ queryKey: ["suppressions"] });
+    mutationFn: (suppression: { id: number; name: string }) => {
+      logOperatorAction({
+        surface: "operations.suppressions",
+        action: "cancel_suppression",
+        status: "attempt",
+        target: String(suppression.id),
+        details: { name: suppression.name },
+      });
+      return apiPost(`/api/v1/suppressions/${suppression.id}/cancel`, suppressionRecordSchema);
     },
-    onError: (error) => notify("error", getErrorMessage(error)),
+    onSuccess: async () => {
+      logOperatorAction({
+        surface: "operations.suppressions",
+        action: "cancel_suppression",
+        status: "success",
+        target: pendingCancellation ? String(pendingCancellation.id) : undefined,
+        details: { name: pendingCancellation?.name || null },
+      });
+      notify("success", "Suppression canceled. Verify active suppressions and communication routes if this window affected live alerts.");
+      setPendingCancellation(null);
+      await queryClient.invalidateQueries({ queryKey: ["suppressions-status"] });
+    },
+    onError: (error, suppression) => {
+      logOperatorAction({
+        surface: "operations.suppressions",
+        action: "cancel_suppression",
+        status: "failure",
+        target: suppression ? String(suppression.id) : undefined,
+        details: {
+          name: suppression?.name || null,
+          error: getErrorMessage(error),
+        },
+      });
+      notify("error", getErrorMessage(error));
+    },
   });
 
   if (suppressionsQuery.isLoading) {
@@ -2326,24 +2674,44 @@ function SuppressionsPage() {
   }
 
   const focusedId = searchParams.get("suppression");
+  const currentSuppressions = suppressionsQuery.data.filter(
+    (item) => item.status === "active" || item.status === "scheduled",
+  );
+  const pastSuppressions = suppressionsQuery.data.filter(
+    (item) => item.status === "expired" || item.status === "canceled",
+  );
 
   return (
     <div className="page-stack">
       <PageHeader
         title="Suppressions"
-        description="Manage temporary monitoring suppressions and see which windows are active, scheduled, or already expired."
+        description="Manage Alertmanager-backed suppression windows and see which silences are active, scheduled, or already expired."
       />
 
-      <div className="editor-grid">
-        <Panel title="Create suppression" subtitle="Use clear dates and matcher scope so operators know exactly what is being muted.">
-          {!canEdit ? (
-            <div className="helper-card">
-              <strong>Read-only access</strong>
-              <p>Your role can review suppressions but cannot create or cancel them.</p>
+      <Panel
+        title="Create suppression"
+        subtitle="Create an Alertmanager silence through PoundCake with clear matchers and dates."
+      >
+        {!canEdit ? (
+          <div className="helper-card">
+            <strong>Read-only access</strong>
+            <p>Your role can review suppressions but cannot create or cancel them.</p>
+          </div>
+        ) : null}
+        {hasPrefill ? (
+          <div className="helper-card">
+            <strong>Prefilled from order labels</strong>
+            <p>
+              This draft matcher came from an order label. You can keep the exact match or adjust it before creating the suppression.
+            </p>
+            <div className="chip-list">
+              <span className="mini-chip">{prefillMatcherKey}</span>
+              <span className="mini-chip">{prefillMatcherValue}</span>
             </div>
-          ) : null}
-          <form className="form-stack" onSubmit={form.handleSubmit((values) => createMutation.mutate(values))}>
-            <fieldset disabled={!canEdit}>
+          </div>
+        ) : null}
+        <form className="form-stack" onSubmit={form.handleSubmit((values) => createMutation.mutate(values))}>
+          <fieldset disabled={!canEdit}>
             <FormField label="Suppression name" help="Use a human-readable maintenance or outage label.">
               <input {...form.register("name")} placeholder="Database maintenance" />
               <FieldError message={form.formState.errors.name?.message} />
@@ -2362,11 +2730,8 @@ function SuppressionsPage() {
               </FormField>
             </div>
             <div className="grid-two">
-              <FormField label="Scope" help="Matcher scope targets alerts by label rather than silencing everything globally.">
-                <select {...form.register("scope")}>
-                  <option value="matchers">Matchers</option>
-                  <option value="all">All</option>
-                </select>
+              <FormField label="Suppression source" help="Operator-created suppressions are stored as Alertmanager silences and reconciled back into PoundCake.">
+                <input value="Alertmanager" disabled />
               </FormField>
               <FormField label="Summary communication" help="Enable this when you want the suppression lifecycle summarized into a ticket.">
                 <label className="toggle-row">
@@ -2410,41 +2775,143 @@ function SuppressionsPage() {
                 {createMutation.isPending ? "Creating..." : "Create suppression"}
               </button>
             </div>
-            </fieldset>
-          </form>
-        </Panel>
+          </fieldset>
+        </form>
+      </Panel>
 
-        <Panel title="Suppression windows" subtitle="Click any window to see its current status and cancel active ones.">
-          <div className="list-stack">
-            {suppressionsQuery.data.map((item) => (
-              <div className={`feed-row card-row ${focusedId === String(item.id) ? "highlighted" : ""}`} key={item.id}>
-                <div>
-                  <strong>{item.name}</strong>
-                  <p>
-                    {item.reason || "No reason provided."} • {formatDate(item.starts_at)} to{" "}
-                    {formatDate(item.ends_at)}
-                  </p>
-                </div>
-                <div className="feed-meta">
-                  <StatusBadge status={item.status}>{item.status}</StatusBadge>
-                  <button
-                    className="ghost-button"
-                    disabled={!canEdit || cancelMutation.isPending || item.status === "canceled"}
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm(`Cancel suppression "${item.name}"?`)) {
-                        cancelMutation.mutate(item.id);
-                      }
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </div>
+      <Panel
+        title="Suppression windows"
+        subtitle="Review current coverage first, then scan expired and canceled windows below for audit context."
+      >
+        <div className="suppression-sections">
+          <section className="suppression-section">
+            <div className="section-heading compact">
+              <div>
+                <h4>Current and Upcoming</h4>
+                <p>Active and scheduled suppressions that can still affect incoming alerts.</p>
               </div>
-            ))}
-          </div>
-        </Panel>
-      </div>
+              <StatusBadge status="active">{currentSuppressions.length}</StatusBadge>
+            </div>
+            <div className="list-stack">
+              {currentSuppressions.length ? (
+                currentSuppressions.map((item) => (
+                  <div
+                    className={`suppression-card ${focusedId === String(item.id) ? "highlighted" : ""}`}
+                    key={item.id}
+                  >
+                    <div className="suppression-card-main">
+                      <div className="feed-title-row">
+                        <strong>{item.name}</strong>
+                        <StatusBadge status={item.status}>{item.status}</StatusBadge>
+                      </div>
+                      <p>{item.reason || "No reason provided."}</p>
+                      <div className="suppression-meta-grid">
+                        <span>{formatDate(item.starts_at)} to {formatDate(item.ends_at)}</span>
+                        <span>
+                          Source: {item.source_service_type || item.source}
+                          {item.source_ref ? ` • Silence ${item.source_ref}` : ""}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="suppression-card-actions">
+                      <button
+                        className="ghost-button"
+                        disabled={!canEdit || cancelMutation.isPending || item.status === "canceled"}
+                        type="button"
+                        onClick={() => {
+                          setPendingCancellation(item);
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-state">No active or scheduled suppressions.</div>
+              )}
+            </div>
+          </section>
+
+          <section className="suppression-section">
+            <div className="section-heading compact">
+              <div>
+                <h4>Past Windows</h4>
+                <p>Expired and canceled suppressions stay visible here for review and cleanup.</p>
+              </div>
+              <StatusBadge status="expired">{pastSuppressions.length}</StatusBadge>
+            </div>
+            <div className="list-stack">
+              {pastSuppressions.length ? (
+                pastSuppressions.map((item) => (
+                  <div
+                    className={`suppression-card suppression-card-past ${focusedId === String(item.id) ? "highlighted" : ""}`}
+                    key={item.id}
+                  >
+                    <div className="suppression-card-main">
+                      <div className="feed-title-row">
+                        <strong>{item.name}</strong>
+                        <StatusBadge status={item.status}>{item.status}</StatusBadge>
+                      </div>
+                      <p>{item.reason || "No reason provided."}</p>
+                      <div className="suppression-meta-grid">
+                        <span>{formatDate(item.starts_at)} to {formatDate(item.ends_at)}</span>
+                        <span>
+                          Source: {item.source_service_type || item.source}
+                          {item.source_ref ? ` • Silence ${item.source_ref}` : ""}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-state">No expired or canceled suppressions yet.</div>
+              )}
+            </div>
+          </section>
+        </div>
+      </Panel>
+      {pendingCancellation ? (
+        <ReviewChangesDialog
+          changes={reviewChangeRows(
+            {
+              status: pendingCancellation.status,
+              suppressed_until: formatLongDate(pendingCancellation.ends_at),
+            },
+            {
+              status: "canceled",
+              suppressed_until: "Ends now",
+            },
+            {
+              status: "Status",
+              suppressed_until: "Suppressed until",
+            },
+          )}
+          confirmLabel="Cancel suppression"
+          consequence="Canceling this suppression can let matching alerts resume normal routing and ticket activity immediately."
+          impact="This change takes effect immediately for future suppression checks."
+          immediateChanges={[
+            "Future alert evaluations stop honoring this suppression window as soon as the cancellation is stored.",
+            "Matching alerts can resume normal routing, ticket updates, and notification fan-out on their next evaluation cycle.",
+          ]}
+          isPending={cancelMutation.isPending}
+          onCancel={() => setPendingCancellation(null)}
+          onConfirm={() => cancelMutation.mutate({ id: pendingCancellation.id, name: pendingCancellation.name })}
+          pendingLabel="Canceling..."
+          requireText="cancel"
+          summary={[
+            { label: "Suppression", value: pendingCancellation.name },
+            { label: "Status", value: pendingCancellation.status },
+            { label: "Window end", value: formatLongDate(pendingCancellation.ends_at) },
+          ]}
+          title="Review suppression cancellation"
+          verificationHint="Check the Suppressions page and any affected Orders after this cancellation if alerts may reopen."
+          verifyChecks={[
+            "Confirm this window now shows as canceled in Suppressions.",
+            "Refresh affected Orders or communication activity if matching alerts are expected to reopen.",
+          ]}
+        />
+      ) : null}
     </div>
   );
 }
@@ -2512,6 +2979,130 @@ function SuppressionMatcherValueField({
     <FormField label="Matcher value" help="Leave value blank for exists and not_exists operators.">
       <input {...form.register("matcher_value")} />
     </FormField>
+  );
+}
+
+function OperatorAuditPage() {
+  const [surfaceFilter, setSurfaceFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const query = useQuery({
+    queryKey: ["operator-audit", surfaceFilter, statusFilter],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      params.set("limit", "150");
+      if (surfaceFilter) {
+        params.set("surface", surfaceFilter);
+      }
+      if (statusFilter) {
+        params.set("status", statusFilter);
+      }
+      return apiGet(
+        `/api/v1/ui/operator-actions?${params.toString()}`,
+        operatorAuditRecordArraySchema,
+      );
+    },
+  });
+
+  if (query.isLoading) {
+    return <PageLoading message="Loading operator change history." />;
+  }
+
+  if (query.isError || !query.data) {
+    return <PageError message={getErrorMessage(query.error)} />;
+  }
+
+  const rows = query.data;
+  const surfaces = Array.from(new Set(rows.map((item) => item.surface))).sort();
+  const statuses = Array.from(new Set(rows.map((item) => item.status))).sort();
+  const selected = rows.find((item) => item.id === selectedId) || rows[0] || null;
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        title="Operator Audit"
+        description="Reader-safe history of UI-initiated operator changes, including attempts, outcomes, and changed surfaces."
+      />
+
+      <div className="toolbar">
+        <label>
+          Surface
+          <select value={surfaceFilter} onChange={(event) => setSurfaceFilter(event.target.value)}>
+            <option value="">All</option>
+            {surfaces.map((surface) => (
+              <option key={surface} value={surface}>
+                {titleize(surface.replace(/\./g, " "))}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Status
+          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+            <option value="">All</option>
+            {statuses.map((status) => (
+              <option key={status} value={status}>
+                {titleize(status)}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="master-detail">
+        <Panel title="Audit events" subtitle={`${rows.length} event(s) in view.`}>
+          <div className="list-stack incident-list">
+            {rows.length ? (
+              rows.map((item) => (
+                <button
+                  className={`incident-row ${selected?.id === item.id ? "active" : ""}`}
+                  key={item.id}
+                  type="button"
+                  onClick={() => setSelectedId(item.id)}
+                >
+                  <div>
+                    <strong>{titleize(item.action.replace(/_/g, " "))}</strong>
+                    <p>
+                      {titleize(item.surface.replace(/[._]/g, " "))} • {item.target || "No target"} •{" "}
+                      {item.actor_username || "unknown actor"}
+                    </p>
+                  </div>
+                  <div className="feed-meta">
+                    <StatusBadge status={item.status}>{item.status}</StatusBadge>
+                    <span>{formatDate(item.created_at)}</span>
+                  </div>
+                </button>
+              ))
+            ) : (
+              <EmptyState message="No operator audit events match the current filters." />
+            )}
+          </div>
+        </Panel>
+
+        <Panel title="Selected event" subtitle="Target, actor, and redacted change details for one operator action.">
+          {selected ? (
+            <div className="detail-stack">
+              <DetailList>
+                <DetailRow label="Action" value={titleize(selected.action.replace(/_/g, " "))} />
+                <DetailRow label="Surface" value={titleize(selected.surface.replace(/[._]/g, " "))} />
+                <DetailRow label="Status" value={selected.status} />
+                <DetailRow label="Target" value={selected.target || "-"} />
+                <DetailRow label="Actor" value={selected.actor_username || "-"} />
+                <DetailRow label="Role" value={selected.actor_role || "-"} />
+                <DetailRow label="Request ID" value={selected.req_id || "-"} />
+                <DetailRow label="Timestamp" value={formatLongDate(selected.created_at)} />
+              </DetailList>
+              <section className="detail-section">
+                <h4>Details</h4>
+                <pre className="json-block">{compactJson(selected.details)}</pre>
+              </section>
+            </div>
+          ) : (
+            <EmptyState message="Select an audit event to inspect it." />
+          )}
+        </Panel>
+      </div>
+    </div>
   );
 }
 
@@ -2978,11 +3569,24 @@ function SystemActivityPage() {
 
 function AlertRulesPage() {
   const settings = useSettings();
+  const principal = usePrincipal();
+  const notify = useToast();
+  const queryClient = useQueryClient();
   const servicePlugins = useServicePlugins();
   const k8sPlugin = servicePlugins.find((plugin) => plugin.service_type === "k8s");
   const [namespace, setNamespace] = useState(settings.prometheus_crd_namespace || "monitoring");
   const [search, setSearch] = useState("");
   const [selectedName, setSelectedName] = useState("");
+  const [selectedRuleKey, setSelectedRuleKey] = useState("");
+  const [ruleEditorText, setRuleEditorText] = useState("{}");
+  const [pendingRuleSave, setPendingRuleSave] = useState<{
+    crdName: string;
+    groupName: string;
+    ruleName: string;
+    currentRuleData: Record<string, unknown>;
+    ruleData: Record<string, unknown>;
+  } | null>(null);
+  const canEdit = canManageWorkflows(principal);
 
   const query = useQuery({
     queryKey: ["prometheus-rules", namespace],
@@ -2992,6 +3596,79 @@ function AlertRulesPage() {
         prometheusRuleListResponseSchema,
       ),
     enabled: Boolean(k8sPlugin && namespace.trim()),
+  });
+
+  const saveRuleMutation = useMutation({
+    mutationFn: async (payload: {
+      crdName: string;
+      groupName: string;
+      ruleName: string;
+      ruleData: Record<string, unknown>;
+    }) => {
+      logOperatorAction({
+        surface: "configuration.alerts",
+        action: "save_live_rule",
+        status: "attempt",
+        target: `${payload.crdName}/${payload.ruleName}`,
+        details: {
+          group_name: payload.groupName,
+          namespace,
+        },
+      });
+      return apiPut(
+        `/api/v1/plugins/k8s/prometheus-rules/${encodeURIComponent(payload.crdName)}/rules/${encodeURIComponent(payload.ruleName)}?namespace=${encodeURIComponent(namespace)}`,
+        prometheusRuleRecordSchema,
+        {
+          group_name: payload.groupName,
+          rule_data: payload.ruleData,
+        },
+      );
+    },
+    onSuccess: async (result, payload) => {
+      logOperatorAction({
+        surface: "configuration.alerts",
+        action: "save_live_rule",
+        status: "success",
+        target: `${payload.crdName}/${payload.ruleName}`,
+        details: {
+          group_name: payload.groupName,
+          namespace,
+        },
+      });
+      notify("success", `Saved live rule ${result.rule_name}. Verify Alerts or any active Orders affected by this rule.`);
+      setPendingRuleSave(null);
+      await queryClient.invalidateQueries({ queryKey: ["prometheus-rules", namespace] });
+    },
+    onError: (error, payload) => {
+      logOperatorAction({
+        surface: "configuration.alerts",
+        action: "save_live_rule",
+        status: "failure",
+        target: payload ? `${payload.crdName}/${payload.ruleName}` : undefined,
+        details: {
+          group_name: payload?.groupName || null,
+          namespace,
+          error: getErrorMessage(error),
+        },
+      });
+      notify("error", getErrorMessage(error));
+    },
+  });
+
+  const exportRuleMutation = useMutation({
+    mutationFn: async (payload: {
+      crdName: string;
+      groupName: string;
+      ruleName: string;
+    }) =>
+      apiPost("/api/v1/plugins/genestack_monitoring/export-alert-updates", repoSyncResponseSchema, {
+        namespace,
+        crd_name: payload.crdName,
+        group_name: payload.groupName,
+        rule_name: payload.ruleName,
+      }),
+    onSuccess: (result) => notify("success", formatRepoSyncMessage(result)),
+    onError: (error) => notify("error", getErrorMessage(error)),
   });
 
   if (!k8sPlugin) {
@@ -3010,12 +3687,62 @@ function AlertRulesPage() {
     return haystack.includes(search.trim().toLowerCase());
   });
   const selected = rows.find((item) => item.name === selectedName) || rows[0] || response?.items[0];
+  const availableRules = selected ? extractPrometheusRules(selected) : [];
+  const selectedRule =
+    availableRules.find((rule) => rule.key === selectedRuleKey) || availableRules[0] || null;
+
+  useEffect(() => {
+    if (!selected) {
+      setSelectedRuleKey("");
+      return;
+    }
+    if (!availableRules.some((rule) => rule.key === selectedRuleKey)) {
+      setSelectedRuleKey(availableRules[0]?.key || "");
+    }
+  }, [selected, availableRules, selectedRuleKey]);
+
+  useEffect(() => {
+    if (!selectedRule) {
+      setRuleEditorText("{}");
+      return;
+    }
+    setRuleEditorText(compactJson(selectedRule.rule_data));
+  }, [selectedRule?.key]);
+
+  async function handleSaveRule() {
+    if (!selected || !selectedRule) {
+      return;
+    }
+    const parsed = parseOptionalJson(ruleEditorText, `${selectedRule.rule_name} JSON`);
+    if (!parsed) {
+      notify("error", "Rule JSON is required.");
+      return;
+    }
+    setPendingRuleSave({
+      crdName: selected.name,
+      groupName: selectedRule.group_name,
+      ruleName: selectedRule.rule_name,
+      currentRuleData: selectedRule.rule_data,
+      ruleData: parsed,
+    });
+  }
+
+  async function handleExportRule() {
+    if (!selected || !selectedRule) {
+      return;
+    }
+    await exportRuleMutation.mutateAsync({
+      crdName: selected.name,
+      groupName: selectedRule.group_name,
+      ruleName: selectedRule.rule_name,
+    });
+  }
 
   return (
     <div className="page-stack">
       <PageHeader
         title="Alerts"
-        description="Inspect PrometheusRule CRDs through the registered Kubernetes service plugin."
+        description="Edit live PrometheusRule entries through the k8s plugin, then export Genestack-managed updates through a separate PR flow."
       />
 
       <div className="toolbar">
@@ -3087,15 +3814,92 @@ function AlertRulesPage() {
           )}
         </Panel>
 
-        <Panel title="Resource detail" subtitle="Groups, rule names, labels, and raw CRD payload.">
-          {selected ? <PrometheusRuleDetail item={selected} /> : <EmptyState message="Select a PrometheusRule resource." />}
+        <Panel title="Resource detail" subtitle="Inspect one CRD, edit one live rule, and export Genestack-managed changes separately.">
+          {selected ? (
+            <PrometheusRuleDetail
+              item={selected}
+              canEdit={canEdit}
+              isExporting={exportRuleMutation.isPending}
+              isSaving={saveRuleMutation.isPending}
+              onEditorChange={setRuleEditorText}
+              onExport={handleExportRule}
+              onRuleSelect={setSelectedRuleKey}
+              onSave={handleSaveRule}
+              ruleEditorText={ruleEditorText}
+              selectedRule={selectedRule}
+            />
+          ) : (
+            <EmptyState message="Select a PrometheusRule resource." />
+          )}
         </Panel>
       </div>
+      {pendingRuleSave ? (
+        <ReviewChangesDialog
+          changes={reviewChangeRows(
+            {
+              rule_definition: pendingRuleSave.currentRuleData,
+            },
+            {
+              rule_definition: pendingRuleSave.ruleData,
+            },
+            {
+              rule_definition: "Rule definition",
+            },
+          )}
+          confirmLabel="Save live rule"
+          consequence="This overwrites the live PrometheusRule in-cluster immediately. Active alert evaluation can change before any Git export happens."
+          impact="The next Prometheus rule evaluation uses this live rule definition."
+          immediateChanges={[
+            "Prometheus starts using the saved live rule definition on the next evaluation cycle.",
+            "This updates cluster behavior immediately even if no Git export has happened yet.",
+          ]}
+          isPending={saveRuleMutation.isPending}
+          onCancel={() => setPendingRuleSave(null)}
+          onConfirm={() => void saveRuleMutation.mutateAsync(pendingRuleSave)}
+          pendingLabel="Saving..."
+          requireText="save"
+          summary={[
+            { label: "Namespace", value: namespace },
+            { label: "Resource", value: pendingRuleSave.crdName },
+            { label: "Rule", value: pendingRuleSave.ruleName },
+            { label: "Group", value: pendingRuleSave.groupName },
+          ]}
+          title="Review live alert rule save"
+          verificationHint="Refresh Alerts after saving and verify any active Orders if this rule is already firing."
+          verifyChecks={[
+            "Refresh the selected PrometheusRule resource to confirm the live definition matches the intended JSON.",
+            "Check active Alerts and any related Orders if this rule can change firing behavior right away.",
+          ]}
+        />
+      ) : null}
     </div>
   );
 }
 
-function PrometheusRuleDetail({ item }: { item: PrometheusRuleResourceRecord }) {
+function PrometheusRuleDetail({
+  item,
+  selectedRule,
+  ruleEditorText,
+  onRuleSelect,
+  onEditorChange,
+  onSave,
+  onExport,
+  isSaving,
+  isExporting,
+  canEdit,
+}: {
+  item: PrometheusRuleResourceRecord;
+  selectedRule: AlertRuleEditorRecord | null;
+  ruleEditorText: string;
+  onRuleSelect: (value: string) => void;
+  onEditorChange: (value: string) => void;
+  onSave: () => void;
+  onExport: () => void;
+  isSaving: boolean;
+  isExporting: boolean;
+  canEdit: boolean;
+}) {
+  const rules = extractPrometheusRules(item);
   return (
     <div className="detail-stack">
       <section className="detail-hero">
@@ -3141,6 +3945,69 @@ function PrometheusRuleDetail({ item }: { item: PrometheusRuleResourceRecord }) 
       </section>
 
       <section className="detail-section">
+        <h4>Rules</h4>
+        <div className="list-stack">
+          {rules.length ? (
+            rules.map((rule) => (
+              <button
+                className={`incident-row ${selectedRule?.key === rule.key ? "active" : ""}`}
+                key={rule.key}
+                type="button"
+                onClick={() => onRuleSelect(rule.key)}
+              >
+                <div>
+                  <strong>{rule.rule_name}</strong>
+                  <p>
+                    {rule.group_name} • {rule.rule_kind}
+                  </p>
+                </div>
+                <div className="feed-meta">
+                  <span>{rule.source ? "Genestack-mapped" : "Live only"}</span>
+                </div>
+              </button>
+            ))
+          ) : (
+            <EmptyState message="This resource does not contain editable rules." />
+          )}
+        </div>
+      </section>
+
+      <section className="detail-section">
+        <h4>Live rule editor</h4>
+        {selectedRule ? (
+          <div className="form-stack">
+            <div className="helper-card">
+              <strong>{selectedRule.rule_name}</strong>
+              <p>
+                {selectedRule.group_name} • {selectedRule.rule_kind} • {String(selectedRule.source?.file || "no source annotation")}
+              </p>
+            </div>
+            <textarea
+              disabled={!canEdit || isSaving}
+              rows={14}
+              value={ruleEditorText}
+              onChange={(event) => onEditorChange(event.target.value)}
+            />
+            <div className="form-actions">
+              <button type="button" disabled={!canEdit || isSaving} onClick={onSave}>
+                {isSaving ? "Saving..." : "Save live rule"}
+              </button>
+              <button type="button" className="ghost-button" disabled={!canEdit || isExporting || !selectedRule.source} onClick={onExport}>
+                {isExporting ? "Exporting..." : "Export to Genestack"}
+              </button>
+            </div>
+            {!selectedRule.source ? (
+              <div className="login-note">
+                Export is available only for rules with Genestack source annotations.
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <EmptyState message="Select one rule to edit." />
+        )}
+      </section>
+
+      <section className="detail-section">
         <h4>Labels</h4>
         <pre className="json-block">{compactJson(item.labels)}</pre>
       </section>
@@ -3153,10 +4020,68 @@ function PrometheusRuleDetail({ item }: { item: PrometheusRuleResourceRecord }) 
   );
 }
 
+function extractPrometheusRules(item: PrometheusRuleResourceRecord): AlertRuleEditorRecord[] {
+  const rawSpec = item.raw?.spec;
+  const rawGroups =
+    rawSpec && typeof rawSpec === "object" && "groups" in rawSpec && Array.isArray(rawSpec.groups)
+      ? rawSpec.groups
+      : [];
+  const annotationPayload =
+    typeof item.annotations?.["poundcake.io/alert-rule-sources"] === "string"
+      ? item.annotations["poundcake.io/alert-rule-sources"]
+      : "";
+  let sourceMap: Record<string, Record<string, unknown>> = {};
+  if (annotationPayload) {
+    try {
+      const parsed = JSON.parse(annotationPayload);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        sourceMap = parsed as Record<string, Record<string, unknown>>;
+      }
+    } catch {
+      sourceMap = {};
+    }
+  }
+
+  const rules: AlertRuleEditorRecord[] = [];
+  rawGroups.forEach((group: unknown) => {
+    if (!group || typeof group !== "object" || Array.isArray(group)) {
+      return;
+    }
+    const groupName = String((group as { name?: unknown }).name || "");
+    const rawRules = Array.isArray((group as { rules?: unknown[] }).rules)
+      ? (group as { rules: unknown[] }).rules
+      : [];
+    rawRules.forEach((rawRule) => {
+      if (!rawRule || typeof rawRule !== "object" || Array.isArray(rawRule)) {
+        return;
+      }
+      const record = rawRule as Record<string, unknown>;
+      const ruleName = String(record.alert || record.record || "");
+      if (!ruleName) {
+        return;
+      }
+      rules.push({
+        service_type: "k8s",
+        namespace: item.namespace,
+        crd_name: item.name,
+        group_name: groupName,
+        rule_name: ruleName,
+        rule_kind: record.record ? "record" : "alert",
+        source: sourceMap[ruleName] || null,
+        rule_data: record,
+        checked_at: "",
+        key: `${groupName}:${ruleName}`,
+      });
+    });
+  });
+  return rules;
+}
+
 function CommunicationPolicyPage() {
   const notify = useToast();
   const principal = usePrincipal();
   const queryClient = useQueryClient();
+  const [pendingPolicyValues, setPendingPolicyValues] = useState<z.infer<typeof communicationsPolicySchema> | null>(null);
   const canEdit = canManageGlobalCommunications(principal);
 
   const policyQuery = useQuery({
@@ -3230,7 +4155,8 @@ function CommunicationPolicyPage() {
           requested_route_count: values.routes.length,
         },
       });
-      notify("success", "Communication policy updated.");
+      notify("success", "Communication policy updated. Verify effective routes in Communication Routes and any recipes that inherit this policy.");
+      setPendingPolicyValues(null);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["communications-policy"] }),
         queryClient.invalidateQueries({ queryKey: ["settings"] }),
@@ -3285,7 +4211,7 @@ function CommunicationPolicyPage() {
               <p>Your role can review the communication policy but only admins can change it.</p>
             </div>
           ) : null}
-          <form className="form-stack" onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}>
+          <form className="form-stack" onSubmit={form.handleSubmit((values) => setPendingPolicyValues(values))}>
             <fieldset disabled={!canEdit}>
             <div className="builder-header">
               <div>
@@ -3409,6 +4335,48 @@ function CommunicationPolicyPage() {
           ))}
         </div>
       </Panel>
+      {pendingPolicyValues ? (
+        <ReviewChangesDialog
+          changes={reviewChangeRows(
+            {
+              route_count: policyQuery.data.routes.length,
+              enabled_route_count: policyQuery.data.routes.filter((route) => route.enabled).length,
+              providers: Array.from(new Set(policyQuery.data.routes.map((route) => route.execution_target))).join(", "),
+            },
+            {
+              route_count: pendingPolicyValues.routes.length,
+              enabled_route_count: pendingPolicyValues.routes.filter((route) => route.enabled).length,
+              providers: Array.from(new Set(pendingPolicyValues.routes.map((route) => route.execution_target))).join(", "),
+            },
+            {
+              route_count: "Routes",
+              enabled_route_count: "Enabled routes",
+              providers: "Providers",
+            },
+          )}
+          confirmLabel="Save communication policy"
+          impact="Recipes that inherit the global policy use this route set immediately after save."
+          isPending={saveMutation.isPending}
+          onCancel={() => setPendingPolicyValues(null)}
+          onConfirm={() => saveMutation.mutate(pendingPolicyValues)}
+          pendingLabel="Saving..."
+          summary={[
+            { label: "Routes", value: String(pendingPolicyValues.routes.length) },
+            {
+              label: "Enabled routes",
+              value: String(pendingPolicyValues.routes.filter((route) => route.enabled).length),
+            },
+            {
+              label: "Providers",
+              value: pendingPolicyValues.routes.length
+                ? Array.from(new Set(pendingPolicyValues.routes.map((route) => route.execution_target))).join(", ")
+                : "-",
+            },
+          ]}
+          title="Review communication policy changes"
+          verificationHint="Check Communication Routes and one inherited recipe after save to confirm the intended route set is active."
+        />
+      ) : null}
     </div>
   );
 }
@@ -3420,9 +4388,9 @@ function RecipesPage() {
   const queryClient = useQueryClient();
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingWorkflow, setEditingWorkflow] = useState<RecipeRecord | null>(null);
+  const [pendingWorkflowValues, setPendingWorkflowValues] = useState<z.infer<typeof workflowSchema> | null>(null);
   const [mode, setMode] = useState<"simple" | "advanced">("simple");
   const canEdit = canManageWorkflows(principal);
-  const canClear = canManageRepoSyncClear(principal);
 
   const recipesQuery = useQuery({
     queryKey: ["workflows"],
@@ -3490,10 +4458,6 @@ function RecipesPage() {
     });
   };
 
-  const refreshWorkflowAndActionInventories = async () => {
-    await Promise.all([refreshWorkflows(), refreshActions()]);
-  };
-
   const openCreateWorkflowDialog = () => {
     setEditingWorkflow(null);
     resetWorkflowForm(form, steps, communicationRoutes, settings.global_communications_configured);
@@ -3509,6 +4473,7 @@ function RecipesPage() {
   const closeWorkflowDialog = () => {
     setEditorOpen(false);
     setEditingWorkflow(null);
+    setPendingWorkflowValues(null);
     resetWorkflowForm(form, steps, communicationRoutes, settings.global_communications_configured);
     setMode("simple");
   };
@@ -3566,6 +4531,19 @@ function RecipesPage() {
 
   const saveMutation = useMutation({
     mutationFn: async (values: z.infer<typeof workflowSchema>) => {
+      logOperatorAction({
+        surface: "configuration.recipes",
+        action: editingWorkflow ? "update_recipe" : "create_recipe",
+        status: "attempt",
+        target: editingWorkflow ? String(editingWorkflow.id) : values.name,
+        details: {
+          name: values.name,
+          enabled: values.enabled,
+          communications_mode: values.communications_mode,
+          route_count: values.communications_routes.length,
+          step_count: values.recipe_ingredients.length,
+        },
+      });
       if (values.enabled && values.communications_mode === "inherit" && !settings.global_communications_configured) {
         throw new Error("Configure a communication policy or switch this recipe to recipe-specific communication routes.");
       }
@@ -3620,15 +4598,41 @@ function RecipesPage() {
       }
       return apiPost("/api/v1/recipes/", recipeRecordSchema, recipeCreateRequestSchema.parse(payload));
     },
-    onSuccess: async () => {
-      notify("success", editingWorkflow ? "Recipe updated." : "Recipe created.");
+    onSuccess: async (_result, values) => {
+      logOperatorAction({
+        surface: "configuration.recipes",
+        action: editingWorkflow ? "update_recipe" : "create_recipe",
+        status: "success",
+        target: editingWorkflow ? String(editingWorkflow.id) : values.name,
+        details: {
+          name: values.name,
+          enabled: values.enabled,
+          communications_mode: values.communications_mode,
+          route_count: values.communications_routes.length,
+          step_count: values.recipe_ingredients.length,
+        },
+      });
+      notify("success", `${editingWorkflow ? "Recipe updated" : "Recipe created"}. Verify Orders or recipe inventory if this workflow is already in operator rotation.`);
       closeWorkflowDialog();
       await Promise.all([
         refreshWorkflows(),
         queryClient.invalidateQueries({ queryKey: ["communications-policy"] }),
       ]);
     },
-    onError: (error) => notify("error", getErrorMessage(error)),
+    onError: (error, values) => {
+      logOperatorAction({
+        surface: "configuration.recipes",
+        action: editingWorkflow ? "update_recipe" : "create_recipe",
+        status: "failure",
+        target: editingWorkflow ? String(editingWorkflow.id) : values?.name,
+        details: {
+          name: values?.name || null,
+          enabled: values?.enabled ?? null,
+          error: getErrorMessage(error),
+        },
+      });
+      notify("error", getErrorMessage(error));
+    },
   });
 
   const deleteMutation = useMutation({
@@ -3637,35 +4641,6 @@ function RecipesPage() {
       notify("success", "Recipe deleted.");
       closeWorkflowDialog();
       await refreshWorkflows();
-    },
-    onError: (error) => notify("error", getErrorMessage(error)),
-  });
-
-  const exportMutation = useMutation({
-    mutationFn: () => apiPost("/api/v1/repo-sync/workflow-actions/export", repoSyncResponseSchema),
-    onSuccess: async (result) => {
-      notify("success", formatRepoSyncMessage(result));
-      await refreshWorkflowAndActionInventories();
-    },
-    onError: (error) => notify("error", getErrorMessage(error)),
-  });
-
-  const importMutation = useMutation({
-    mutationFn: () => apiPost("/api/v1/repo-sync/workflow-actions/import", repoSyncResponseSchema),
-    onSuccess: async (result) => {
-      notify("success", formatRepoSyncMessage(result));
-      closeWorkflowDialog();
-      await refreshWorkflowAndActionInventories();
-    },
-    onError: (error) => notify("error", getErrorMessage(error)),
-  });
-
-  const clearMutation = useMutation({
-    mutationFn: () => apiDelete("/api/v1/repo-sync/workflow-actions", repoSyncResponseSchema),
-    onSuccess: async (result) => {
-      notify("success", formatRepoSyncMessage(result));
-      closeWorkflowDialog();
-      await refreshWorkflowAndActionInventories();
     },
     onError: (error) => notify("error", getErrorMessage(error)),
   });
@@ -3700,15 +4675,6 @@ function RecipesPage() {
       <PageHeader
         title="Recipes"
         description="Build reusable remediation and utility recipes, then choose whether they inherit the communication policy or define recipe-specific routes."
-      />
-      <WorkflowRepoSyncPanel
-        canClear={canClear}
-        canEdit={canEdit}
-        isPending={exportMutation.isPending || importMutation.isPending || clearMutation.isPending}
-        onClear={() => clearMutation.mutate()}
-        onExport={() => exportMutation.mutate()}
-        onImport={() => importMutation.mutate()}
-        settings={settings}
       />
       <Panel
         title="Recipe Inventory"
@@ -3824,7 +4790,7 @@ function RecipesPage() {
               </button>
             </div>
 
-            <form className="form-stack" onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}>
+            <form className="form-stack" onSubmit={form.handleSubmit((values) => setPendingWorkflowValues(values))}>
               <fieldset disabled={!canEdit}>
                 <div className="grid-two">
                   <FormField label="Recipe name" help="Use the alert or handling pattern name operators will recognize.">
@@ -4145,6 +5111,56 @@ function RecipesPage() {
           </div>
         </div>
       ) : null}
+      {pendingWorkflowValues ? (
+        <ReviewChangesDialog
+          changes={reviewChangeRows(
+            {
+              name: editingWorkflow?.name,
+              enabled: editingWorkflow?.enabled,
+              communications_mode: editingWorkflow?.communications.mode,
+              enabled_routes: editingWorkflow?.communications.routes.filter((route) => route.enabled).length,
+              step_count: editingWorkflow?.recipe_ingredients.length,
+              clear_timeout_sec: editingWorkflow?.clear_timeout_sec,
+            },
+            {
+              name: pendingWorkflowValues.name,
+              enabled: pendingWorkflowValues.enabled,
+              communications_mode: pendingWorkflowValues.communications_mode,
+              enabled_routes: pendingWorkflowValues.communications_routes.filter((route) => route.enabled).length,
+              step_count: pendingWorkflowValues.recipe_ingredients.length,
+              clear_timeout_sec: pendingWorkflowValues.clear_timeout_sec,
+            },
+            {
+              name: "Recipe",
+              enabled: "Enabled",
+              communications_mode: "Communications",
+              enabled_routes: "Enabled routes",
+              step_count: "Steps",
+              clear_timeout_sec: "Resolve wait (sec)",
+            },
+          )}
+          confirmLabel={editingWorkflow ? "Save recipe" : "Create recipe"}
+          impact={pendingWorkflowValues.enabled
+            ? "If this recipe is enabled, new matching work can use the updated route and step definitions immediately."
+            : "This saves the recipe definition without activating it for new work."}
+          isPending={saveMutation.isPending}
+          onCancel={() => setPendingWorkflowValues(null)}
+          onConfirm={() => saveMutation.mutate(pendingWorkflowValues)}
+          pendingLabel="Saving..."
+          summary={[
+            { label: "Recipe", value: pendingWorkflowValues.name || "(unnamed)" },
+            { label: "Enabled", value: reviewValue(pendingWorkflowValues.enabled) },
+            { label: "Communications", value: pendingWorkflowValues.communications_mode },
+            {
+              label: "Enabled routes",
+              value: String(pendingWorkflowValues.communications_routes.filter((route) => route.enabled).length),
+            },
+            { label: "Steps", value: String(pendingWorkflowValues.recipe_ingredients.length) },
+          ]}
+          title={editingWorkflow ? "Review recipe changes" : "Review new recipe"}
+          verificationHint="Check Recipe Inventory after save and verify any affected Orders if this recipe is already enabled."
+        />
+      ) : null}
     </div>
   );
 }
@@ -4217,6 +5233,18 @@ function AccessPage() {
   const [externalGroup, setExternalGroup] = useState("");
   const [selectedPrincipalId, setSelectedPrincipalId] = useState("");
   const [search, setSearch] = useState("");
+  const [pendingCreateReview, setPendingCreateReview] = useState<{
+    payload: Record<string, unknown>;
+    summary: Array<{ label: string; value: string }>;
+    changes: ReviewChangeRow[];
+  } | null>(null);
+  const [pendingUpdateReview, setPendingUpdateReview] = useState<{
+    id: number;
+    nextRole: string;
+    target: string;
+    currentRole: string;
+  } | null>(null);
+  const [pendingDeleteReview, setPendingDeleteReview] = useState<AuthRoleBindingRecord | null>(null);
   const deferredSearch = useDeferredValue(search);
 
   const providers = settings.auth_providers.filter((item) => item.name !== "service");
@@ -4249,29 +5277,34 @@ function AccessPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: async () => {
-      const payload =
-        bindingType === "group"
-          ? {
-              provider,
-              binding_type: "group",
-              role,
-              external_group: externalGroup,
-            }
-          : {
-              provider,
-              binding_type: "user",
-              role,
-              principal_id: Number(selectedPrincipalId),
-            };
+    mutationFn: async (payload: Record<string, unknown>) => {
+      logOperatorAction({
+        surface: "configuration.rbac",
+        action: "create_rbac_policy",
+        status: "attempt",
+        target: typeof payload.external_group === "string" ? payload.external_group : String(payload.principal_id || ""),
+        details: payload,
+      });
       return apiPost(
         "/api/v1/auth/bindings",
         authRoleBindingRecordSchema,
         authRoleBindingCreateRequestSchema.parse(payload),
       );
     },
-    onSuccess: async () => {
-      notify("success", "Role binding created.");
+    onSuccess: async (binding) => {
+      logOperatorAction({
+        surface: "configuration.rbac",
+        action: "create_rbac_policy",
+        status: "success",
+        target: String(binding.id),
+        details: {
+          provider: binding.provider,
+          binding_type: binding.binding_type,
+          role: binding.role,
+        },
+      });
+      notify("success", "Role binding created. Verify RBAC Policies and have the target user or group confirm expected access.");
+      setPendingCreateReview(null);
       setExternalGroup("");
       setSelectedPrincipalId("");
       await Promise.all([
@@ -4279,30 +5312,114 @@ function AccessPage() {
         queryClient.invalidateQueries({ queryKey: ["auth-principals"] }),
       ]);
     },
-    onError: (error) => notify("error", getErrorMessage(error)),
+    onError: (error, payload) => {
+      logOperatorAction({
+        surface: "configuration.rbac",
+        action: "create_rbac_policy",
+        status: "failure",
+        target: typeof payload?.external_group === "string" ? payload.external_group : String(payload?.principal_id || ""),
+        details: {
+          ...payload,
+          error: getErrorMessage(error),
+        },
+      });
+      notify("error", getErrorMessage(error));
+    },
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, nextRole }: { id: number; nextRole: string }) =>
-      apiPatch(
+    mutationFn: ({ id, nextRole, target }: { id: number; nextRole: string; target: string }) => {
+      logOperatorAction({
+        surface: "configuration.rbac",
+        action: "update_rbac_policy",
+        status: "attempt",
+        target,
+        details: {
+          binding_id: id,
+          role: nextRole,
+        },
+      });
+      return apiPatch(
         `/api/v1/auth/bindings/${id}`,
         authRoleBindingRecordSchema,
         authRoleBindingUpdateRequestSchema.parse({ role: nextRole }),
-      ),
-    onSuccess: async () => {
-      notify("success", "Role binding updated.");
+      );
+    },
+    onSuccess: async (binding, variables) => {
+      logOperatorAction({
+        surface: "configuration.rbac",
+        action: "update_rbac_policy",
+        status: "success",
+        target: variables.target,
+        details: {
+          binding_id: binding.id,
+          role: binding.role,
+        },
+      });
+      setPendingUpdateReview(null);
+      notify("success", "Role binding updated. Verify the target user or group now has the expected role.");
       await queryClient.invalidateQueries({ queryKey: ["auth-bindings"] });
     },
-    onError: (error) => notify("error", getErrorMessage(error)),
+    onError: (error, variables) => {
+      logOperatorAction({
+        surface: "configuration.rbac",
+        action: "update_rbac_policy",
+        status: "failure",
+        target: variables.target,
+        details: {
+          binding_id: variables.id,
+          role: variables.nextRole,
+          error: getErrorMessage(error),
+        },
+      });
+      notify("error", getErrorMessage(error));
+    },
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => apiDelete(`/api/v1/auth/bindings/${id}`, deleteResponseSchema),
+    mutationFn: (binding: AuthRoleBindingRecord) => {
+      logOperatorAction({
+        surface: "configuration.rbac",
+        action: "delete_rbac_policy",
+        status: "attempt",
+        target: String(binding.id),
+        details: {
+          provider: binding.provider,
+          binding_type: binding.binding_type,
+          role: binding.role,
+        },
+      });
+      return apiDelete(`/api/v1/auth/bindings/${binding.id}`, deleteResponseSchema);
+    },
     onSuccess: async () => {
-      notify("success", "Role binding deleted.");
+      logOperatorAction({
+        surface: "configuration.rbac",
+        action: "delete_rbac_policy",
+        status: "success",
+        target: pendingDeleteReview ? String(pendingDeleteReview.id) : undefined,
+        details: {
+          provider: pendingDeleteReview?.provider || null,
+          binding_type: pendingDeleteReview?.binding_type || null,
+        },
+      });
+      setPendingDeleteReview(null);
+      notify("success", "Role binding deleted. Verify the target user or group no longer has the removed access path.");
       await queryClient.invalidateQueries({ queryKey: ["auth-bindings"] });
     },
-    onError: (error) => notify("error", getErrorMessage(error)),
+    onError: (error, binding) => {
+      logOperatorAction({
+        surface: "configuration.rbac",
+        action: "delete_rbac_policy",
+        status: "failure",
+        target: binding ? String(binding.id) : undefined,
+        details: {
+          provider: binding?.provider || null,
+          binding_type: binding?.binding_type || null,
+          error: getErrorMessage(error),
+        },
+      });
+      notify("error", getErrorMessage(error));
+    },
   });
 
   if (!canManageAccess(principal)) {
@@ -4333,6 +5450,21 @@ function AccessPage() {
     createMutation.isPending
     || !hasExternalProviders
     || (bindingType === "group" ? !externalGroup.trim() : !selectedPrincipalId);
+  const selectedPrincipal = visiblePrincipals.find((item) => String(item.id) === selectedPrincipalId);
+  const createPayload =
+    bindingType === "group"
+      ? {
+          provider,
+          binding_type: "group",
+          role,
+          external_group: externalGroup,
+        }
+      : {
+          provider,
+          binding_type: "user",
+          role,
+          principal_id: Number(selectedPrincipalId),
+        };
 
   return (
     <div className="page-stack">
@@ -4437,7 +5569,39 @@ function AccessPage() {
                 className="primary-button"
                 disabled={createDisabled}
                 type="button"
-                onClick={() => createMutation.mutate()}
+                onClick={() =>
+                  setPendingCreateReview({
+                    payload: createPayload,
+                    changes: reviewChangeRows(
+                      {},
+                      {
+                        provider: provider || "-",
+                        binding_type: bindingType,
+                        role,
+                        target: bindingType === "group"
+                          ? externalGroup || "-"
+                          : selectedPrincipal?.display_name || selectedPrincipal?.username || "-",
+                      },
+                      {
+                        provider: "Provider",
+                        binding_type: "Binding type",
+                        role: "Role",
+                        target: "Target",
+                      },
+                    ),
+                    summary: [
+                      { label: "Provider", value: provider || "-" },
+                      { label: "Binding type", value: bindingType },
+                      { label: "Role", value: role },
+                      {
+                        label: "Target",
+                        value: bindingType === "group"
+                          ? externalGroup || "-"
+                          : selectedPrincipal?.display_name || selectedPrincipal?.username || "-",
+                      },
+                    ],
+                  })
+                }
               >
                 {createMutation.isPending ? "Saving..." : "Create policy"}
               </button>
@@ -4495,7 +5659,16 @@ function AccessPage() {
                   <td>
                     <select
                       value={binding.role}
-                      onChange={(event) => updateMutation.mutate({ id: binding.id, nextRole: event.target.value })}
+                      onChange={(event) =>
+                        setPendingUpdateReview({
+                          id: binding.id,
+                          nextRole: event.target.value,
+                          currentRole: binding.role,
+                          target: binding.binding_type === "group"
+                            ? binding.external_group || String(binding.id)
+                            : binding.principal?.display_name || binding.principal?.username || String(binding.id),
+                        })
+                      }
                     >
                       <option value="reader">Reader</option>
                       <option value="operator">Operator</option>
@@ -4509,11 +5682,7 @@ function AccessPage() {
                       className="danger-button"
                       disabled={deleteMutation.isPending}
                       type="button"
-                      onClick={() => {
-                        if (window.confirm("Delete this RBAC policy?")) {
-                          deleteMutation.mutate(binding.id);
-                        }
-                      }}
+                      onClick={() => setPendingDeleteReview(binding)}
                     >
                       Delete
                     </button>
@@ -4549,6 +5718,66 @@ function AccessPage() {
           </table>
         </div>
       </Panel>
+      {pendingCreateReview ? (
+        <ReviewChangesDialog
+          changes={pendingCreateReview.changes}
+          confirmLabel="Create policy"
+          impact="This RBAC binding affects future authorization checks as soon as the change is stored."
+          isPending={createMutation.isPending}
+          onCancel={() => setPendingCreateReview(null)}
+          onConfirm={() => createMutation.mutate(pendingCreateReview.payload)}
+          pendingLabel="Saving..."
+          summary={pendingCreateReview.summary}
+          title="Review RBAC policy creation"
+          verificationHint="Check RBAC Policies after save and have the target principal validate their access."
+        />
+      ) : null}
+      {pendingUpdateReview ? (
+        <ReviewChangesDialog
+          changes={reviewChangeRows(
+            { role: pendingUpdateReview.currentRole },
+            { role: pendingUpdateReview.nextRole },
+            { role: "Role" },
+          )}
+          confirmLabel="Update policy"
+          impact="Changing the bound role affects the target principal's available actions immediately."
+          isPending={updateMutation.isPending}
+          onCancel={() => setPendingUpdateReview(null)}
+          onConfirm={() => updateMutation.mutate(pendingUpdateReview)}
+          pendingLabel="Saving..."
+          summary={[
+            { label: "Binding", value: pendingUpdateReview.target },
+            { label: "New role", value: pendingUpdateReview.nextRole },
+          ]}
+          title="Review RBAC role change"
+          verificationHint="Confirm the target principal now lands in the expected role after their next request."
+        />
+      ) : null}
+      {pendingDeleteReview ? (
+        <ReviewChangesDialog
+          confirmLabel="Delete policy"
+          consequence="Deleting this RBAC policy removes one access path for the bound user or group."
+          impact="The removed access path stops applying immediately after delete."
+          isPending={deleteMutation.isPending}
+          onCancel={() => setPendingDeleteReview(null)}
+          onConfirm={() => deleteMutation.mutate(pendingDeleteReview)}
+          pendingLabel="Deleting..."
+          requireText="delete"
+          summary={[
+            { label: "Provider", value: pendingDeleteReview.provider },
+            { label: "Binding type", value: pendingDeleteReview.binding_type },
+            {
+              label: "Target",
+              value: pendingDeleteReview.binding_type === "group"
+                ? pendingDeleteReview.external_group || "-"
+                : pendingDeleteReview.principal?.display_name || pendingDeleteReview.principal?.username || "-",
+            },
+            { label: "Role", value: pendingDeleteReview.role },
+          ]}
+          title="Review RBAC policy deletion"
+          verificationHint="Check RBAC Policies after delete and confirm the target principal can no longer use the removed access path."
+        />
+      ) : null}
     </div>
   );
 }
@@ -4585,70 +5814,6 @@ function PageHeader({ title, description }: { title: string; description: string
       <h3>{title}</h3>
       <p>{description}</p>
     </section>
-  );
-}
-
-function WorkflowRepoSyncPanel({
-  canClear,
-  settings,
-  canEdit,
-  isPending,
-  onExport,
-  onImport,
-  onClear,
-}: {
-  settings: AppSettings;
-  canClear: boolean;
-  canEdit: boolean;
-  isPending: boolean;
-  onExport: () => void;
-  onImport: () => void;
-  onClear: () => void;
-}) {
-  return (
-    <Panel
-      title="Repo sync"
-      subtitle="Import and export recipes and ingredient templates together from one place so template dependencies are loaded before recipes."
-    >
-      {!settings.git_enabled ? (
-        <EmptyState message="Git integration is disabled. Set git.enabled, git.repoUrl, git.workflowsPath, and git.actionsPath in Helm before using repo import/export." />
-      ) : (
-        <div className="form-stack">
-          <div className="helper-card">
-            <strong>Configured repository</strong>
-            <p>{formatRepoLocation(settings.git_repo_url, settings.git_branch)}</p>
-            <p>Recipes directory: {settings.git_workflows_path || "-"}</p>
-            <p>Ingredient templates directory: {settings.git_actions_path || "-"}</p>
-            <p>Import loads ingredient templates first and then recipes so step references can resolve in the same run.</p>
-          </div>
-          {!canClear ? (
-            <div className="helper-card">
-              <strong>Admin access required for clear</strong>
-              <p>Only admins can clear recipes and ingredient templates.</p>
-            </div>
-          ) : null}
-          <div className="form-actions">
-            <button className="ghost-button" disabled={!canEdit || isPending} type="button" onClick={onExport}>
-              {isPending ? "Working..." : "Export to repo"}
-            </button>
-            <button className="ghost-button" disabled={!canEdit || isPending} type="button" onClick={onImport}>
-              {isPending ? "Working..." : "Import from repo"}
-            </button>
-            <DangerConfirmButton
-              dangerMessage="This removes every user-visible recipe and ingredient template currently stored in PoundCake. Import from repo does not delete missing items automatically."
-              disabled={!canClear || isPending}
-              isPending={isPending}
-              label="Clear recipes and templates"
-              title="Clear recipes and ingredient templates?"
-              onConfirm={onClear}
-            />
-          </div>
-          <div className="login-note">
-            Repo sync for recipes and ingredient templates lives here. Use clear first when you want the repo to become the full visible recipe and template set.
-          </div>
-        </div>
-      )}
-    </Panel>
   );
 }
 
@@ -4724,6 +5889,139 @@ function DangerConfirmButton({
         </div>
       ) : null}
     </>
+  );
+}
+
+function ReviewChangesDialog({
+  title,
+  summary,
+  changes,
+  impact,
+  immediateChanges,
+  consequence,
+  verificationHint,
+  verifyChecks,
+  confirmLabel,
+  pendingLabel,
+  isPending,
+  requireText,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  summary: Array<{ label: string; value: string }>;
+  changes?: Array<{ label: string; before: string; after: string }>;
+  impact: string;
+  immediateChanges?: string[];
+  consequence?: string;
+  verificationHint?: string;
+  verifyChecks?: string[];
+  confirmLabel: string;
+  pendingLabel?: string;
+  isPending: boolean;
+  requireText?: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [confirmation, setConfirmation] = useState("");
+  const requiresTypedConfirmation = Boolean(requireText);
+  const canConfirm = !requiresTypedConfirmation || confirmation.trim().toLowerCase() === requireText?.toLowerCase();
+
+  return (
+    <div aria-modal="true" className="dialog-backdrop" role="dialog">
+      <div className="dialog-card">
+        <div className="panel-head">
+          <div>
+            <h4>{title}</h4>
+            <p>{impact}</p>
+          </div>
+        </div>
+        <div className="detail-list">
+          {summary.map((item) => (
+            <div className="detail-row" key={item.label}>
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
+          ))}
+        </div>
+        {changes?.length ? (
+          <div className="review-diff-list">
+            <div className="review-diff-header">
+              <strong>Before / after</strong>
+              <span>{changes.length} changed field{changes.length === 1 ? "" : "s"}</span>
+            </div>
+            {changes.map((item) => (
+              <div className="review-diff-row" key={item.label}>
+                <strong>{item.label}</strong>
+                <div className="review-diff-values">
+                  <div>
+                    <span>Before</span>
+                    <p>{item.before}</p>
+                  </div>
+                  <div>
+                    <span>After</span>
+                    <p>{item.after}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {consequence ? (
+          <div className="helper-card">
+            <strong>Before you continue</strong>
+            <p>{consequence}</p>
+          </div>
+        ) : null}
+        {immediateChanges?.length ? (
+          <div className="helper-card">
+            <strong>What changes immediately</strong>
+            <div className="review-checklist">
+              {immediateChanges.map((item) => (
+                <p key={item}>{item}</p>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {verificationHint ? (
+          <div className="helper-card">
+            <strong>Verify after save</strong>
+            <p>{verificationHint}</p>
+            {verifyChecks?.length ? (
+              <div className="review-checklist">
+                {verifyChecks.map((item) => (
+                  <p key={item}>{item}</p>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {requiresTypedConfirmation ? (
+          <FormField label={`Type "${requireText}" to continue`}>
+            <input
+              autoFocus
+              className="dialog-input"
+              onChange={(event) => setConfirmation(event.target.value)}
+              placeholder={requireText}
+              value={confirmation}
+            />
+          </FormField>
+        ) : null}
+        <div className="form-actions">
+          <button className="ghost-button" disabled={isPending} type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button
+            className="primary-button"
+            disabled={isPending || !canConfirm}
+            type="button"
+            onClick={onConfirm}
+          >
+            {isPending ? pendingLabel || "Saving..." : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -5071,12 +6369,6 @@ function canManageWorkflows(principal: AuthMeRecord) {
   return hasRole(principal, "operator");
 }
 
-
-
-function canManageRepoSyncClear(principal: AuthMeRecord) {
-  return hasRole(principal, "admin");
-}
-
 function canManageGlobalCommunications(principal: AuthMeRecord) {
   return hasRole(principal, "admin");
 }
@@ -5089,10 +6381,10 @@ function getRouteName(pathname: string): string {
   if (pathname.startsWith("/orders")) return "Orders";
   if (pathname.startsWith("/communication-routes")) return "Communication Routes";
   if (pathname.startsWith("/suppressions")) return "Suppressions";
+  if (pathname.startsWith("/operator-audit")) return "Operator Audit";
   if (pathname.startsWith("/execution-activity")) return "Work Execution Activity";
   if (pathname.startsWith("/system-activity")) return "System Activity";
   if (pathname.startsWith("/config/alerts")) return "Alerts";
-  if (pathname.startsWith("/config/alert-rules")) return "Alert Rules";
   if (pathname.startsWith("/config/plugins")) return "Plugins";
   if (pathname.startsWith("/config/communication-policy")) return "Communication Policy";
   if (pathname.startsWith("/config/recipes")) return "Recipes";
@@ -5142,6 +6434,60 @@ function getErrorMessage(error: unknown): string {
   return "Something went wrong.";
 }
 
+function reviewValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") {
+    return "-";
+  }
+  if (typeof value === "boolean") {
+    return value ? "Yes" : "No";
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.length ? value.map((item) => reviewValue(item)).join(", ") : "-";
+  }
+  if (typeof value === "object") {
+    return compactJson(value);
+  }
+  return String(value);
+}
+
+type ReviewChangeRow = {
+  label: string;
+  before: string;
+  after: string;
+};
+
+function reviewChangeRows(
+  current: Record<string, unknown>,
+  next: Record<string, unknown>,
+  labels: Record<string, string> = {},
+): ReviewChangeRow[] {
+  const keys = Array.from(new Set([...Object.keys(current), ...Object.keys(next)]));
+  return keys
+    .filter((key) => JSON.stringify(current[key] ?? null) !== JSON.stringify(next[key] ?? null))
+    .map((key) => ({
+      label: labels[key] || titleize(key.replace(/_/g, " ")),
+      before: reviewValue(current[key]),
+      after: reviewValue(next[key]),
+    }));
+}
+
+function changedConfigFieldCount(
+  current: Record<string, unknown>,
+  next: Record<string, unknown>,
+): number {
+  const keys = new Set([...Object.keys(current), ...Object.keys(next)]);
+  let count = 0;
+  for (const key of keys) {
+    if (JSON.stringify(current[key] ?? null) !== JSON.stringify(next[key] ?? null)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 function logOperatorAction(payload: UIOperatorActionRequest): void {
   void apiPost(
     "/api/v1/ui/operator-actions",
@@ -5156,13 +6502,6 @@ function isGatewayTimeoutError(error: unknown): boolean {
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function formatRepoLocation(repoUrl: string | null, branch: string | null): string {
-  if (!repoUrl) {
-    return "Repository URL is not configured.";
-  }
-  return branch ? `${repoUrl} • branch ${branch}` : repoUrl;
 }
 
 function formatRepoSyncMessage(result: RepoSyncResponse): string {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from api.plugins.alertmanager.capabilities import load_alertmanager_capability_templates
 from api.plugins.alertmanager.templates import (
     ALERTMANAGER_INGREDIENT_TEMPLATES,
     ALERTMANAGER_RECIPE_TEMPLATES,
@@ -29,5 +30,6 @@ def get_plugin() -> ServicePlugin:
         ingredient_templates=ALERTMANAGER_INGREDIENT_TEMPLATES,
         recipe_templates=ALERTMANAGER_RECIPE_TEMPLATES,
         scheduled_tasks=ALERTMANAGER_SCHEDULED_TASKS,
+        capability_templates=load_alertmanager_capability_templates(),
         plugin_tier="community",
     )

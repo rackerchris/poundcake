@@ -81,6 +81,8 @@ class _WebhookSession:
         query = str(statement.compile(compile_kwargs={"literal_binds": True}))
         if "orders.fingerprint =" in query and "orders.severity =" in query:
             return _Result(self._latest_warning_order())
+        if "lower(orders.alert_status) != 'resolved'" in query:
+            return _Result(self._latest_unresolved_order())
 
         return _Result(self._latest_active_order())
 
@@ -99,6 +101,17 @@ class _WebhookSession:
         if not warnings:
             return None
         return max(warnings, key=lambda order: order.created_at or datetime.min)
+
+    def _latest_unresolved_order(self) -> Order | None:
+        unresolved = [
+            order
+            for order in self.orders
+            if order.fingerprint == "repeated-processing-alert-1"
+            and str(order.alert_status or "").lower() != "resolved"
+        ]
+        if not unresolved:
+            return None
+        return max(unresolved, key=lambda order: order.created_at or datetime.min)
 
     def _apply_order_update(self, statement: Any) -> None:
         order = self._latest_active_order()
@@ -324,6 +337,30 @@ async def test_repeated_firing_webhook_for_processing_order_only_increments_coun
     assert order.processing_status == "processing"
     assert before == after
     assert len(db.orders) == 1
+
+
+@pytest.mark.asyncio
+async def test_resolved_webhook_reopens_completed_order_into_resolving() -> None:
+    db = _WebhookSession()
+
+    await pre_heat(_payload_with(severity="critical"), db, "req-first")
+    order = db.orders[0]
+    order.processing_status = "complete"
+    order.remediation_outcome = "succeeded"
+    order.is_active = False
+    order.updated_at = datetime.now(timezone.utc)
+
+    result = await pre_heat(
+        _payload_with(alert_status="resolved", severity="critical"),
+        db,
+        "req-resolved",
+    )
+
+    assert result["status"] == "resolved"
+    assert result["order_id"] == order.id
+    assert order.alert_status == "resolved"
+    assert order.processing_status == "resolving"
+    assert order.is_active is True
 
 
 @pytest.mark.asyncio

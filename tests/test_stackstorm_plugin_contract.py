@@ -134,13 +134,14 @@ class _FakeStackStormManager:
 def test_stackstorm_manifest_validates() -> None:
     plugin = get_plugin()
 
-    assert validate_service_plugin(plugin, directory_name="stackstorm") is plugin
-    assert plugin.service_type == "stackstorm"
-    assert plugin.plugin_tier == "community"
-    assert plugin.helper_factory is None
-    assert plugin.helper_capabilities == ()
-    assert plugin.required_helper_capabilities is None
-    assert plugin.bootstrap_factory is None
+    validated = validate_service_plugin(plugin, directory_name="stackstorm")
+
+    assert validated.service_type == "stackstorm"
+    assert validated.plugin_tier == "community"
+    assert validated.helper_factory is None
+    assert validated.helper_capabilities == ()
+    assert validated.required_helper_capabilities is None
+    assert validated.bootstrap_factory is None
 
 
 def test_stackstorm_adapter_declares_required_api_key_credential() -> None:
@@ -155,33 +156,12 @@ def test_stackstorm_adapter_declares_required_api_key_credential() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stackstorm_adapter_bootstraps_api_key_through_credential_manager(
+async def test_stackstorm_adapter_does_not_import_api_key_from_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    written: list[dict[str, object]] = []
-
-    async def write_adapter_credential(**kwargs: object) -> None:
-        written.append(kwargs)
-
-    monkeypatch.setenv("POUNDCAKE_STACKSTORM_API_KEY", "st2-bootstrap-key")
-    monkeypatch.setattr(
-        "api.plugins.stackstorm.adapter.write_adapter_credential",
-        write_adapter_credential,
-    )
+    monkeypatch.delenv("POUNDCAKE_STACKSTORM_API_KEY", raising=False)
 
     await StackStormExecutionAdapter(manager=_FakeStackStormManager()).bootstrap_credentials()  # type: ignore[arg-type]
-
-    assert written == [
-        {
-            "service_type": "stackstorm",
-            "credential_type": "stackstorm_api_key",
-            "credential_key_id": "default",
-            "payload": {
-                "api_key": "st2-bootstrap-key",
-                "st2_api_key": "st2-bootstrap-key",
-            },
-        }
-    ]
 
 
 def test_stackstorm_templates_are_valid_service_plugin_templates() -> None:

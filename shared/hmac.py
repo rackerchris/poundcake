@@ -7,7 +7,6 @@ from shared.types import JSONObject
 import hashlib
 import hmac
 import json
-from typing import Any
 
 
 def canonical_json_body(payload: JSONObject | None) -> str:

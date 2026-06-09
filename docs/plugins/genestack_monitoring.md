@@ -10,10 +10,17 @@
 
 `genestack_monitoring` syncs Genestack monitoring alert catalog content into
 PoundCake recipes through a scheduled service-execution ingredient. It composes
-helper capabilities from other plugins instead of owning direct provider
-credentials. The plugin does not run an application bootstrap hook; GitHub
-reads and Kubernetes reconciliation happen only when the `content_sync`
-ingredient/order runs.
+helper capabilities from other plugins and the registered plugin capability
+catalog instead of owning direct provider credentials or fabricating provider
+workflow names. The plugin does not run an application bootstrap hook; GitHub
+reads, capability resolution, and Kubernetes reconciliation happen only when
+the `content_sync` ingredient/order runs.
+
+For deterministic remediation composition, `genestack_monitoring` treats the
+registered capability catalog as provider-neutral input. Native bounded
+Kubernetes actions stay on the `k8s` plugin, StackStorm is preferred for
+blackbox and etcd workflow orchestration, and ambiguous/node-style alerts stay
+in evidence plus manual-review mode until a safer provider policy is defined.
 
 ## Requirements
 

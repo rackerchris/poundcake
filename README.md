@@ -66,3 +66,16 @@ config:
 
 The corresponding Bakery deployment and install flow live in
 [rackerlabs/bakery](https://github.com/rackerlabs/bakery).
+
+## Plugin and Task Operations
+
+`cakectl` now exposes first-class typed surfaces for plugin contracts and
+scheduled task controls:
+
+```bash
+cakectl --url http://localhost:8080 plugins list
+cakectl --url http://localhost:8080 plugins show stackstorm
+cakectl --url http://localhost:8080 plugins config show bakery
+cakectl --url http://localhost:8080 plugins k8s prometheus-rules --namespace monitoring
+cakectl --url http://localhost:8080 scheduled-tasks status --service-type stackstorm
+```

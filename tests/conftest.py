@@ -7,7 +7,5 @@ import pytest
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_env() -> None:
-    """Set up a dummy-only contract-test environment."""
-    os.environ["TESTING"] = "true"
+    """Set up shared defaults without implicitly changing auth behavior."""
     os.environ["POUNDCAKE_ENABLED_PLUGINS"] = "dummy"
-    os.environ["POUNDCAKE_AUTH_ENABLED"] = "false"

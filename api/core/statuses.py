@@ -8,13 +8,6 @@
 
 EXECUTION_NON_TERMINAL_STATUSES = {"pending", "dispatched", "running"}
 EXECUTION_TERMINAL_STATUSES = {"succeeded", "failed", "errored", "timeout", "canceled"}
-EXECUTION_FAILURE_STATUSES = {"failed", "errored", "timeout", "canceled"}
-
-PROCESSING_NON_TERMINAL_STATUSES = {"new", "processing", "resolving", "finalizing"}
-PROCESSING_TERMINAL_STATUSES = {"complete", "failed", "errored", "timeout", "canceled"}
-PROCESSING_FAILURE_STATUSES = {"failed", "errored", "timeout", "canceled"}
-
-DISH_TERMINAL_PROCESSING_STATUSES = {"complete", "failed", "errored", "timeout", "canceled"}
 
 ORDER_TERMINAL_PROCESSING_STATUSES = {"complete", "failed", "errored", "timeout", "canceled"}
 
@@ -23,56 +16,6 @@ ORDER_RESOLVING_TRANSITIONABLE_STATUSES = {
     "processing",
     "resolving",
 }
-
-DISH_PROCESSING_TRANSITIONS = {
-    "new": {"new", "processing", "complete", "failed", "errored", "timeout", "canceled"},
-    "processing": {
-        "processing",
-        "finalizing",
-        "complete",
-        "failed",
-        "errored",
-        "timeout",
-        "canceled",
-    },
-    "finalizing": {
-        "finalizing",
-        "processing",
-        "complete",
-        "failed",
-        "errored",
-        "timeout",
-        "canceled",
-    },
-    "complete": {"complete"},
-    "failed": {"failed"},
-    "errored": {"errored"},
-    "timeout": {"timeout"},
-    "canceled": {"canceled"},
-}
-
-ORDER_PROCESSING_TRANSITIONS = {
-    "new": {"new", "processing", "resolving", "failed", "errored", "timeout", "canceled"},
-    "processing": {
-        "processing",
-        "resolving",
-        "complete",
-        "failed",
-        "errored",
-        "timeout",
-        "canceled",
-    },
-    "resolving": {"resolving", "complete", "failed", "errored", "timeout", "canceled"},
-    "complete": {"complete"},
-    "failed": {"failed"},
-    "errored": {"errored"},
-    "timeout": {"timeout"},
-    "canceled": {"canceled"},
-}
-
-
-class ProcessingStatusTransitionError(ValueError):
-    """Raised when an order or dish processing transition is invalid."""
 
 
 def normalize_status(status: str | None) -> str:
@@ -106,23 +49,3 @@ def can_transition_to_resolving(current_status: str | None, source_event: str) -
 def should_keep_active(status: str | None) -> bool:
     """Return True for non-terminal order statuses."""
     return not is_order_terminal(status)
-
-
-def validate_dish_processing_transition(current: str | None, requested: str | None) -> str:
-    current_status = normalize_status(current) or "new"
-    requested_status = normalize_status(requested) or current_status
-    if requested_status not in DISH_PROCESSING_TRANSITIONS.get(current_status, set()):
-        raise ProcessingStatusTransitionError(
-            f"Invalid dish processing_status transition: {current_status} -> {requested_status}"
-        )
-    return requested_status
-
-
-def validate_order_processing_transition(current: str | None, requested: str | None) -> str:
-    current_status = normalize_status(current) or "new"
-    requested_status = normalize_status(requested) or current_status
-    if requested_status not in ORDER_PROCESSING_TRANSITIONS.get(current_status, set()):
-        raise ProcessingStatusTransitionError(
-            f"Invalid order processing_status transition: {current_status} -> {requested_status}"
-        )
-    return requested_status

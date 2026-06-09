@@ -50,6 +50,10 @@ monitoring:
     # service: kube-prometheus-stack-alertmanager
     url: http://kube-prometheus-stack-alertmanager.monitoring.svc.cluster.local:9093
 
+stackstorm:
+  url: http://stackstorm-api.stackstorm.svc.cluster.local:9101
+  verifySsl: false
+
 config:
   enabledPlugins: dummy,k8s,git,github,prometheus,alertmanager,bakery,stackstorm,genestack_monitoring
 
@@ -61,6 +65,5 @@ auth:
   local:
     enabled: true
 
-# Set a known root password so MariaDB and the init scripts agree
-mariadb:
-  rootPassword: "devstack123"
+dishwasher:
+  interval: 5

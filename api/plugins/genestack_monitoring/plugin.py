@@ -30,9 +30,9 @@ def get_plugin() -> ServicePlugin:
         recipe_templates=GENESTACK_MONITORING_RECIPE_TEMPLATES,
         scheduled_tasks=GENESTACK_MONITORING_SCHEDULED_TASKS,
         required_helper_capabilities={
-            "github": ("repo.read", "repo.list"),
+            "github": ("repo.read", "repo.list", "repo.write", "pull_request.create"),
             "k8s": ("k8s.prometheusrules.manage",),
-            "prometheus": ("alert_rules.parse",),
+            "prometheus": ("alert_rules.parse", "alert_rules.render"),
         },
         required_db_capabilities={
             "genestack_monitoring": ("recipe-sync",),

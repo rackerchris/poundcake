@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import dataclass
 
+from api.plugins.capability_matrix import (
+    PROVIDER_SELECTION_PRECEDENCE,
+    alert_group_provider_policy,
+)
 from api.types import JSONObject
 
-MANAGED_REMEDIATION_MARKER = "genestack_monitoring"
+MANAGED_REMEDIATION_MARKER = "managed-by:poundcake-genestack-monitoring"
 GUARD_ROLE = "remediation_precondition"
 GUARD_FALSE_OUTCOME = "cancel_downstream_no_remediation"
 BLACKBOX_SERVICE_DOWN_GROUP = "blackbox-service-down"
@@ -223,68 +228,122 @@ def remediation_step_specs(
     alert_name: str,
     source_path: str = "",
     rule_data: JSONObject | None = None,
+    *,
+    capabilities: list[JSONObject] | None = None,
 ) -> list[RemediationStepSpec]:
+    capability_catalog = capabilities or []
     blackbox_group = blackbox_alert_group(alert_name, source_path)
     if blackbox_group == BLACKBOX_SERVICE_DOWN_GROUP:
-        return [
-            _guard_step("verify_before_evidence"),
-            _alertmanager_evidence_step(),
-            _blackbox_evidence_step(),
-            _guard_step("verify_before_action"),
-            _blackbox_action_step(),
-            _blackbox_recovery_step(),
-            _bakery_communication_step(),
+        steps = [
+            _guard_step(capability_catalog, role="verify_before_evidence"),
+            _alertmanager_evidence_step(capability_catalog),
+            _guard_step(capability_catalog, role="verify_before_action"),
         ]
+        blackbox_evidence = _best_capability(
+            capability_catalog,
+            alert_group=blackbox_group,
+            domain="blackbox",
+            phase="evidence",
+        )
+        if blackbox_evidence is not None:
+            steps.insert(2, _capability_step(blackbox_evidence))
+        blackbox_action = _best_capability(
+            capability_catalog,
+            alert_group=blackbox_group,
+            domain="blackbox",
+            phase="remediation",
+        )
+        if blackbox_action is not None:
+            steps.append(_capability_step(blackbox_action))
+            blackbox_recovery = _best_capability(
+                capability_catalog,
+                alert_group=blackbox_group,
+                domain="blackbox",
+                phase="verify_recovery",
+            )
+            if blackbox_recovery is not None:
+                steps.append(_capability_step(blackbox_recovery))
+        else:
+            steps.append(_operator_review_action_step(alert_name, source_path))
+        steps.append(_communication_step(capability_catalog))
+        return steps
 
     etcd_group = etcd_alert_group(alert_name, source_path)
     if etcd_group in ETCD_ALERT_GROUPS:
-        return [
-            _guard_step("verify_before_evidence"),
-            _alertmanager_evidence_step(),
-            _etcd_evidence_step(etcd_group),
-            _guard_step("verify_before_action"),
-            _etcd_action_step(etcd_group),
-            _etcd_recovery_step(etcd_group),
-            _bakery_communication_step(),
+        steps = [
+            _guard_step(capability_catalog, role="verify_before_evidence"),
+            _alertmanager_evidence_step(capability_catalog),
+            _guard_step(capability_catalog, role="verify_before_action"),
         ]
+        etcd_evidence = _best_capability(
+            capability_catalog,
+            alert_group=etcd_group,
+            domain="etcd",
+            phase="evidence",
+        )
+        if etcd_evidence is not None:
+            steps.insert(2, _capability_step(etcd_evidence))
+        etcd_action = _best_capability(
+            capability_catalog,
+            alert_group=etcd_group,
+            domain="etcd",
+            phase="remediation",
+        )
+        if etcd_action is not None:
+            steps.append(_capability_step(etcd_action))
+            etcd_recovery = _best_capability(
+                capability_catalog,
+                alert_group=etcd_group,
+                domain="etcd",
+                phase="verify_recovery",
+            )
+            if etcd_recovery is not None:
+                steps.append(_capability_step(etcd_recovery))
+        else:
+            steps.append(_operator_review_action_step(alert_name, source_path))
+        steps.append(_communication_step(capability_catalog))
+        return steps
 
     group = kubernetes_alert_group(alert_name, source_path)
     if group and group in KUBERNETES_ALERT_GROUPS:
-        if group in (
-            DIAGNOSTIC_ONLY_KUBERNETES_GROUPS
-            | STATEFULSET_DIAGNOSTIC_GROUPS
-            | DAEMONSET_DIAGNOSTIC_GROUPS
-            | CERTIFICATE_DIAGNOSTIC_GROUPS
-            | PVC_DIAGNOSTIC_GROUPS
-            | PV_DIAGNOSTIC_GROUPS
-            | PDB_HPA_DIAGNOSTIC_GROUPS
-            | SERVICE_DIAGNOSTIC_GROUPS
-        ):
-            return [
-                _guard_step("verify_before_evidence"),
-                _evidence_step(group),
-                _guard_step("verify_before_action"),
-                _operator_review_action_step(alert_name, source_path),
-                _bakery_communication_step(),
-            ]
+        provider_policy = alert_group_provider_policy(domain="kubernetes", alert_group=group)
+        remediation_capability = None
+        if provider_policy not in {"operator_guidance_only", "defer_for_now"}:
+            remediation_capability = _best_capability(
+                capability_catalog,
+                alert_group=group,
+                domain="kubernetes",
+                phase="remediation",
+                preferred_service_type=_preferred_service_type_for_policy(provider_policy),
+            )
         return [
-            _guard_step("verify_before_evidence"),
+            _guard_step(capability_catalog, role="verify_before_evidence"),
             _evidence_step(group),
-            _guard_step("verify_before_action"),
-            _action_step(group, alert_name),
-            _bakery_communication_step(),
+            _guard_step(capability_catalog, role="verify_before_action"),
+            _action_step(
+                group,
+                alert_name,
+                source_path,
+                remediation_capability=remediation_capability,
+            ),
+            _communication_step(capability_catalog),
         ]
 
     domain = alert_domain(source_path)
     if domain in GENERIC_CROSS_ADAPTER_DOMAINS:
         return [
-            _guard_step("verify_before_evidence"),
-            _alertmanager_evidence_step(),
-            _prometheus_rule_evidence_step(alert_name, source_path, rule_data),
-            _source_rule_evidence_step(source_path),
-            _guard_step("verify_before_action"),
+            _guard_step(capability_catalog, role="verify_before_evidence"),
+            _alertmanager_evidence_step(capability_catalog),
+            _prometheus_rule_evidence_step(
+                capability_catalog,
+                alert_name,
+                source_path,
+                rule_data,
+            ),
+            _source_rule_evidence_step(capability_catalog, source_path),
+            _guard_step(capability_catalog, role="verify_before_action"),
             _operator_review_action_step(alert_name, source_path),
-            _bakery_communication_step(),
+            _communication_step(capability_catalog),
         ]
     return []
 
@@ -307,15 +366,153 @@ def etcd_alert_group(alert_name: str, source_path: str = "") -> str | None:
     return None
 
 
-def workflow_name_for_group(group: str) -> str:
-    return f"kubernetes_{_slug(group).replace('-', '_')}_remediation"
+def _best_capability(
+    capabilities: list[JSONObject],
+    *,
+    alert_group: str,
+    domain: str,
+    phase: str,
+    preferred_service_type: str | None = None,
+    required_mode: str | None = None,
+) -> JSONObject | None:
+    matches = [
+        capability
+        for capability in capabilities
+        if _capability_matches(
+            capability,
+            alert_group=alert_group,
+            domain=domain,
+            phase=phase,
+            preferred_service_type=preferred_service_type,
+            required_mode=required_mode,
+        )
+    ]
+    if not matches:
+        return None
+    return sorted(
+        matches,
+        key=lambda item: (
+            _safety_rank(str(item.get("safety_class") or "")),
+            PROVIDER_SELECTION_PRECEDENCE.get(
+                str(item.get("service_type") or "").strip().lower(),
+                99,
+            ),
+            -(int(item.get("priority") or 0)),
+            str(item.get("capability_id") or ""),
+        ),
+    )[0]
 
 
-def etcd_workflow_name_for_group(group: str, phase: str) -> str:
-    return f"etcd_{_slug(group).replace('-', '_')}_{phase}"
+def _preferred_service_type_for_policy(provider_policy: str) -> str | None:
+    normalized = provider_policy.strip().lower()
+    if normalized in {"k8s", "stackstorm"}:
+        return normalized
+    return None
 
 
-def _guard_step(role: str) -> RemediationStepSpec:
+def _capability_matches(
+    capability: JSONObject,
+    *,
+    alert_group: str,
+    domain: str,
+    phase: str,
+    preferred_service_type: str | None = None,
+    required_mode: str | None = None,
+) -> bool:
+    if capability.get("enabled") is False:
+        return False
+    normalized_service_type = str(capability.get("service_type") or "").strip().lower()
+    if preferred_service_type and normalized_service_type != preferred_service_type.strip().lower():
+        return False
+    normalized_mode = str(capability.get("mode") or "").strip().lower()
+    if required_mode and normalized_mode != required_mode.strip().lower():
+        return False
+    trigger_match = capability.get("trigger_match")
+    if not isinstance(trigger_match, dict):
+        return False
+    match_domains = {
+        str(item).strip().lower()
+        for item in trigger_match.get("domains", [])
+        if str(item).strip()
+    }
+    if match_domains and domain.strip().lower() not in match_domains:
+        return False
+    match_groups = {
+        str(item).strip().lower()
+        for item in trigger_match.get("alert_groups", [])
+        if str(item).strip()
+    }
+    if match_groups and alert_group.strip().lower() not in match_groups:
+        return False
+    match_phase = str(trigger_match.get("phase") or "").strip().lower()
+    return not match_phase or match_phase == phase.strip().lower()
+
+
+def _safety_rank(value: str) -> int:
+    normalized = value.strip().lower()
+    order = {
+        "observe_only": 0,
+        "safe_restart": 1,
+        "bounded_scale": 2,
+        "operator_guidance": 3,
+        "destructive": 4,
+    }
+    return order.get(normalized, 99)
+
+
+def _capability_step(
+    capability: JSONObject,
+    *,
+    service_payload_overrides: JSONObject | None = None,
+    service_exec_parameter_overrides: JSONObject | None = None,
+    expected_outcome_overrides: JSONObject | None = None,
+) -> RemediationStepSpec:
+    defaults = capability.get("defaults")
+    default_payload: JSONObject = defaults if isinstance(defaults, dict) else {}
+    ingredient_ref = capability.get("ingredient_ref")
+    if not isinstance(ingredient_ref, dict):
+        raise ValueError("Capability ingredient_ref must be present")
+    service_payload = copy.deepcopy(default_payload.get("service_payload"))
+    if not isinstance(service_payload, dict):
+        service_payload = {}
+    if isinstance(service_payload_overrides, dict):
+        service_payload.update(copy.deepcopy(service_payload_overrides))
+    parameters = copy.deepcopy(default_payload.get("service_exec_parameters"))
+    if not isinstance(parameters, dict):
+        parameters = {}
+    if isinstance(service_exec_parameter_overrides, dict):
+        parameters.update(copy.deepcopy(service_exec_parameter_overrides))
+    expected_outcome = copy.deepcopy(default_payload.get("expected_outcome"))
+    if not isinstance(expected_outcome, dict):
+        expected_outcome = {"success": True}
+    if isinstance(expected_outcome_overrides, dict):
+        expected_outcome.update(copy.deepcopy(expected_outcome_overrides))
+    return RemediationStepSpec(
+        role=str(default_payload.get("role") or "action_alert"),
+        service_type=str(capability.get("service_type") or "").strip().lower(),
+        service_exec=str(ingredient_ref.get("service_exec") or "").strip().lower(),
+        task_key_template=str(ingredient_ref.get("task_key_template") or "").strip(),
+        service_payload=service_payload,
+        service_exec_parameters=parameters,
+        expected_outcome=expected_outcome,
+        expected_secs=max(1, int(default_payload.get("expected_secs") or 30)),
+        timeout=max(1, int(default_payload.get("timeout") or 300)),
+        destination_target=str(ingredient_ref.get("destination_target") or "").strip() or None,
+        run_phase=str(default_payload.get("run_phase") or "firing").strip() or "firing",
+        run_condition=str(default_payload.get("run_condition") or "always").strip() or "always",
+    )
+
+
+def _guard_step(capabilities: list[JSONObject], *, role: str) -> RemediationStepSpec:
+    capability = _best_capability(
+        capabilities,
+        alert_group="",
+        domain="",
+        phase=role,
+        preferred_service_type="alertmanager",
+    )
+    if capability is not None:
+        return _capability_step(capability)
     return RemediationStepSpec(
         role=role,
         service_type="alertmanager",
@@ -338,7 +535,16 @@ def _guard_step(role: str) -> RemediationStepSpec:
     )
 
 
-def _alertmanager_evidence_step() -> RemediationStepSpec:
+def _alertmanager_evidence_step(capabilities: list[JSONObject]) -> RemediationStepSpec:
+    capability = _best_capability(
+        capabilities,
+        alert_group="",
+        domain="",
+        phase="evidence",
+        preferred_service_type="alertmanager",
+    )
+    if capability is not None:
+        return _capability_step(capability)
     return RemediationStepSpec(
         role="gather_alertmanager_evidence",
         service_type="alertmanager",
@@ -356,172 +562,14 @@ def _alertmanager_evidence_step() -> RemediationStepSpec:
             "inhibited": False,
             "limit": 20,
         },
-        service_exec_parameters={"operation": "list_alerts"},
+        service_exec_parameters={
+            "operation": "list_alerts",
+            "evidence_family": "alertmanager",
+        },
         expected_outcome={"success": True},
         expected_secs=10,
         timeout=60,
     )
-
-
-def _blackbox_workflow_inputs() -> JSONObject:
-    return {
-        "alert_name": alert_name_template(),
-        "alert_group_name": "{{ order.alert_group_name }}",
-        "severity": "{{ order.labels.severity }}",
-        "instance": "{{ order.labels.instance }}",
-        "labels": "{{ order.labels }}",
-        "annotations": "{{ order.annotations }}",
-        "order_id": "{{ order.id }}",
-        "req_id": "{{ order.req_id }}",
-        "method": "HEAD",
-        "timeout": 15,
-        "evidence": {},
-    }
-
-
-def _blackbox_evidence_step() -> RemediationStepSpec:
-    return RemediationStepSpec(
-        role="gather_endpoint_evidence",
-        service_type="stackstorm",
-        service_exec="workflow_execution",
-        task_key_template="stackstorm-workflow-execution",
-        service_payload={
-            "workflow_ref": "poundcake.blackbox_service_down_evidence",
-            "inputs": _blackbox_workflow_inputs(),
-        },
-        service_exec_parameters={
-            "operation": "execute_workflow",
-            "mutation_family": "blackbox_probe_evidence",
-        },
-        expected_outcome={"status": "succeeded"},
-        expected_secs=30,
-        timeout=180,
-    )
-
-
-def _blackbox_action_step() -> RemediationStepSpec:
-    inputs = _blackbox_workflow_inputs()
-    return RemediationStepSpec(
-        role="action_alert",
-        service_type="stackstorm",
-        service_exec="workflow_execution",
-        task_key_template="stackstorm-workflow-execution",
-        service_payload={
-            "workflow_ref": "poundcake.blackbox_service_down_remediation",
-            "inputs": inputs,
-        },
-        service_exec_parameters={
-            "operation": "execute_workflow",
-            "mutation_family": "blackbox_service_down",
-        },
-        expected_outcome={"status": "succeeded"},
-        expected_secs=30,
-        timeout=300,
-    )
-
-
-def _blackbox_recovery_step() -> RemediationStepSpec:
-    inputs = _blackbox_workflow_inputs()
-    inputs["method"] = "GET"
-    return RemediationStepSpec(
-        role="verify_recovery",
-        service_type="stackstorm",
-        service_exec="workflow_execution",
-        task_key_template="stackstorm-workflow-execution",
-        service_payload={
-            "workflow_ref": "poundcake.blackbox_service_down_verify_recovery",
-            "inputs": inputs,
-        },
-        service_exec_parameters={
-            "operation": "execute_workflow",
-            "mutation_family": "blackbox_recovery_probe",
-        },
-        expected_outcome={"status": "succeeded"},
-        expected_secs=30,
-        timeout=180,
-    )
-
-
-def _etcd_workflow_inputs() -> JSONObject:
-    return {
-        "alert_name": alert_name_template(),
-        "alert_group_name": "{{ order.alert_group_name }}",
-        "severity": "{{ order.labels.severity }}",
-        "instance": "{{ order.labels.instance }}",
-        "job": "{{ order.labels.job }}",
-        "cluster": "{{ order.labels.cluster }}",
-        "labels": "{{ order.labels }}",
-        "annotations": "{{ order.annotations }}",
-        "order_id": "{{ order.id }}",
-        "req_id": "{{ order.req_id }}",
-        "evidence": {},
-    }
-
-
-def _etcd_evidence_step(group: str) -> RemediationStepSpec:
-    workflow = etcd_workflow_name_for_group(group, "evidence")
-    return RemediationStepSpec(
-        role="gather_etcd_evidence",
-        service_type="stackstorm",
-        service_exec="workflow_execution",
-        task_key_template="stackstorm-workflow-execution",
-        service_payload={
-            "workflow_ref": f"poundcake.{workflow}",
-            "inputs": _etcd_workflow_inputs(),
-        },
-        service_exec_parameters={
-            "operation": "execute_workflow",
-            "mutation_family": "etcd_evidence",
-            "managed_role": "gather_etcd_evidence",
-            "evidence_family": "etcd",
-        },
-        expected_outcome={"status": "succeeded"},
-        expected_secs=30,
-        timeout=180,
-    )
-
-
-def _etcd_action_step(group: str) -> RemediationStepSpec:
-    workflow = etcd_workflow_name_for_group(group, "remediation")
-    return RemediationStepSpec(
-        role="action_alert",
-        service_type="stackstorm",
-        service_exec="workflow_execution",
-        task_key_template="stackstorm-workflow-execution",
-        service_payload={
-            "workflow_ref": f"poundcake.{workflow}",
-            "inputs": _etcd_workflow_inputs(),
-        },
-        service_exec_parameters={
-            "operation": "execute_workflow",
-            "mutation_family": "etcd_operator_review",
-        },
-        expected_outcome={"status": "succeeded"},
-        expected_secs=30,
-        timeout=300,
-    )
-
-
-def _etcd_recovery_step(group: str) -> RemediationStepSpec:
-    workflow = etcd_workflow_name_for_group(group, "verify_recovery")
-    return RemediationStepSpec(
-        role="verify_recovery",
-        service_type="stackstorm",
-        service_exec="workflow_execution",
-        task_key_template="stackstorm-workflow-execution",
-        service_payload={
-            "workflow_ref": f"poundcake.{workflow}",
-            "inputs": _etcd_workflow_inputs(),
-        },
-        service_exec_parameters={
-            "operation": "execute_workflow",
-            "mutation_family": "etcd_recovery_evidence",
-        },
-        expected_outcome={"status": "succeeded"},
-        expected_secs=30,
-        timeout=180,
-    )
-
 
 def _evidence_step(group: str) -> RemediationStepSpec:
     if group in POD_REMEDIATION_GROUPS:
@@ -706,117 +754,45 @@ def _controller_evidence_step(*, kind: str, name_label: str) -> RemediationStepS
     )
 
 
-def _action_step(group: str, alert_name: str) -> RemediationStepSpec:
-    if group in POD_REMEDIATION_GROUPS:
-        return RemediationStepSpec(
-            role="action_alert",
-            service_type="k8s",
-            service_exec="pod_action",
-            task_key_template="k8s-pod-action",
-            service_payload={
-                "namespace": "{{ order.labels.namespace }}",
-                "pod_name": "{{ order.labels.pod }}",
-            },
-            service_exec_parameters={
-                "operation": "delete",
-                "mutation_family": "pod_delete",
-                "require_controller_owned": True,
-            },
-            expected_outcome={"success": True},
-            expected_secs=10,
-            timeout=120,
-        )
-    if group in DEPLOYMENT_REMEDIATION_GROUPS:
-        return RemediationStepSpec(
-            role="action_alert",
-            service_type="k8s",
-            service_exec="deployment_action",
-            task_key_template="k8s-deployment-action",
-            service_payload={
-                "namespace": "{{ order.labels.namespace }}",
-                "deployment_name": "{{ order.labels.deployment }}",
-            },
-            service_exec_parameters={
-                "operation": "rollout_restart",
-                "mutation_family": "deployment_rollout_restart",
-            },
-            expected_outcome={"success": True},
-            expected_secs=10,
-            timeout=180,
-        )
-    if group in STATEFULSET_REMEDIATION_GROUPS:
-        return _controller_rollout_restart_step(
-            kind="StatefulSet",
-            name_label="statefulset",
-            mutation_family="statefulset_rollout_restart",
-        )
-    if group in DAEMONSET_REMEDIATION_GROUPS:
-        return _controller_rollout_restart_step(
-            kind="DaemonSet",
-            name_label="daemonset",
-            mutation_family="daemonset_rollout_restart",
-        )
-    workflow = workflow_name_for_group(group)
-    return RemediationStepSpec(
-        role="action_alert",
-        service_type="stackstorm",
-        service_exec="workflow_execution",
-        task_key_template="stackstorm-workflow-execution",
-        service_payload={
-            "workflow_ref": f"poundcake.{workflow}",
-            "inputs": {
-                "alert_name": alert_name_template(),
-                "alert_group_name": "{{ order.alert_group_name }}",
-                "severity": "{{ order.labels.severity }}",
-                "labels": "{{ order.labels }}",
-                "annotations": "{{ order.annotations }}",
-                "order_id": "{{ order.id }}",
-                "req_id": "{{ order.req_id }}",
-                "evidence": {},
-            },
-        },
-        service_exec_parameters={
-            "operation": "execute_workflow",
-            "mutation_family": "stackstorm_workflow",
-        },
-        expected_outcome={"status": "succeeded"},
-        expected_secs=60,
-        timeout=600,
-    )
-
-
-def _controller_rollout_restart_step(
+def _action_step(
+    group: str,
+    alert_name: str,
+    source_path: str,
     *,
-    kind: str,
-    name_label: str,
-    mutation_family: str,
+    remediation_capability: JSONObject | None = None,
 ) -> RemediationStepSpec:
-    return RemediationStepSpec(
-        role="action_alert",
-        service_type="k8s",
-        service_exec="workload_action",
-        task_key_template="k8s-workload-action",
-        service_payload={
-            "namespace": "{{ order.labels.namespace }}",
-            "kind": kind,
-            "name": f"{{{{ order.labels.{name_label} }}}}",
-        },
-        service_exec_parameters={
-            "operation": "rollout_restart",
-            "mutation_family": mutation_family,
-        },
-        expected_outcome={"success": True},
-        expected_secs=10,
-        timeout=180,
-    )
+    if remediation_capability is not None:
+        return _capability_step(remediation_capability)
+    return _operator_review_action_step(alert_name, source_path)
 
 
 def _prometheus_rule_evidence_step(
+    capabilities: list[JSONObject],
     alert_name: str,
     source_path: str,
     rule_data: JSONObject | None,
 ) -> RemediationStepSpec:
     rule = rule_data if isinstance(rule_data, dict) else {}
+    capability = _best_capability(
+        capabilities,
+        alert_group="",
+        domain="",
+        phase="evidence",
+        preferred_service_type="prometheus",
+    )
+    query = str(rule.get("expr") or f'ALERTS{{alertname="{alert_name}"}}')
+    if capability is not None:
+        return _capability_step(
+            capability,
+            service_payload_overrides={
+                "alert_name": alert_name,
+                "query": query,
+            },
+            service_exec_parameter_overrides={
+                "alert_name": alert_name,
+                "evidence_family": alert_domain(source_path),
+            },
+        )
     return RemediationStepSpec(
         role="gather_prometheus_evidence",
         service_type="prometheus",
@@ -824,7 +800,7 @@ def _prometheus_rule_evidence_step(
         task_key_template="prometheus-inspect",
         service_payload={
             "alert_name": alert_name,
-            "query": str(rule.get("expr") or f'ALERTS{{alertname="{alert_name}"}}'),
+            "query": query,
             "labels": "{{ order.labels }}",
             "lookback_seconds": 3600,
             "step_seconds": 60,
@@ -840,14 +816,29 @@ def _prometheus_rule_evidence_step(
     )
 
 
-def _source_rule_evidence_step(source_path: str) -> RemediationStepSpec:
+def _source_rule_evidence_step(
+    capabilities: list[JSONObject],
+    source_path: str,
+) -> RemediationStepSpec:
+    capability = _best_capability(
+        capabilities,
+        alert_group="",
+        domain="",
+        phase="evidence",
+        preferred_service_type="github",
+    )
+    if capability is not None:
+        return _capability_step(
+            capability,
+            service_payload_overrides={"path": source_path},
+        )
     return RemediationStepSpec(
         role="gather_source_rule_evidence",
         service_type="github",
         service_exec="repo_read",
         task_key_template="github-repo-read",
         service_payload={
-            "repo": "rackerlabs/genestack-monitoring",
+            "repo": "rackerchris/genestack-monitoring",
             "ref": "main",
             "path": source_path,
         },
@@ -902,6 +893,44 @@ def _operator_review_action_step(alert_name: str, source_path: str) -> Remediati
 
 
 def _bakery_communication_step() -> RemediationStepSpec:
+    return _communication_step([])
+
+
+def _communication_step(capabilities: list[JSONObject]) -> RemediationStepSpec:
+    capability = _best_capability(
+        capabilities,
+        alert_group="",
+        domain="",
+        phase="communicate",
+        required_mode="communication",
+    )
+    if capability is not None:
+        return _capability_step(
+            capability,
+            service_payload_overrides={
+                "source": "genestack_monitoring",
+                "title": "PoundCake alert update: {{ order.alert_group_name }}",
+                "description": (
+                    "PoundCake completed the managed critical-alert recipe and recorded "
+                    "the validation, evidence, and action-routing result."
+                ),
+                "severity": "{{ order.labels.severity }}",
+                "category": "alert_remediation",
+                "state": "updated",
+                "message": (
+                    "PoundCake completed alert validation, evidence gathering, and "
+                    "action routing."
+                ),
+                "context": {
+                    "alert_name": alert_name_template(),
+                    "alert_group_name": "{{ order.alert_group_name }}",
+                    "labels": "{{ order.labels }}",
+                    "annotations": "{{ order.annotations }}",
+                    "order_id": "{{ order.id }}",
+                    "req_id": "{{ order.req_id }}",
+                },
+            },
+        )
     return RemediationStepSpec(
         role="communicate",
         service_type="bakery",

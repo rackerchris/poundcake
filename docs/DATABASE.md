@@ -2,9 +2,15 @@
 
 ## Summary
 
-PoundCake stores application state in MariaDB/MySQL and manages schema changes with Alembic. Database setup and migrations are part of the normal Helm startup path: startup waits for MariaDB, applies Alembic migrations, then runs split post-migration bootstrap stages with separate database principals.
+PoundCake stores application state in MariaDB/MySQL and uses split startup jobs
+with separate database principals for database readiness, persona/user
+reconciliation, plugin registration, service-identity provisioning, and
+adapter-credential provisioning. The Helm startup path no longer runs a
+separate migration job.
 
-This deserves a standalone doc because database mode, migration authoring, Helm startup behavior, and local troubleshooting cut across both operator and developer workflows.
+This deserves a standalone doc because database mode, startup-job authoring,
+Helm startup behavior, and local troubleshooting cut across both operator and
+developer workflows.
 
 ## Runtime Database Model
 
@@ -83,12 +89,13 @@ raw sessions directly. Dedicated startup bootstrap jobs under `api.scripts.*`
 are the exception because they run under distinct bootstrap database
 principals, not the adapter runtime boundary.
 
-## Migration Startup Flow
+## Startup Database Flow
 
-The Helm startup flow now splits migration and bootstrap authority into distinct jobs:
+The Helm startup flow splits database and startup authority into distinct jobs:
 
 ```bash
-python3 -m alembic upgrade head
+wait for MariaDB service readiness
+reconcile MariaDB users and grants
 python3 -m api.scripts.bootstrap_plugin_registry
 python3 -m api.scripts.bootstrap_service_identities
 python3 -m api.scripts.bootstrap_adapter_credentials
@@ -96,69 +103,34 @@ python3 -m api.scripts.bootstrap_adapter_credentials
 
 This means startup is still release-gating, but the work is privilege-separated:
 
-- migration runs with migrator DB authority only
+- database readiness and user/grant reconciliation run before application bootstrap
 - plugin registry bootstrap runs without credential encryption keys
 - service identity bootstrap runs only with the service-identity encryption key
 - adapter credential bootstrap runs only with the plugin credential encryption key
 
 Dishwasher remains the only authority for manifest-driven sync into `ingredients`, `recipes`, `recipe_ingredients`, `scheduled_tasks`, and communication-route policy state.
 
-The API and workers use the same database URL shape as the bootstrap job:
+The API and workers use the same database URL shape as the startup jobs:
 
 ```text
 mysql+pymysql://$(DB_API_USER):$(DB_API_PASSWORD)@<database-host>:3306/$(DB_NAME)
 ```
 
-## Alembic Layout
+## Developer Change Notes
 
-PoundCake currently has two Alembic trees:
-
-- `alembic/`: root development Alembic tree used by local scripts and direct developer commands.
-- `helm/files/poundcake-alembic/`: Helm-shipped Alembic tree mounted into production startup pods.
-
-When adding or changing a migration, keep both trees synchronized. The production chart uses the Helm-shipped copy, so a migration that exists only under the root `alembic/` tree will not run in a Helm deployment.
-
-Current migration chain starts with the full schema baseline:
-
-- `2026_02_03_1600_initial_schema`
-- `2026_05_01_1200_service_plugin_short_id`
-- `2026_05_01_1230_service_plugin_log_key`
-- `2026_05_02_0900_internal_service_plugins`
-- later revisions continue from the current head
-
-The old alpha guidance was to fold every change into a single baseline. PoundCake now carries chained Alembic revisions, so new schema changes should be added as forward migrations unless a deliberate baseline reset is planned.
-
-## Developer Commands
-
-Use the local migration wrapper for direct development checks:
-
-```bash
-python api/migrate.py current
-python api/migrate.py history
-python api/migrate.py upgrade
-```
-
-The wrapper resolves the synchronous database URL from PoundCake settings and runs Alembic against the configured database.
-
-For local container validation, start the devstack before running migration checks:
-
-```bash
-bash docker/devstack/create.sh
-python api/migrate.py current
-```
-
-## Migration Authoring Rules
-
-When changing schema:
+When changing database-facing startup behavior:
 
 - update SQLAlchemy models and schemas together
-- add a forward Alembic revision from the current head
-- keep migrations idempotent where practical by checking existing columns or tables before adding them
-- include data backfill or default handling when adding non-null columns
-- keep root and Helm-shipped Alembic trees synchronized
-- add or update tests that exercise the new schema through the API or plugin bootstrap path
+- update MariaDB persona/grant assets when database authority changes:
+  `docker/mariadb-init/01-create-databases.sh`
+  `helm/files/mariadb-init/01-create-databases.sh`
+- update startup-job expectations when bootstrap sequencing changes:
+  `helm/templates/poundcake-startup-jobs.yaml`
+- add or update tests that exercise the affected behavior through the API,
+  startup-job rendering, or plugin registration path
 
-Avoid storing provider secrets in migrations. Secrets belong in Kubernetes secrets or encrypted adapter credential rows.
+Avoid storing provider secrets in startup assets. Secrets belong in Kubernetes
+Secrets or encrypted adapter credential rows.
 
 ## Operator Verification
 
@@ -166,6 +138,7 @@ After Helm install or upgrade:
 
 ```bash
 kubectl -n poundcake rollout status deploy/poundcake-api --timeout=300s
+kubectl -n poundcake logs job/poundcake-mariadb-users
 kubectl -n poundcake logs job/poundcake-bootstrap-plugin-registry
 kubectl -n poundcake logs job/poundcake-bootstrap-service-identity
 kubectl -n poundcake logs job/poundcake-bootstrap-adapter-credentials
@@ -178,7 +151,8 @@ Check API health:
 curl -fsS https://poundcake.example.com/api/v1/health
 ```
 
-The health response should report the database component as healthy after migrations complete and the API starts.
+The health response should report the database component as healthy after the
+startup jobs complete and the API starts.
 
 For database mode rendering changes, run:
 

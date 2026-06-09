@@ -1,9 +1,10 @@
-"""Alertmanager service adapter for read-only health, inspect, and silence sync actions."""
+"""Alertmanager service adapter for inspection and suppression lifecycle actions."""
 
 from __future__ import annotations
 
+import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import httpx
@@ -29,6 +30,8 @@ from api.types import JSONObject
 DEFAULT_INSPECT_LIMIT = 50
 MAX_INSPECT_LIMIT = 200
 ALERTMANAGER_CREDENTIAL_TYPE = "alertmanager_http_auth"
+ALERTMANAGER_SUPPRESSION_OPERATIONS = ("create", "update", "expire", "get")
+POUNDCAKE_COMMENT_PREFIX = "PoundCake suppression: "
 
 
 class AlertmanagerExecutionAdapter(ExecutionAdapter):
@@ -100,7 +103,7 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
 
     def validate(self, ctx: ExecutionContext) -> str | None:
         service_exec = (ctx.service_exec or "").strip().lower()
-        if service_exec not in {"health_check", "inspect", "sync_silences"}:
+        if service_exec not in {"health_check", "inspect", "sync_silences", "suppression"}:
             return f"Unsupported alertmanager service_exec: {ctx.service_exec}"
         if service_exec == "inspect":
             operation = _operation(ctx)
@@ -114,6 +117,26 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
                     return (
                         "alertmanager find_inhibited_by_source requires service_payload.fingerprint"
                     )
+        if service_exec == "suppression":
+            operation = _operation(ctx)
+            if operation not in ALERTMANAGER_SUPPRESSION_OPERATIONS:
+                return "alertmanager suppression operation must be one of: " + ", ".join(
+                    ALERTMANAGER_SUPPRESSION_OPERATIONS
+                )
+            payload = ctx.service_payload or {}
+            if operation in {"create", "update"}:
+                if not isinstance(payload.get("matchers"), list) or not payload.get("matchers"):
+                    return "alertmanager suppression create/update requires service_payload.matchers"
+                if not str(payload.get("name") or "").strip():
+                    return "alertmanager suppression create/update requires service_payload.name"
+                if not str(payload.get("starts_at") or "").strip():
+                    return "alertmanager suppression create/update requires service_payload.starts_at"
+                if not str(payload.get("ends_at") or "").strip():
+                    return "alertmanager suppression create/update requires service_payload.ends_at"
+                if operation == "update" and not str(payload.get("source_ref") or "").strip():
+                    return "alertmanager suppression update requires service_payload.source_ref"
+            if operation in {"expire", "get"} and not str(payload.get("source_ref") or "").strip():
+                return f"alertmanager suppression {operation} requires service_payload.source_ref"
         if not self.transport.base_url:
             return "POUNDCAKE_ALERTMANAGER_URL is required for alertmanager plugin"
         transport_error = self.transport.validate_security()
@@ -197,6 +220,8 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
             return await adapter._execute_sync_silences(service_exec_id)
         if service_exec == "inspect":
             return await adapter._execute_inspect(ctx, service_exec_id)
+        if service_exec == "suppression":
+            return await adapter._execute_suppression(ctx, service_exec_id)
         return ExecutionResult(
             service_type=self.service_type,
             status="errored",
@@ -353,6 +378,55 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
                 raw=outcome,
             )
 
+    async def _execute_suppression(
+        self,
+        ctx: ExecutionContext,
+        service_exec_id: str,
+    ) -> ExecutionResult:
+        operation = _operation(ctx)
+        if operation not in ALERTMANAGER_SUPPRESSION_OPERATIONS:
+            outcome: JSONObject = {
+                "success": False,
+                "status": "failed",
+                "operation": operation or None,
+                "message": (
+                    "alertmanager suppression operation must be one of: "
+                    + ", ".join(ALERTMANAGER_SUPPRESSION_OPERATIONS)
+                ),
+            }
+            return ExecutionResult(
+                service_type=self.service_type,
+                status="failed",
+                service_exec_id=service_exec_id,
+                service_exec_error=str(outcome["message"]),
+                result=outcome,
+                raw=outcome,
+            )
+        try:
+            if operation == "create":
+                return await self._execute_create_suppression(ctx, service_exec_id)
+            if operation == "update":
+                return await self._execute_update_suppression(ctx, service_exec_id)
+            if operation == "expire":
+                return await self._execute_expire_suppression(ctx, service_exec_id)
+            return await self._execute_get_suppression(ctx, service_exec_id)
+        except Exception as exc:
+            outcome = {
+                "success": False,
+                "status": "errored",
+                "operation": operation,
+                "message": "Alertmanager suppression request failed",
+                "error": str(exc),
+            }
+            return ExecutionResult(
+                service_type=self.service_type,
+                status="errored",
+                service_exec_id=service_exec_id,
+                service_exec_error=str(exc),
+                result=outcome,
+                raw=outcome,
+            )
+
     async def _execute_inspect(
         self,
         ctx: ExecutionContext,
@@ -400,6 +474,143 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
                 result=outcome,
                 raw=outcome,
             )
+
+    async def _execute_create_suppression(
+        self,
+        ctx: ExecutionContext,
+        service_exec_id: str,
+    ) -> ExecutionResult:
+        payload = ctx.service_payload or {}
+        response = await self._alertmanager_post(
+            "/api/v2/silences",
+            json=_silence_write_payload(payload),
+        )
+        if response.status_code >= 400:
+            return self._http_failure_result(
+                service_exec_id=service_exec_id,
+                operation="create",
+                endpoint="silences",
+                response=response,
+            )
+        silence_id = _silence_id_from_response(response)
+        silence = await self._fetch_silence(silence_id)
+        normalized = self._normalize_silence(silence)
+        outcome: JSONObject = {
+            "success": True,
+            "status": "succeeded",
+            "operation": "create",
+            "suppression": normalized,
+            "silence_id": silence_id,
+        }
+        return ExecutionResult(
+            service_type=self.service_type,
+            status="succeeded",
+            service_exec_id=service_exec_id,
+            result=outcome,
+            raw=outcome,
+        )
+
+    async def _execute_update_suppression(
+        self,
+        ctx: ExecutionContext,
+        service_exec_id: str,
+    ) -> ExecutionResult:
+        payload = ctx.service_payload or {}
+        response = await self._alertmanager_post(
+            "/api/v2/silences",
+            json=_silence_write_payload(payload, silence_id=str(payload.get("source_ref") or "")),
+        )
+        if response.status_code >= 400:
+            return self._http_failure_result(
+                service_exec_id=service_exec_id,
+                operation="update",
+                endpoint="silences",
+                response=response,
+            )
+        silence_id = _silence_id_from_response(response, fallback=str(payload.get("source_ref") or ""))
+        silence = await self._fetch_silence(silence_id)
+        normalized = self._normalize_silence(silence)
+        outcome: JSONObject = {
+            "success": True,
+            "status": "succeeded",
+            "operation": "update",
+            "suppression": normalized,
+            "silence_id": silence_id,
+        }
+        return ExecutionResult(
+            service_type=self.service_type,
+            status="succeeded",
+            service_exec_id=service_exec_id,
+            result=outcome,
+            raw=outcome,
+        )
+
+    async def _execute_expire_suppression(
+        self,
+        ctx: ExecutionContext,
+        service_exec_id: str,
+    ) -> ExecutionResult:
+        payload = ctx.service_payload or {}
+        source_ref = str(payload.get("source_ref") or "").strip()
+        silence = await self._fetch_silence(source_ref)
+        updated = _silence_expire_payload(silence)
+        response = await self._alertmanager_post("/api/v2/silences", json=updated)
+        if response.status_code >= 400:
+            return self._http_failure_result(
+                service_exec_id=service_exec_id,
+                operation="expire",
+                endpoint="silences",
+                response=response,
+            )
+        refreshed = await self._wait_for_expired_silence(source_ref)
+        normalized = self._normalize_silence(refreshed)
+        outcome: JSONObject = {
+            "success": True,
+            "status": "succeeded",
+            "operation": "expire",
+            "suppression": normalized,
+            "silence_id": source_ref,
+        }
+        return ExecutionResult(
+            service_type=self.service_type,
+            status="succeeded",
+            service_exec_id=service_exec_id,
+            result=outcome,
+            raw=outcome,
+        )
+
+    async def _wait_for_expired_silence(self, source_ref: str) -> JSONObject:
+        silence = await self._fetch_silence(source_ref)
+        for _ in range(8):
+            state = str(((silence.get("status") or {}) if isinstance(silence, dict) else {}).get("state") or "").strip().lower()
+            if state and state != "active":
+                return silence
+            await asyncio.sleep(0.5)
+            silence = await self._fetch_silence(source_ref)
+        return silence
+
+    async def _execute_get_suppression(
+        self,
+        ctx: ExecutionContext,
+        service_exec_id: str,
+    ) -> ExecutionResult:
+        source_ref = str((ctx.service_payload or {}).get("source_ref") or "").strip()
+        silence = await self._fetch_silence(source_ref)
+        normalized = self._normalize_silence(silence)
+        outcome: JSONObject = {
+            "success": True,
+            "status": "succeeded",
+            "operation": "get",
+            "suppression": normalized,
+            "silence_id": source_ref,
+        }
+        return ExecutionResult(
+            service_type=self.service_type,
+            status="succeeded",
+            service_exec_id=service_exec_id,
+            result=outcome,
+            raw=outcome,
+        )
 
     async def _execute_list_alerts(
         self,
@@ -554,6 +765,36 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
                 **request_kwargs,
             )
 
+    async def _alertmanager_post(
+        self,
+        path: str,
+        *,
+        json: JSONObject,
+    ) -> httpx.Response:
+        request_kwargs = self.transport.request_kwargs()
+        request_kwargs.pop("verify", None)
+        async with httpx.AsyncClient(
+            timeout=self.transport.timeout_seconds,
+            verify=self.transport.verify_ssl,
+        ) as client:
+            return await client.post(
+                f"{self.transport.base_url}{path}",
+                json=json,
+                **request_kwargs,
+            )
+
+    async def _fetch_silence(self, source_ref: str) -> JSONObject:
+        response = await self._alertmanager_get(
+            f"/api/v2/silence/{source_ref}",
+            params=[],
+        )
+        if response.status_code >= 400:
+            raise ValueError(f"Alertmanager silence lookup returned HTTP {response.status_code}")
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Alertmanager silence lookup returned an invalid payload")
+        return payload
+
     def _http_failure_result(
         self,
         *,
@@ -611,13 +852,15 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
 
     def _normalize_silence(self, item: JSONObject) -> JSONObject:
         status = item.get("status") if isinstance(item.get("status"), dict) else {}
+        comment = str(item.get("comment") or "")
+        name, reason = _decode_comment(comment, fallback_name=str(item.get("id") or "alertmanager silence"))
         return {
             "source_ref": str(item.get("id") or ""),
-            "name": str(item.get("comment") or item.get("id") or "alertmanager silence"),
+            "name": name,
             "starts_at": item.get("startsAt"),
             "ends_at": item.get("endsAt"),
             "created_by": item.get("createdBy"),
-            "reason": item.get("comment"),
+            "reason": reason,
             "status": str(status.get("state") or "active").strip().lower(),
             "matchers": [
                 self._normalize_matcher(matcher)
@@ -655,6 +898,112 @@ def _alertmanager_unhealthy_status(status_code: int) -> str:
 def _operation(ctx: ExecutionContext) -> str:
     params = ctx.service_exec_parameters if isinstance(ctx.service_exec_parameters, dict) else {}
     return str(params.get("operation") or "list_alerts").strip().lower()
+
+
+def _decode_comment(comment: str, *, fallback_name: str) -> tuple[str, str | None]:
+    stripped = comment.strip()
+    if not stripped:
+        return fallback_name, None
+    if not stripped.startswith(POUNDCAKE_COMMENT_PREFIX):
+        return stripped, comment or None
+    lines = stripped.splitlines()
+    name = lines[0][len(POUNDCAKE_COMMENT_PREFIX) :].strip() or fallback_name
+    remainder = "\n".join(lines[1:]).strip()
+    if remainder.startswith("---"):
+        remainder = remainder[3:].strip()
+    return name, remainder or None
+
+
+def _encode_comment(name: str, reason: str | None) -> str:
+    headline = f"{POUNDCAKE_COMMENT_PREFIX}{name.strip()}"
+    detail = str(reason or "").strip()
+    if not detail:
+        return headline
+    return f"{headline}\n---\n{detail}"
+
+
+def _silence_matchers(payload: JSONObject) -> list[JSONObject]:
+    raw = payload.get("matchers")
+    if not isinstance(raw, list):
+        return []
+    matchers: list[JSONObject] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        operator = str(item.get("operator") or "eq").strip().lower()
+        label_key = str(item.get("label_key") or "").strip()
+        if not label_key:
+            continue
+        matchers.append(
+            {
+                "name": label_key,
+                "value": "" if item.get("value") is None else str(item.get("value")),
+                "isRegex": operator in {"regex", "nregex"},
+                "isEqual": operator not in {"neq", "nregex", "not_exists"},
+            }
+        )
+    return matchers
+
+
+def _silence_write_payload(payload: JSONObject, *, silence_id: str | None = None) -> JSONObject:
+    result: JSONObject = {
+        "matchers": _silence_matchers(payload),
+        "startsAt": str(payload.get("starts_at") or ""),
+        "endsAt": str(payload.get("ends_at") or ""),
+        "createdBy": str(payload.get("created_by") or "poundcake"),
+        "comment": _encode_comment(
+            str(payload.get("name") or "PoundCake suppression"),
+            str(payload.get("reason") or "").strip() or None,
+        ),
+    }
+    if silence_id:
+        result["id"] = silence_id
+    return result
+
+
+def _silence_expire_payload(silence: JSONObject) -> JSONObject:
+    now_dt = datetime.now(timezone.utc)
+    ends_at_dt = now_dt + timedelta(seconds=2)
+    starts_at_dt = _parse_alertmanager_datetime(silence.get("startsAt"))
+    if starts_at_dt is None or starts_at_dt > ends_at_dt:
+        starts_at_dt = now_dt
+    return {
+        "id": str(silence.get("id") or ""),
+        "matchers": [item for item in silence.get("matchers") or [] if isinstance(item, dict)],
+        "startsAt": starts_at_dt.isoformat(),
+        "endsAt": ends_at_dt.isoformat(),
+        "createdBy": str(silence.get("createdBy") or "poundcake"),
+        "comment": str(silence.get("comment") or ""),
+    }
+
+
+def _parse_alertmanager_datetime(value: object) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _silence_id_from_response(response: httpx.Response, *, fallback: str = "") -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if isinstance(payload, dict):
+        silence_id = str(payload.get("silenceID") or payload.get("silenceId") or payload.get("id") or "").strip()
+        if silence_id:
+            return silence_id
+    if fallback:
+        return fallback
+    raise ValueError("Alertmanager silence write response did not include a silence id")
 
 
 def _alert_query_params(

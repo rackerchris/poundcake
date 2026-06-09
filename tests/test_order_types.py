@@ -10,8 +10,8 @@ from api.api.orders import _filter_orders, _serialize_order_status
 from api.models.models import Dish, Order
 from api.services.order_types import (
     ensure_raw_data_order_type,
-    infer_order_type,
     normalize_order_type,
+    require_order_type,
 )
 from api.types import (
     MANUAL_ORDER_TYPE,
@@ -41,38 +41,10 @@ def _order(*, raw_data: dict | None, labels: dict | None = None) -> Order:
     )
 
 
-def test_order_type_inference_prefers_explicit_raw_data() -> None:
-    assert (
-        infer_order_type(
-            raw_data={"order_type": WEBHOOK_ALERT_ORDER_TYPE},
-            labels={"order_type": SCHEDULED_TASK_ORDER_TYPE},
-        )
-        == WEBHOOK_ALERT_ORDER_TYPE
-    )
-
-
-def test_order_type_inference_supports_scheduled_task_fallbacks() -> None:
-    assert (
-        infer_order_type(raw_data={"scheduled_task_id": 1}, labels={}) == SCHEDULED_TASK_ORDER_TYPE
-    )
-    assert (
-        infer_order_type(raw_data={}, labels={"scheduled_task_id": "1"})
-        == SCHEDULED_TASK_ORDER_TYPE
-    )
-
-
-def test_order_type_inference_supports_legacy_alertmanager_payload() -> None:
-    assert (
-        infer_order_type(
-            raw_data={"status": "firing", "labels": {"alertname": "HostDown"}},
-            labels={},
-        )
-        == WEBHOOK_ALERT_ORDER_TYPE
-    )
-
-
-def test_order_type_inference_defaults_to_manual() -> None:
-    assert infer_order_type(raw_data={}, labels={}) == MANUAL_ORDER_TYPE
+def test_order_type_requires_explicit_raw_data() -> None:
+    assert require_order_type({"order_type": WEBHOOK_ALERT_ORDER_TYPE}) == WEBHOOK_ALERT_ORDER_TYPE
+    with pytest.raises(ValueError, match="order_type must be present"):
+        require_order_type({})
 
 
 def test_order_type_normalization_rejects_unknown_values() -> None:

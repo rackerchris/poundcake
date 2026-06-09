@@ -133,6 +133,7 @@ RBAC_ROLE_RESPONSIBILITY_CONTRACT = {
         ("GET", "/api/v1/plugins/stackstorm/configuration"),
         ("PUT", "/api/v1/plugins/stackstorm/configuration"),
         ("POST", "/api/v1/plugins/stackstorm/test-connection"),
+        ("POST", "/api/v1/plugins/prometheus/reload"),
         ("PATCH", "/api/v1/scheduled-tasks/1"),
         ("POST", "/api/v1/scheduled-tasks/1/run-now"),
         ("POST", "/api/v1/suppressions"),
@@ -265,7 +266,7 @@ def test_admin_can_read_execution_history_without_mutation_authority() -> None:
     }
     for path in admin_paths:
         assert request_role_requirement(path, "GET") == "admin"
-    assert _service_allowed_path("timer", "/api/v1/dishes/1/ingredients", "GET")
+    assert _service_allowed_path("timer", "/api/v1/dishes/1/ingredient-status", "GET")
     assert request_role_requirement("/api/v1/dish-ingredients/1/reconcile", "POST") == "service"
 
 
@@ -296,6 +297,7 @@ def test_plugin_registry_reads_are_reader_owned_but_live_actions_are_privileged(
     assert request_role_requirement("/api/v1/plugins/stackstorm/test-connection", "POST") == (
         "operator"
     )
+    assert request_role_requirement("/api/v1/plugins/prometheus/reload", "POST") == "operator"
 
 
 def test_kubernetes_python_client_imports_stay_inside_k8s_plugin() -> None:
@@ -497,7 +499,8 @@ def test_webhook_ingress_uses_route_level_webhook_auth() -> None:
 
 def test_dish_ingredient_raw_detail_is_admin_readable_while_status_is_human_readable() -> None:
     assert request_role_requirement("/api/v1/dishes/1/ingredients", "GET") == "admin"
-    assert _service_allowed_path("timer", "/api/v1/dishes/1/ingredients", "GET")
+    assert not _service_allowed_path("timer", "/api/v1/dishes/1/ingredients", "GET")
+    assert _service_allowed_path("timer", "/api/v1/dishes/1/ingredient-status", "GET")
     assert request_role_requirement("/api/v1/dishes/1/ingredient-status", "GET") == "reader"
 
 
@@ -605,7 +608,9 @@ def test_expediter_runner_service_scope_is_narrow() -> None:
     assert _service_allowed_path(
         "expediter-runner", "/api/v1/dish-ingredients/1/execution-release", "POST"
     )
-    assert _service_allowed_path("expediter-runner", "/api/v1/dish-ingredients/1/reconcile", "POST")
+    assert _service_allowed_path(
+        "expediter-runner", "/api/v1/dish-ingredients/1/execution-reconcile", "POST"
+    )
     assert _service_allowed_path("expediter-runner", "/api/v1/expediter/execute/1", "POST")
     assert _service_allowed_path("expediter-runner", "/api/v1/cook/dishes/1/advance", "POST")
     assert not _service_allowed_path(
@@ -620,6 +625,7 @@ def test_expediter_runner_service_scope_is_narrow() -> None:
     assert not _service_allowed_path(
         "expediter-runner", "/api/v1/dish-ingredients/1/poll-release", "POST"
     )
+    assert not _service_allowed_path("timer", "/api/v1/dishes/1/ingredients", "GET")
     assert not _service_allowed_path("expediter-runner", "/api/v1/scheduled-tasks/due", "GET")
     assert not _service_allowed_path("timer", "/api/v1/dish-ingredients/execution-pending", "GET")
     assert not _service_allowed_path("timer", "/api/v1/expediter/execute/1", "POST")
@@ -741,6 +747,7 @@ def test_adapter_configuration_routes_enforce_operator_config_admin_secrets() ->
     assert request_role_requirement("/api/v1/plugins/stackstorm/test-connection", "POST") == (
         "operator"
     )
+    assert request_role_requirement("/api/v1/plugins/prometheus/reload", "POST") == "operator"
 
 
 def test_poundcake_api_health_routes_require_reader_auth() -> None:

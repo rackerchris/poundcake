@@ -6,7 +6,7 @@ PoundCake production deployments are Helm based. Operators manage runtime behavi
 
 This guide covers the PoundCake Helm release. Remote Bakery is deployed as its own Helm release and connected to PoundCake through the `bakery` plugin. See [REMOTE_BAKERY.md](REMOTE_BAKERY.md).
 
-For database modes and migration behavior, see [DATABASE.md](DATABASE.md).
+For database modes and startup database behavior, see [DATABASE.md](DATABASE.md).
 For auth and internal RBAC behavior, see [AUTH_RBAC.md](AUTH_RBAC.md).
 For plugin support tiers and per-plugin requirements, see
 [plugins/README.md](plugins/README.md).
@@ -169,7 +169,7 @@ PoundCake, Prometheus/Alertmanager, and StackStorm. See
 helm/devstack/destroy.sh DELETE_CLUSTER=true
 
 # Build images, create cluster, and deploy everything
-helm/devstack/create.sh --build-images --install-all
+helm/devstack/create.sh --build-images --all
 ```
 
 ### Individual Steps
@@ -187,9 +187,9 @@ helm/devstack/create.sh --load-images
 helm/devstack/create.sh --create-cluster --no-port-forward
 
 # Install components individually on an existing cluster
-helm/devstack/create.sh --install-poundcake
-helm/devstack/create.sh --install-monitoring
-helm/devstack/create.sh --install-stackstorm
+helm/devstack/create.sh --poundcake
+helm/devstack/create.sh --monitoring
+helm/devstack/create.sh --stackstorm
 ```
 
 ### Devstack Flags
@@ -201,16 +201,16 @@ helm/devstack/create.sh --skip-create-cluster
 helm/devstack/create.sh --app-image myregistry/poundcake:v1 --ui-image myregistry/poundcake-ui:v1
 
 # Component install options
-helm/devstack/create.sh --install-all
-helm/devstack/create.sh --install-poundcake --install-monitoring --install-stackstorm
-helm/devstack/create.sh --install-all --skip-stackstorm-config
+helm/devstack/create.sh --all
+helm/devstack/create.sh --poundcake --monitoring --stackstorm
+helm/devstack/create.sh --all --skip-stackstorm-config
 
 # Lifecycle options
-helm/devstack/create.sh --install-all --no-port-forward
-helm/devstack/create.sh --install-all --skip-node-sysctls
-helm/devstack/create.sh --install-all --no-wait
-helm/devstack/create.sh --install-all --timeout 20m
-helm/devstack/create.sh --install-all --values /path/to/custom-values.yaml
+helm/devstack/create.sh --all --no-port-forward
+helm/devstack/create.sh --all --skip-node-sysctls
+helm/devstack/create.sh --all --no-wait
+helm/devstack/create.sh --all --timeout 20m
+helm/devstack/create.sh --all --values /path/to/custom-values.yaml
 ```
 
 After a devstack deploy, the UI is available at `http://127.0.0.1:8080`,

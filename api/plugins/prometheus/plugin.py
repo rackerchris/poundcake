@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from api.plugins.manifest import ServicePlugin
+from api.plugins.prometheus.capabilities import load_prometheus_capability_templates
 from api.plugins.prometheus.helper import get_prometheus_helper
 from api.plugins.prometheus.templates import (
     PROMETHEUS_INGREDIENT_TEMPLATES,
@@ -30,6 +31,7 @@ def get_plugin() -> ServicePlugin:
         ingredient_templates=PROMETHEUS_INGREDIENT_TEMPLATES,
         recipe_templates=PROMETHEUS_RECIPE_TEMPLATES,
         scheduled_tasks=PROMETHEUS_SCHEDULED_TASKS,
+        capability_templates=load_prometheus_capability_templates(),
         helper_factory=get_prometheus_helper,
         helper_capabilities=(
             "alert_rules.parse",

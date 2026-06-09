@@ -62,8 +62,6 @@ COPY --chown=appuser:appuser api/ /app/api/
 COPY --chown=appuser:appuser shared/ /app/shared/
 COPY --chown=appuser:appuser kitchen/ /app/kitchen/
 COPY --chown=appuser:appuser config/ /app/config/
-COPY --chown=appuser:appuser alembic/ /app/alembic/
-COPY --chown=appuser:appuser alembic.ini /app/alembic.ini
 
 USER appuser
 

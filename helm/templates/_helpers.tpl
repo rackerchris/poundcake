@@ -59,6 +59,50 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- end -}}
 
+{{- define "poundcake.stackstormEnv" -}}
+{{- if .Values.stackstorm.url }}
+- name: POUNDCAKE_STACKSTORM_URL
+  value: {{ .Values.stackstorm.url | quote }}
+- name: POUNDCAKE_STACKSTORM_VERIFY_SSL
+  value: {{ .Values.stackstorm.verifySsl | quote }}
+{{- end }}
+{{- end -}}
+
+{{- define "poundcake.bakeryEnv" -}}
+{{- if .Values.bakery.client.enabled }}
+- name: POUNDCAKE_BAKERY_BASE_URL
+  value: {{ required "bakery.client.baseUrl is required when bakery.client.enabled=true" .Values.bakery.client.baseUrl | quote }}
+- name: POUNDCAKE_BAKERY_TLS_VERIFY
+  value: {{ .Values.bakery.client.verifySsl | quote }}
+- name: POUNDCAKE_BAKERY_REQUEST_TIMEOUT_SECONDS
+  value: {{ .Values.bakery.client.requestTimeoutSeconds | quote }}
+- name: POUNDCAKE_BAKERY_MAX_RETRIES
+  value: {{ .Values.bakery.client.maxRetries | quote }}
+- name: POUNDCAKE_BAKERY_POLL_INTERVAL_SECONDS
+  value: {{ .Values.bakery.client.pollIntervalSeconds | quote }}
+- name: POUNDCAKE_BAKERY_POLL_TIMEOUT_SECONDS
+  value: {{ .Values.bakery.client.pollTimeoutSeconds | quote }}
+- name: POUNDCAKE_BAKERY_ALLOW_INSECURE_HTTP
+  value: {{ .Values.bakery.client.allowInsecureHttp | quote }}
+- name: POUNDCAKE_BAKERY_PLUGIN_ID
+  value: {{ .Values.bakery.client.pluginId | quote }}
+- name: POUNDCAKE_BAKERY_ACTIVE_PROVIDER
+  value: {{ .Values.bakery.config.activeProvider | quote }}
+- name: POUNDCAKE_BAKERY_PLUGIN_ENVIRONMENT_LABEL
+  value: {{ .Values.bakery.client.monitor.environmentLabel | quote }}
+- name: POUNDCAKE_BAKERY_PLUGIN_REGION
+  value: {{ .Values.bakery.client.monitor.region | quote }}
+- name: POUNDCAKE_BAKERY_PLUGIN_CLUSTER_NAME
+  value: {{ .Values.bakery.client.monitor.clusterName | quote }}
+- name: POUNDCAKE_BAKERY_PLUGIN_NAMESPACE
+  value: {{ .Release.Namespace | quote }}
+- name: POUNDCAKE_BAKERY_PLUGIN_RELEASE_NAME
+  value: {{ .Release.Name | quote }}
+- name: POUNDCAKE_BAKERY_PLUGIN_TAGS
+  value: {{ join "," .Values.bakery.client.monitor.tags | quote }}
+{{- end }}
+{{- end }}
+
 {{- define "poundcake.validateUniqueUrlServicePorts" -}}
 {{- $urlServices := list
   (dict "name" "services.api.port" "port" (int .Values.services.api.port))
@@ -78,7 +122,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "poundcake.enabledPlugins" -}}
 {{- $configured := .Values.config.enabledPlugins | default "dummy" -}}
+{{- if and .Values.bakery.client.enabled (not (has "bakery" (splitList "," $configured))) -}}
+{{- printf "%s,bakery" $configured -}}
+{{- else -}}
 {{- $configured -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "poundcake.databaseMode" -}}
@@ -128,6 +176,7 @@ poundcake-mariadb
   "databaseHost" (include "poundcake.databaseHost" .)
   "secrets" (.Values.secrets | default dict)
   "auth" (.Values.auth | default dict)
+  "bakery" (.Values.bakery | default dict)
 -}}
 {{ toYaml $material }}
 {{- end -}}

@@ -11,8 +11,8 @@ WEBHOOK_BEARER_TOKEN_WAS_SET="${WEBHOOK_BEARER_TOKEN+x}"
 TEST_TIMEOUT_SEC="${TEST_TIMEOUT_SEC:-180}"
 source "${SCRIPT_DIR}/lib.sh"
 
-NAMESPACE="${NAMESPACE:-poundcake}"
-TEST_NAMESPACE="${TEST_NAMESPACE:-$NAMESPACE}"
+POUNDCAKE_NAMESPACE="${POUNDCAKE_NAMESPACE:-poundcake}"
+TEST_NAMESPACE="${TEST_NAMESPACE:-$POUNDCAKE_NAMESPACE}"
 API_LOCAL_PORT="${API_LOCAL_PORT:-18000}"
 STATE_DIR="${STATE_DIR:-/tmp/poundcake-k8s-pod-action-e2e}"
 POD_CONTAINER_NAME="${POD_CONTAINER_NAME:-crasher}"
@@ -86,8 +86,6 @@ start_port_forward() {
 
 cleanup_recipe_best_effort() {
   local id="$1"
-  ${CAKECTL_BIN:=${KUBECTL_BIN}}
-  ${CAKECTL_BIN} >/dev/null 2>&1 || true
   local cake_ctl="${CAKECTL:-cakectl}"
   local cf="${CAKECTL_URL:+-u ${CAKECTL_URL}}"
   ${cake_ctl} ${cf:--u "${API_URL%/api/v1}"} recipes delete "${id}" --yes >/dev/null 2>&1 || true
@@ -238,24 +236,24 @@ require_cmd jq
 KUBECTL_BIN="$(detect_executable KUBECTL_BIN kubectl /opt/homebrew/bin/kubectl /usr/local/bin/kubectl)"
 
 "$KUBECTL_BIN" get namespace "$TEST_NAMESPACE" >/dev/null
-"$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=Available deployment/poundcake-api --timeout=5m
-"$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=Available deployment/poundcake-dishwasher --timeout=5m
-"$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=Available deployment/poundcake-prep-chef --timeout=5m
-"$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=Available deployment/poundcake-timer --timeout=5m
+"$KUBECTL_BIN" -n "$POUNDCAKE_NAMESPACE" wait --for=condition=Available deployment/poundcake-api --timeout=5m
+"$KUBECTL_BIN" -n "$POUNDCAKE_NAMESPACE" wait --for=condition=Available deployment/poundcake-dishwasher --timeout=5m
+"$KUBECTL_BIN" -n "$POUNDCAKE_NAMESPACE" wait --for=condition=Available deployment/poundcake-prep-chef --timeout=5m
+"$KUBECTL_BIN" -n "$POUNDCAKE_NAMESPACE" wait --for=condition=Available deployment/poundcake-timer --timeout=5m
 
 if [ -z "$API_URL_WAS_SET" ]; then
   export API_ROOT_URL="http://127.0.0.1:${API_LOCAL_PORT}"
   export API_URL="${API_ROOT_URL}/api/v1"
-  start_port_forward api "$NAMESPACE" svc/poundcake-api "${API_LOCAL_PORT}:8000"
+  start_port_forward api "$POUNDCAKE_NAMESPACE" svc/poundcake-api "${API_LOCAL_PORT}:8000"
 fi
 
 wait_for_api_ready
 if [ -z "$AUTH_PASSWORD_WAS_SET" ]; then
-  AUTH_PASSWORD="$(secret_value "$NAMESPACE" "poundcake-admin" "password")"
+  AUTH_PASSWORD="$(secret_value "$POUNDCAKE_NAMESPACE" "poundcake-admin" "password")"
   export AUTH_PASSWORD
 fi
 if [ -z "$WEBHOOK_BEARER_TOKEN_WAS_SET" ]; then
-  WEBHOOK_BEARER_TOKEN="$(secret_value "$NAMESPACE" "poundcake-secrets" "WEBHOOK_BEARER_TOKEN")"
+  WEBHOOK_BEARER_TOKEN="$(secret_value "$POUNDCAKE_NAMESPACE" "poundcake-secrets" "WEBHOOK_BEARER_TOKEN")"
   export WEBHOOK_BEARER_TOKEN
 fi
 authenticate_api_if_required

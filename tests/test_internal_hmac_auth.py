@@ -133,6 +133,10 @@ async def test_internal_hmac_context_accepts_signed_control_plane_request(monkey
         credential_for_key,
     )
 
+    @asynccontextmanager
+    async def fake_verifier_session():
+        yield object()
+
     context = await _internal_hmac_context(
         _request(method="POST", path="/api/v1/orders?source=unit", body=body, headers=headers),
         object(),  # type: ignore[arg-type]
@@ -664,10 +668,8 @@ async def test_internal_hmac_context_rejects_mutation_without_nonce(monkeypatch)
     assert context is None
 
 
-async def test_internal_hmac_context_database_nonce_store_rejects_replay(monkeypatch) -> None:
-    """Verify database-backed nonce store detects replay across the same session."""
-    monkeypatch.setenv("POUNDCAKE_INTERNAL_HMAC_NONCE_STORE", "database")
-    get_settings.cache_clear()
+async def test_internal_hmac_context_nonce_store_rejects_replay(monkeypatch) -> None:
+    """Verify replay protection detects reuse across the same session."""
     body = b'{"hello":"world"}'
     headers = build_internal_hmac_headers(
         key_id="unit-key",
@@ -697,30 +699,29 @@ async def test_internal_hmac_context_database_nonce_store_rejects_replay(monkeyp
         credential_for_key,
     )
 
-    insert_results: list[bool] = []
-
-    class _FakeResult:
-        def __init__(self, rowcount: int) -> None:
-            self.rowcount = rowcount
-
-    async def fake_execute(_statement: object, _params: object | None = None) -> _FakeResult:
-        if not insert_results:
-            insert_results.append(True)
-            return _FakeResult(1)
-        insert_results.append(True)
-        return _FakeResult(0)
-
-    class _FakeSession:
-        async def execute(self, *args: object, **kwargs: object) -> _FakeResult:
-            return await fake_execute(args, kwargs)
-
-        async def commit(self) -> None:
-            pass
-
     @asynccontextmanager
     async def fake_verifier_session():
-        yield _FakeSession()
+        yield object()
 
+    insert_results: list[bool] = []
+
+    class _FakeSessionStore:
+        async def put_if_absent(
+            self,
+            _kind: str,
+            _key: str,
+            _payload: dict[str, object],
+            *,
+            ttl_seconds: int,
+        ) -> bool:
+            del ttl_seconds
+            if not insert_results:
+                insert_results.append(True)
+                return True
+            insert_results.append(True)
+            return False
+
+    monkeypatch.setattr("api.api.auth.get_session_store", lambda: _FakeSessionStore())
     monkeypatch.setattr("api.api.auth.auth_verifier_db_session", fake_verifier_session)
 
     first_context = await _internal_hmac_context(
@@ -779,13 +780,14 @@ def test_scoped_internal_services_allow_expected_workflow_routes() -> None:
         (timer, "POST", "/api/v1/dish-ingredients/1/poll-claim"),
         (timer, "POST", "/api/v1/dish-ingredients/1/poll-release"),
         (timer, "POST", "/api/v1/dish-ingredients/1/reconcile"),
+        (timer, "GET", "/api/v1/dishes/1/ingredient-status"),
         (timer, "POST", "/api/v1/cook/dishes/1/advance"),
         (timer, "GET", "/api/v1/expediter/status/dummy/abc"),
         (timer, "POST", "/api/v1/expediter/cancel/dummy/abc"),
         (expediter_runner, "GET", "/api/v1/dish-ingredients/execution-pending"),
         (expediter_runner, "POST", "/api/v1/dish-ingredients/1/execution-claim"),
         (expediter_runner, "POST", "/api/v1/dish-ingredients/1/execution-release"),
-        (expediter_runner, "POST", "/api/v1/dish-ingredients/1/reconcile"),
+        (expediter_runner, "POST", "/api/v1/dish-ingredients/1/execution-reconcile"),
         (expediter_runner, "POST", "/api/v1/expediter/execute/1"),
         (expediter_runner, "POST", "/api/v1/cook/dishes/1/advance"),
         (dishwasher, "GET", "/api/v1/plugins"),

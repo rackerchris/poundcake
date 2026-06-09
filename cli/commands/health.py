@@ -1,4 +1,4 @@
-"""Health check commands (GET /ready, GET /health)."""
+"""Health check commands (GET /ready, GET /health, GET /health/status)."""
 
 from __future__ import annotations
 
@@ -34,4 +34,18 @@ def health_cmd(ctx: click.Context) -> None:
         print_output(response, output_format)
     except PoundCakeClientError as exc:
         print_error(f"Health check failed: {exc}")
+        raise click.Abort() from exc
+
+
+@click.command("health-status")
+@click.pass_context
+def health_status_cmd(ctx: click.Context) -> None:
+    """Get reader-safe health status (GET /health/status)."""
+    client = get_client(ctx)
+    output_format = get_output_format(ctx)
+    try:
+        response = client.health_status()
+        print_output(response, output_format)
+    except PoundCakeClientError as exc:
+        print_error(f"Health status lookup failed: {exc}")
         raise click.Abort() from exc

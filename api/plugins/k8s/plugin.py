@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from api.plugins.k8s.capabilities import load_k8s_capability_templates
 from api.plugins.k8s.helper import get_kubernetes_helper
 from api.plugins.k8s.templates import (
     K8S_INGREDIENT_TEMPLATES,
@@ -30,6 +31,7 @@ def get_plugin() -> ServicePlugin:
         ingredient_templates=K8S_INGREDIENT_TEMPLATES,
         recipe_templates=K8S_RECIPE_TEMPLATES,
         scheduled_tasks=K8S_SCHEDULED_TASKS,
+        capability_templates=load_k8s_capability_templates(),
         helper_factory=get_kubernetes_helper,
         helper_capabilities=(
             "k8s.cluster.connect",

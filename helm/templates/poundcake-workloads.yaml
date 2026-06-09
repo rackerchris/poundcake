@@ -110,6 +110,8 @@ spec:
             - name: POUNDCAKE_ENABLED_PLUGINS
               value: {{ include "poundcake.enabledPlugins" . | quote }}
             {{- include "poundcake.monitoringEnv" . | nindent 12 }}
+            {{- include "poundcake.stackstormEnv" . | nindent 12 }}
+            {{- include "poundcake.bakeryEnv" . | nindent 12 }}
             - name: POUNDCAKE_WEBHOOK_BEARER_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -294,15 +296,6 @@ spec:
               mountPath: {{ .Values.auth.activeDirectory.caBundle.mountPath | quote }}
               readOnly: true
             {{- end }}
-            - name: poundcake-alembic
-              mountPath: /app/alembic.ini
-              subPath: alembic.ini
-            - name: poundcake-alembic
-              mountPath: /app/alembic/env.py
-              subPath: env.py
-            - name: poundcake-alembic
-              mountPath: /app/alembic/script.py.mako
-              subPath: script.py.mako
       volumes:
         - name: app-config
           emptyDir: {}
@@ -314,16 +307,6 @@ spec:
               - key: {{ .Values.auth.activeDirectory.caBundle.key }}
                 path: {{ .Values.auth.activeDirectory.caBundle.fileName }}
         {{- end }}
-        - name: poundcake-alembic
-          configMap:
-            name: poundcake-alembic
-            items:
-              - key: alembic.ini
-                path: alembic.ini
-              - key: env.py
-                path: env.py
-              - key: script.py.mako
-                path: script.py.mako
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -497,6 +480,7 @@ spec:
             - name: POUNDCAKE_API_URL
               value: {{ include "poundcake.apiServiceUrl" . | quote }}
             {{- include "poundcake.monitoringEnv" . | nindent 12 }}
+            {{- include "poundcake.stackstormEnv" . | nindent 12 }}
             - name: PREP_INTERVAL
               value: {{ .Values.intervals.prepChef | quote }}
             - name: POUNDCAKE_LOG_LEVEL
@@ -594,6 +578,7 @@ spec:
             - name: POUNDCAKE_API_URL
               value: {{ include "poundcake.apiServiceUrl" . | quote }}
             {{- include "poundcake.monitoringEnv" . | nindent 12 }}
+            {{- include "poundcake.stackstormEnv" . | nindent 12 }}
             - name: TIMER_INTERVAL
               value: {{ .Values.intervals.timer | quote }}
             - name: POUNDCAKE_LOG_LEVEL
@@ -694,6 +679,7 @@ spec:
             - name: POUNDCAKE_API_URL
               value: {{ include "poundcake.apiServiceUrl" . | quote }}
             {{- include "poundcake.monitoringEnv" . | nindent 12 }}
+            {{- include "poundcake.stackstormEnv" . | nindent 12 }}
             - name: EXPEDITER_RUNNER_INTERVAL
               value: {{ .Values.intervals.expediterRunner | quote }}
             - name: EXPEDITER_RUNNER_LIMIT
@@ -798,6 +784,7 @@ spec:
             - name: POUNDCAKE_ENABLED_PLUGINS
               value: {{ include "poundcake.enabledPlugins" . | quote }}
             {{- include "poundcake.monitoringEnv" . | nindent 12 }}
+            {{- include "poundcake.stackstormEnv" . | nindent 12 }}
             - name: POUNDCAKE_LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
             - name: POUNDCAKE_LOG_FORMAT

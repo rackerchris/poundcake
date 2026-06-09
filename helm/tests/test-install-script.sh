@@ -46,4 +46,10 @@ assert_contains '/readyz' "${INSTALLER}"
 assert_contains '/livez' "${INSTALLER}"
 assert_not_contains '/api/v1/health.' "${INSTALLER}"
 
+echo "Checking Genestack override layering defaults..."
+assert_contains '/opt/genestack/base-helm-configs/poundcake/poundcake-helm-overrides.yaml' "${INSTALLER}"
+assert_contains '/etc/genestack/helm-configs/global_overrides' "${INSTALLER}"
+assert_contains '/etc/genestack/helm-configs/poundcake' "${INSTALLER}"
+assert_contains '/etc/genestack/kustomize/kustomize.sh' "${INSTALLER}"
+
 echo "[PASS] PoundCake install wrapper checks passed"

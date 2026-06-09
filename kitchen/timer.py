@@ -349,14 +349,14 @@ def _cancel_blocked_future_rows(row: JSONObject, req_id: str, *, reason: str) ->
         return
     response = request_control_plane_sync(
         "GET",
-        f"{API_BASE_URL}/dishes/{dish_id}/ingredients",
+        f"{API_BASE_URL}/dishes/{dish_id}/ingredient-status",
         req_id=req_id,
         timeout=10,
         retries=POLLER_RETRIES,
     )
     if response.status_code >= 400:
         logger.warning(
-            "Failed to fetch dish ingredients for blocked-row cancellation",
+            "Failed to fetch dish ingredient status for blocked-row cancellation",
             extra={"req_id": req_id, "dish_id": dish_id, "status_code": response.status_code},
         )
         return
@@ -402,14 +402,14 @@ def _cancel_blocked_future_rows(row: JSONObject, req_id: str, *, reason: str) ->
 def _fetch_dish_ingredients(dish_id: int, req_id: str) -> list[JSONObject] | None:
     response = request_control_plane_sync(
         "GET",
-        f"{API_BASE_URL}/dishes/{dish_id}/ingredients",
+        f"{API_BASE_URL}/dishes/{dish_id}/ingredient-status",
         req_id=req_id,
         timeout=10,
         retries=POLLER_RETRIES,
     )
     if response.status_code >= 400:
         logger.warning(
-            "Failed to fetch dish ingredients for group reconciliation",
+            "Failed to fetch dish ingredient status for group reconciliation",
             extra={"req_id": req_id, "dish_id": dish_id, "status_code": response.status_code},
         )
         return None

@@ -206,6 +206,13 @@ async def _increment_existing_order(
     await db.execute(update(Order).where(Order.id == existing.id).values(**values))
 
 
+def _should_reopen_terminal_order_for_resolve(existing: Order, *, prior_alert_status: str) -> bool:
+    status = str(existing.processing_status or "").strip().lower()
+    if status not in {"complete", "failed", "errored", "timeout", "canceled"}:
+        return False
+    return str(prior_alert_status or "").strip().lower() != "resolved"
+
+
 async def _recover_integrity_conflict(
     db: AsyncSession,
     req_id: str,
@@ -360,6 +367,7 @@ async def _process_alert(
 
                 if alert_status == "resolved" and existing:
                     resolved_before_dish = existing.processing_status == "new"
+                    prior_alert_status = str(existing.alert_status or "")
 
                     ends_at = alert_data.get("endsAt")
                     if ends_at and isinstance(ends_at, str):
@@ -371,6 +379,10 @@ async def _process_alert(
                     existing.alert_status = "resolved"
                     existing.ends_at = ends_at
                     if can_transition_to_resolving(existing.processing_status, "alert_resolved"):
+                        existing.processing_status = "resolving"
+                    elif _should_reopen_terminal_order_for_resolve(
+                        existing, prior_alert_status=prior_alert_status
+                    ):
                         existing.processing_status = "resolving"
                     if is_order_terminal(existing.processing_status):
                         existing.is_active = False

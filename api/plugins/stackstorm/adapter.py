@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from uuid import uuid4
 
 from api.types import CanonicalExecutionStatus, JSONObject
@@ -23,7 +21,6 @@ from api.plugins.types import (
     ExecutionResult,
     PluginHealthResult,
 )
-from api.services.credential_manager import write_adapter_credential
 
 logger = get_logger(__name__)
 
@@ -99,6 +96,16 @@ class StackStormExecutionAdapter(ExecutionAdapter):
             "properties": {
                 "url": {"type": "string", "title": "StackStorm API URL", "format": "uri"},
                 "verify_ssl": {"type": "boolean", "title": "Verify SSL"},
+                "capabilities_enabled": {
+                    "type": "object",
+                    "title": "Capability enablement overrides",
+                    "additionalProperties": {"type": "boolean"},
+                },
+                "capability_overrides": {
+                    "type": "object",
+                    "title": "Capability workflow overrides",
+                    "additionalProperties": {"type": "object"},
+                },
             },
             "required": ["url"],
             "additionalProperties": False,
@@ -108,6 +115,8 @@ class StackStormExecutionAdapter(ExecutionAdapter):
         return {
             "url": self._manager._client.base_url,
             "verify_ssl": self._manager._client.verify_ssl,
+            "capabilities_enabled": {},
+            "capability_overrides": {},
         }
 
     def normalize_operator_config(self, config: JSONObject | None) -> JSONObject:
@@ -117,9 +126,17 @@ class StackStormExecutionAdapter(ExecutionAdapter):
             raise ValueError("StackStorm API URL is required")
         if not (url.startswith("http://") or url.startswith("https://")):
             raise ValueError("StackStorm API URL must start with http:// or https://")
+        capabilities_enabled = raw.get("capabilities_enabled")
+        capability_overrides = raw.get("capability_overrides")
         return {
             "url": url,
             "verify_ssl": bool(raw.get("verify_ssl", self._manager._client.verify_ssl)),
+            "capabilities_enabled": (
+                dict(capabilities_enabled) if isinstance(capabilities_enabled, dict) else {}
+            ),
+            "capability_overrides": (
+                dict(capability_overrides) if isinstance(capability_overrides, dict) else {}
+            ),
         }
 
     def with_operator_config(self, config: JSONObject | None) -> "StackStormExecutionAdapter":
@@ -219,24 +236,6 @@ class StackStormExecutionAdapter(ExecutionAdapter):
         force: bool = False,
     ) -> None:
         del force
-        api_key = os.getenv("POUNDCAKE_STACKSTORM_API_KEY", "").strip()
-        if not api_key:
-            key_file = os.getenv(
-                "POUNDCAKE_STACKSTORM_API_KEY_FILE", "/app/config/st2_api_key"
-            ).strip()
-            if key_file:
-                try:
-                    api_key = Path(key_file).read_text(encoding="utf-8").strip()
-                except OSError:
-                    api_key = ""
-        if not api_key:
-            return None
-        await write_adapter_credential(
-            service_type=self.service_type,
-            credential_type=STACKSTORM_API_KEY_CREDENTIAL_TYPE,
-            credential_key_id="default",
-            payload={"api_key": api_key, "st2_api_key": api_key},
-        )
         return None
 
     async def dispatch(self, ctx: ExecutionContext) -> ExecutionResult:

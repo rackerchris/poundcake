@@ -130,11 +130,11 @@ def test_credential_boundary_code_uses_explicit_personas() -> None:
     service_identity = _read("api/services/service_identity.py")
     auth = _read("api/api/auth.py")
 
-    assert "credential_manager_db_session" in plugin_api
+    assert "read_adapter_credential_with_policy" in plugin_api
     assert "_credential_configured(\n    *," in plugin_api
     assert "worker_reader_db_session" in service_identity
     assert "SessionLocal" not in service_identity
-    assert "async with auth_verifier_db_session() as auth_db" in auth
+    assert "get_session_store().put_if_absent" in auth
     assert "if not await _check_nonce(nonce_key, clock_skew):" in auth
 
 
@@ -197,6 +197,7 @@ def test_split_bootstrap_jobs_isolate_keys_and_database_users() -> None:
     assert "poundcake-bootstrap-plugin-registry" in startup_jobs
     assert "poundcake-bootstrap-service-identity" in startup_jobs
     assert "poundcake-bootstrap-adapter-credentials" in startup_jobs
+    assert "poundcake-migrate" not in startup_jobs
     assert "python3 -m api.scripts.bootstrap_plugin_registry" in startup_jobs
     assert "python3 -m api.scripts.bootstrap_service_identities" in startup_jobs
     assert "python3 -m api.scripts.bootstrap_adapter_credentials" in startup_jobs

@@ -10,6 +10,7 @@ import pytest
 from api.models.models import Ingredient, ServiceIdentityCredential, ServicePlugin
 from api.plugins.manifest import ServicePlugin as ServicePluginManifest
 from api.plugins.types import PluginHealthResult
+from api.services.ingredient_registry import ingredient_contract_from_row
 from api.services import plugin_bootstrap
 
 
@@ -74,7 +75,7 @@ def test_recipe_step_payload_rejects_invalid_filled_service_payload() -> None:
 
 def test_active_template_drift_is_detectable() -> None:
     ingredient = _ingredient()
-    payload = plugin_bootstrap._ingredient_contract_from_row(ingredient)
+    payload = ingredient_contract_from_row(ingredient)
     changed = dict(payload)
     changed["default_timeout"] = 60
     assert changed != payload
@@ -84,7 +85,7 @@ def test_active_template_drift_is_detectable() -> None:
 async def test_plugin_bootstrap_creates_active_revision_for_disabled_matching_ingredient() -> None:
     retired = _ingredient()
     retired.is_active = False
-    template = plugin_bootstrap._ingredient_contract_from_row(retired)
+    template = ingredient_contract_from_row(retired)
     plugin = ServicePluginManifest(
         service_type="dummy",
         adapter_factory=lambda: object(),
@@ -109,7 +110,7 @@ async def test_plugin_bootstrap_creates_active_revision_for_disabled_matching_in
 @pytest.mark.asyncio
 async def test_plugin_bootstrap_retires_active_drift_and_creates_revision() -> None:
     existing = _ingredient()
-    template = plugin_bootstrap._ingredient_contract_from_row(existing)
+    template = ingredient_contract_from_row(existing)
     template["default_timeout"] = 60
     plugin = ServicePluginManifest(
         service_type="dummy",
@@ -136,7 +137,7 @@ async def test_plugin_bootstrap_retires_active_drift_and_creates_revision() -> N
 @pytest.mark.asyncio
 async def test_plugin_bootstrap_reuses_active_matching_ingredient() -> None:
     existing = _ingredient()
-    template = plugin_bootstrap._ingredient_contract_from_row(existing)
+    template = ingredient_contract_from_row(existing)
     plugin = ServicePluginManifest(
         service_type="dummy",
         adapter_factory=lambda: object(),
@@ -444,7 +445,7 @@ async def test_external_service_plugins_do_not_register_hmac_credentials(
 
 
 @pytest.mark.asyncio
-async def test_stackstorm_api_key_import_uses_credential_manager_writer(
+async def test_stackstorm_api_key_import_requires_manual_provisioning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugin = ServicePluginManifest(
@@ -453,26 +454,16 @@ async def test_stackstorm_api_key_import_uses_credential_manager_writer(
         ingredient_templates=(),
         recipe_templates=(),
     )
-    saved: dict[str, object] = {}
-
-    async def save_credential(**kwargs: object) -> None:
-        saved.update(kwargs)
-
-    monkeypatch.setenv("POUNDCAKE_STACKSTORM_API_KEY", "st2-generated-key")
-    monkeypatch.setattr(plugin_bootstrap, "write_adapter_credential", save_credential)
 
     stats = await plugin_bootstrap._import_stackstorm_api_key_credential(
         _FakeDb(), [plugin]  # type: ignore[arg-type]
     )
 
-    assert stats == {"processed": 1, "imported": 1, "errors": 0}
-    assert saved["service_type"] == "stackstorm"
-    assert saved["credential_type"] == "stackstorm_api_key"
-    assert saved["credential_key_id"] == "default"
-    assert "db" not in saved
-    assert saved["payload"] == {
-        "api_key": "st2-generated-key",
-        "st2_api_key": "st2-generated-key",
+    assert stats == {
+        "processed": 1,
+        "imported": 0,
+        "errors": 0,
+        "reason": "manual credential provisioning required",
     }
 
 
@@ -588,6 +579,19 @@ def test_internal_service_plugins_do_not_include_suppressions() -> None:
     assert "suppressions" not in service_types
 
 
+def test_internal_service_plugins_do_not_include_ui_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POUNDCAKE_UI_PROXY_INTERNAL_PLUGIN_ENABLED", "true")
+
+    service_types = {
+        service_type
+        for service_type, _interval, _query_limit in plugin_bootstrap._internal_plugin_defaults()
+    }
+
+    assert "ui-proxy" not in service_types
+
+
 @pytest.mark.asyncio
 async def test_bootstrap_registers_internal_plugins_before_external_discovery(
     monkeypatch: pytest.MonkeyPatch,
@@ -624,21 +628,18 @@ async def test_bootstrap_registers_internal_plugins_before_external_discovery(
 async def test_bootstrap_registers_bakery_route_as_fallback_comms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    bakery_route = {
-        "id": "bakery-global-comms",
-        "label": "Bakery Rackspace Core",
-        "service_type": "bakery",
-        "destination_target": "rackspace_core",
-        "provider_config": {},
-        "enabled": True,
-        "position": 1,
-    }
     plugin = ServicePluginManifest(
         service_type="bakery",
         adapter_factory=lambda: object(),
         ingredient_templates=(),
         recipe_templates=(),
-        communication_routes=(bakery_route,),
+        capability_templates=(
+            {
+                "capability_id": "bakery.communication.open.default",
+                "service_type": "bakery",
+                "mode": "communication",
+            },
+        ),
     )
 
     async def empty_stats(*_args: object, **_kwargs: object) -> dict[str, int]:
@@ -682,7 +683,13 @@ async def test_bootstrap_defers_manifest_sync_to_dishwasher(
             {"service_type": "dummy", "service_exec": "x"},
         ),
         recipe_templates=({"name": "dummy recipe"},),
-        communication_routes=({"id": "dummy-route"},),
+        capability_templates=(
+            {
+                "capability_id": "dummy.communication.open.default",
+                "service_type": "dummy",
+                "mode": "communication",
+            },
+        ),
         scheduled_tasks=({"task_key": "dummy-health"}, {"task_key": "dummy-sync"}),
     )
 

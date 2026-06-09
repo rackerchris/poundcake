@@ -4,20 +4,25 @@
 # |  __/ (_) | |_| | | | | (_| | |__| (_| |   <  __/
 # |_|   \___/ \__,_|_| |_|\__,_|\____\__,_|_|\_\___|
 #
-"""Middleware for request ID tracking."""
+"""Middleware for request ID tracking and coarse request guards."""
 
 import logging
+import os
 import time
 import uuid
-import os
 from typing import Any, Callable
+
 from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+
+from api.core.config import get_settings
 from api.core.logging import get_logger
 
 logger = get_logger(__name__)
 INSTANCE_ID = os.getenv("POD_NAME") or os.getenv("HOSTNAME") or "local"
 INTERNAL_QUIET_SUCCESS_LATENCY_MS = 1000
+BODY_SIZE_ENFORCED_METHODS = frozenset({"POST", "PUT", "PATCH"})
 PROBE_PATHS = frozenset(
     {
         "/livez",
@@ -37,6 +42,10 @@ INTERNAL_QUIET_PATH_PREFIXES = (
 )
 
 
+class RequestBodyTooLargeError(Exception):
+    """Raised when the request body exceeds the configured streaming limit."""
+
+
 def _is_internal_req_id(req_id: str) -> bool:
     return req_id.startswith("SYSTEM-")
 
@@ -47,6 +56,43 @@ def _is_internal_control_plane_path(path: str) -> bool:
 
 def _is_probe_path(path: str) -> bool:
     return path in PROBE_PATHS
+
+
+def _request_body_limit_bytes(path: str) -> int:
+    settings = get_settings()
+    if path == "/api/v1/webhook":
+        return max(1, int(settings.max_webhook_body_bytes))
+    return max(1, int(settings.max_request_body_bytes))
+
+
+def _body_too_large_response(*, req_id: str, limit_bytes: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=413,
+        content={
+            "error": "request_too_large",
+            "detail": f"Request body exceeds {limit_bytes} bytes",
+            "req_id": req_id,
+        },
+    )
+
+
+def _enforce_request_body_limit(request: Request, *, limit_bytes: int) -> None:
+    original_receive = request._receive
+    received_bytes = 0
+
+    async def limited_receive() -> dict[str, Any]:
+        nonlocal received_bytes
+        message = await original_receive()
+        if message.get("type") != "http.request":
+            return message
+        body = message.get("body", b"")
+        if isinstance(body, bytes):
+            received_bytes += len(body)
+        if received_bytes > limit_bytes:
+            raise RequestBodyTooLargeError(limit_bytes)
+        return message
+
+    request._receive = limited_receive
 
 
 def request_completion_log_level(
@@ -103,11 +149,28 @@ class PreHeatMiddleware(BaseHTTPMiddleware):
         request.state.req_id = req_id
         request.state.instance_id = instance_id
 
+        if request.method.upper() in BODY_SIZE_ENFORCED_METHODS:
+            limit_bytes = _request_body_limit_bytes(str(request.url.path))
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > limit_bytes:
+                        return _body_too_large_response(req_id=req_id, limit_bytes=limit_bytes)
+                except ValueError:
+                    logger.debug(
+                        "Ignoring invalid Content-Length header",
+                        extra={"req_id": req_id, "content_length": content_length},
+                    )
+            _enforce_request_body_limit(request, limit_bytes=limit_bytes)
+
         # Track processing time
         start_time = time.time()
 
         # Process request
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except RequestBodyTooLargeError as exc:
+            return _body_too_large_response(req_id=req_id, limit_bytes=int(exc.args[0]))
 
         # Calculate processing time
         latency_ms = int((time.time() - start_time) * 1000)

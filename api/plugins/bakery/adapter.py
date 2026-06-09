@@ -89,14 +89,12 @@ def _payload_with_dish_evidence(payload: JSONObject, ctx: ExecutionContext) -> J
     dish_context = ctx.context.get("dish")
     if not isinstance(dish_context, dict):
         return dict(payload)
-    evidence = dish_context.get("evidence")
-    if not isinstance(evidence, list) or not evidence:
-        return dict(payload)
 
     enriched = dict(payload)
     payload_context = enriched.get("context")
     payload_context = dict(payload_context) if isinstance(payload_context, dict) else {}
-    payload_context.setdefault("evidence", evidence)
+    evidence = dish_context.get("evidence")
+    payload_context.setdefault("evidence", evidence if isinstance(evidence, list) else [])
 
     context_updates = dish_context.get("context_updates")
     if isinstance(context_updates, dict) and context_updates:

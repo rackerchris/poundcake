@@ -472,6 +472,90 @@ pre {
   align-items: start;
 }
 
+.suppression-sections {
+  display: grid;
+  gap: 18px;
+}
+
+.suppression-section {
+  display: grid;
+  gap: 14px;
+}
+
+.suppression-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+  padding: 18px 20px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+  border: 1px solid rgba(143, 163, 168, 0.12);
+}
+
+.suppression-card.highlighted {
+  border-color: rgba(25, 160, 124, 0.4);
+  background: rgba(25, 160, 124, 0.1);
+}
+
+.suppression-card-past {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.suppression-card-main {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.suppression-card-main strong {
+  overflow-wrap: anywhere;
+}
+
+.suppression-card-main p {
+  margin: 0;
+}
+
+.suppression-meta-grid {
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.suppression-card-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+
+.order-label-list {
+  display: grid;
+  gap: 12px;
+}
+
+.order-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(143, 163, 168, 0.1);
+}
+
+.order-label-row strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.order-label-row p {
+  margin: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
 .master-detail {
   grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.3fr);
   align-items: start;
@@ -792,10 +876,6 @@ pre {
   width: 10%;
 }
 
-.workflow-actions-col {
-  width: 180px;
-}
-
 .text-cell {
   overflow-wrap: anywhere;
   word-break: normal;
@@ -1038,6 +1118,71 @@ pre {
 
 .dialog-input {
   width: 100%;
+}
+
+.review-diff-list {
+  display: grid;
+  gap: 10px;
+}
+
+.review-diff-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.9rem;
+  color: var(--text-2);
+}
+
+.review-diff-row {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(143, 163, 168, 0.08);
+}
+
+.review-diff-row > strong {
+  color: var(--text-1);
+}
+
+.review-diff-values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.review-diff-values > div {
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(5, 12, 18, 0.42);
+  border: 1px solid rgba(143, 163, 168, 0.08);
+}
+
+.review-diff-values span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-2);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.review-diff-values p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.review-checklist {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.review-checklist p {
+  margin: 0;
 }
 
 .danger-note {
@@ -1308,6 +1453,8 @@ pre {
   .editor-grid,
   .master-detail,
   .hero-panel,
+  .suppression-card,
+  .order-label-row,
   .grid-three,
   .grid-two,
   .grid-four,
@@ -1320,6 +1467,10 @@ pre {
 
   .topbar {
     flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .order-label-row {
     align-items: flex-start;
   }
 }
@@ -1365,6 +1516,10 @@ pre {
 
   .feed-meta {
     align-items: flex-start;
+  }
+
+  .suppression-card-actions {
+    justify-content: flex-start;
   }
 
   .detail-row,

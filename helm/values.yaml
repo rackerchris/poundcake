@@ -190,9 +190,8 @@ config:
   # Remediation settings
   defaultTimeout: 300
   maxConcurrentRemediations: 10
-  # Service plugins enabled at bootstrap. Production Helm does not infer external
-  # adapter enablement or inject adapter credentials; operators manage adapter
-  # connection records through PoundCake and credential-manager.
+  # Service plugins enabled at bootstrap. Enable external adapters only when
+  # their endpoint and credential settings are provided by an override layer.
   enabledPlugins: "dummy"
 
 # Alert suppression behavior in PoundCake API
@@ -310,6 +309,41 @@ monitoring:
     crdNamespace: "prometheus"
   alertmanager:
     url: ""
+
+stackstorm:
+  url: ""
+  verifySsl: false
+
+# Remote Bakery adapter configuration. Credentials remain in a Kubernetes
+# Secret and are imported into credential-manager by the startup hook.
+# A Genestack per-cluster override should set client.enabled, client.baseUrl,
+# monitor metadata, and client.auth.existingSecret.
+bakery:
+  config:
+    activeProvider: rackspace_core
+  client:
+    enabled: false
+    baseUrl: ""
+    verifySsl: true
+    # Keep failed remote registration below the 30-second plugin health SLA so
+    # one unreachable Bakery endpoint cannot starve other adapter checks.
+    requestTimeoutSeconds: 10
+    maxRetries: 0
+    pollIntervalSeconds: 2
+    pollTimeoutSeconds: 60
+    pluginId: "poundcake/bakery-plugin"
+    allowInsecureHttp: false
+    monitor:
+      id: ""
+      environmentLabel: ""
+      region: ""
+      clusterName: ""
+      tags: []
+    auth:
+      existingSecret: ""
+      secretKeys:
+        keyId: "hmac_key_id"
+        secret: "hmac_secret"
 
 # Authentication configuration
 auth:

@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-POUNDCAKE_NAMESPACE="${NAMESPACE:-poundcake}"
+POUNDCAKE_NAMESPACE="${POUNDCAKE_NAMESPACE:-poundcake}"
 MONITORING_NAMESPACE="${MONITORING_NAMESPACE:-monitoring}"
 PROMETHEUS_RELEASE_NAME="${PROMETHEUS_RELEASE_NAME:-poundcake-prometheus}"
 PROMETHEUS_CRDS_RELEASE_NAME="${PROMETHEUS_CRDS_RELEASE_NAME:-poundcake-prometheus-operator-crds}"

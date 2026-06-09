@@ -14,8 +14,13 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from api.models.models import Ingredient, Recipe, RecipeIngredient
+from api.models.models import Ingredient, Recipe, RecipeIngredient, ServicePlugin
+from api.plugins.catalog import build_enabled_plugin_capability_catalog
 from api.plugins.contract import validate_service_payload
+from api.services.capability_resolution import (
+    resolve_active_capability_ingredient,
+    select_communication_capability,
+)
 from api.services.communications import (
     normalize_destination_target,
     normalize_destination_type,
@@ -442,13 +447,34 @@ async def _delete_recipe_ingredient_ids_safely(
     await db.execute(delete(RecipeIngredient).where(RecipeIngredient.id.in_(recipe_ingredient_ids)))
 
 
+async def _recipe_communication_steps(
+    db: AsyncSession,
+    *,
+    recipe: Recipe | Any,
+) -> list[RecipeIngredient]:
+    recipe_id = getattr(recipe, "id", None)
+    if recipe_id is not None:
+        result = await db.execute(
+            select(RecipeIngredient)
+            .options(joinedload(RecipeIngredient.ingredient))
+            .where(RecipeIngredient.recipe_id == recipe_id)
+            .order_by(RecipeIngredient.step_order.asc(), RecipeIngredient.id.asc())
+        )
+        unique_result = result.unique() if hasattr(result, "unique") else result
+        return [row for row in unique_result.scalars().all() if is_communication_step(row)]
+    return [ri for ri in getattr(recipe, "recipe_ingredients", []) or [] if is_communication_step(ri)]
+
+
 async def replace_recipe_communication_steps(
     db: AsyncSession,
     *,
     recipe: Recipe,
     step_specs: list[JSONObject],
 ) -> None:
-    comm_steps = [ri for ri in recipe.recipe_ingredients if is_communication_step(ri)]
+    capability_catalog = build_enabled_plugin_capability_catalog(
+        await _enabled_plugin_configs(db)
+    )
+    comm_steps = await _recipe_communication_steps(db, recipe=recipe)
     existing_by_key: dict[str, RecipeIngredient] = {}
     remove_ids: list[int] = []
     for recipe_ingredient in comm_steps:
@@ -460,29 +486,29 @@ async def replace_recipe_communication_steps(
 
     desired_keys: set[str] = set()
     for spec in step_specs:
-        result = await db.execute(
-            select(Ingredient)
-            .where(
-                Ingredient.service_type == spec["service_type"],
-                Ingredient.ingredient_purpose == "comms",
-                Ingredient.is_active.is_(True),
-                Ingredient.deleted.is_(False),
-            )
-            .order_by(Ingredient.id.asc())
+        capability = select_communication_capability(
+            capability_catalog,
+            service_type=str(spec["service_type"] or "").strip(),
+            destination_target=str(spec["destination_target"] or "").strip(),
         )
-        ingredient = next(
-            (
-                item
-                for item in result.scalars().all()
-                if _ingredient_supports_comms_operation(item, str(spec["service_exec"]))
-            ),
-            None,
-        )
-        if ingredient is None:
+        if capability is None:
             raise ValueError(
-                "No active comms ingredient template registered for "
+                "No enabled communication capability registered for "
                 f"{spec['service_type']}.{spec['service_exec']}"
             )
+        resolved = await resolve_active_capability_ingredient(
+            db,
+            capability={
+                **capability,
+                "operation": str(spec["service_exec"] or "").strip().lower(),
+            },
+        )
+        if resolved is None:
+            raise ValueError(
+                "No active communication ingredient resolved for "
+                f"{spec['service_type']}.{spec['service_exec']}"
+            )
+        ingredient = resolved.ingredient
         validate_service_payload(spec["service_payload"], ingredient.payload_schema)
         spec["ingredient_id"] = ingredient.id
         spec["service_exec_expected_secs"] = ingredient.default_expected_secs
@@ -520,6 +546,18 @@ async def replace_recipe_communication_steps(
         if managed_key not in desired_keys
     )
     await _delete_recipe_ingredient_ids_safely(db, recipe_ingredient_ids=remove_ids)
+
+
+async def _enabled_plugin_configs(db: AsyncSession) -> dict[str, JSONObject]:
+    result = await db.execute(select(ServicePlugin).where(ServicePlugin.enabled.is_(True)))
+    rows = result.scalars().all()
+    configs: dict[str, JSONObject] = {}
+    for row in rows:
+        plugin_config = getattr(row, "plugin_config", None)
+        if not isinstance(plugin_config, dict):
+            continue
+        configs[str(row.service_type or "").strip().lower()] = dict(plugin_config)
+    return configs
 
 
 async def ensure_global_policy_recipe(db: AsyncSession) -> Recipe:

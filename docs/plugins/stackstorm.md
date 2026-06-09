@@ -11,6 +11,11 @@
 `stackstorm` executes StackStorm actions and workflows from PoundCake orders and
 syncs PoundCake-owned StackStorm content.
 
+In the provider-neutral capability model, StackStorm is intended for workflow
+orchestration and pack-owned automations, not as a duplicate home for every
+native single-step Kubernetes mutation that PoundCake already exposes through
+the `k8s` plugin.
+
 ## Requirements
 
 - A reachable StackStorm API endpoint.

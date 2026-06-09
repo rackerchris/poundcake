@@ -9,7 +9,7 @@
 import os
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from api.version import __version__
@@ -31,9 +31,6 @@ class Settings(BaseSettings):
     # ==========================================================================
     app_version: str = Field(default=__version__)
     debug: bool = False
-    testing: bool = Field(
-        default_factory=lambda: os.getenv("TESTING", "").strip().lower() in {"1", "true", "yes"}
-    )
 
     # API Server
     server_host: str = "0.0.0.0"
@@ -52,10 +49,7 @@ class Settings(BaseSettings):
     dishwasher_reader_database_url: str = ""
     plugin_operation_database_url: str = Field(
         default="",
-        validation_alias=AliasChoices(
-            "POUNDCAKE_PLUGIN_OPERATION_DB_URL",
-            "POUNDCAKE_PLUGIN_OPERATION_DATABASE_URL",
-        ),
+        validation_alias="POUNDCAKE_PLUGIN_OPERATION_DB_URL",
     )
     database_echo: bool = False
 
@@ -88,7 +82,6 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Git Repository Settings
     # ==========================================================================
-    git_enabled: bool = False
     git_repo_url: str = ""
     git_branch: str = "main"
     git_rules_path: str = "prometheus/rules"
@@ -134,6 +127,8 @@ class Settings(BaseSettings):
     rate_limit_webhook: str = "1000/minute"
     rate_limit_default: str = "60/minute"
     rate_limit_internal: str = "10000/minute"
+    max_request_body_bytes: int = 1_048_576
+    max_webhook_body_bytes: int = 262_144
 
     # ==========================================================================
     # Authentication & Identification
@@ -145,7 +140,6 @@ class Settings(BaseSettings):
     auth_oidc_state_ttl: int = 600
     auth_rbac_enabled: bool = True
     internal_hmac_clock_skew_seconds: int = 300
-    internal_hmac_nonce_store: str = "memory"
     force_secure_cookie: bool = True
 
     # Local bootstrap superuser.
@@ -181,36 +175,25 @@ class Settings(BaseSettings):
     auth_auth0_groups_claim: str = "groups"
     auth_auth0_subject_claim: str = "sub"
     auth_auth0_ui_enabled: bool = Field(
-        default_factory=lambda: bool(
-            os.getenv("POUNDCAKE_AUTH_AUTH0_UI_CLIENT_ID")
-            or os.getenv("POUNDCAKE_AUTH_AUTH0_CLIENT_ID")
-        )
+        default_factory=lambda: bool(os.getenv("POUNDCAKE_AUTH_AUTH0_UI_CLIENT_ID"))
     )
     auth_auth0_ui_client_id: str = Field(
         default_factory=lambda: os.getenv("POUNDCAKE_AUTH_AUTH0_UI_CLIENT_ID", "")
-        or os.getenv("POUNDCAKE_AUTH_AUTH0_CLIENT_ID", "")
     )
     auth_auth0_ui_client_secret: str = Field(
         default_factory=lambda: os.getenv("POUNDCAKE_AUTH_AUTH0_UI_CLIENT_SECRET", "")
-        or os.getenv("POUNDCAKE_AUTH_AUTH0_CLIENT_SECRET", "")
     )
     auth_auth0_ui_callback_url: str = Field(
         default_factory=lambda: os.getenv("POUNDCAKE_AUTH_AUTH0_UI_CALLBACK_URL", "")
-        or os.getenv("POUNDCAKE_AUTH_AUTH0_CALLBACK_URL", "")
     )
     auth_auth0_cli_enabled: bool = Field(
-        default_factory=lambda: bool(
-            os.getenv("POUNDCAKE_AUTH_AUTH0_CLI_CLIENT_ID")
-            or os.getenv("POUNDCAKE_AUTH_AUTH0_CLIENT_ID")
-        )
+        default_factory=lambda: bool(os.getenv("POUNDCAKE_AUTH_AUTH0_CLI_CLIENT_ID"))
     )
     auth_auth0_cli_client_id: str = Field(
         default_factory=lambda: os.getenv("POUNDCAKE_AUTH_AUTH0_CLI_CLIENT_ID", "")
-        or os.getenv("POUNDCAKE_AUTH_AUTH0_CLIENT_ID", "")
     )
     auth_auth0_cli_client_secret: str = Field(
         default_factory=lambda: os.getenv("POUNDCAKE_AUTH_AUTH0_CLI_CLIENT_SECRET", "")
-        or os.getenv("POUNDCAKE_AUTH_AUTH0_CLIENT_SECRET", "")
     )
 
     # Azure AD / Microsoft Entra ID.
@@ -222,32 +205,22 @@ class Settings(BaseSettings):
     auth_azure_ad_groups_claim: str = "groups"
     auth_azure_ad_subject_claim: str = "sub"
     auth_azure_ad_ui_enabled: bool = Field(
-        default_factory=lambda: bool(
-            os.getenv("POUNDCAKE_AUTH_AZURE_AD_UI_CLIENT_ID")
-            or os.getenv("POUNDCAKE_AUTH_AZURE_AD_CLIENT_ID")
-        )
+        default_factory=lambda: bool(os.getenv("POUNDCAKE_AUTH_AZURE_AD_UI_CLIENT_ID"))
     )
     auth_azure_ad_ui_client_id: str = Field(
         default_factory=lambda: os.getenv("POUNDCAKE_AUTH_AZURE_AD_UI_CLIENT_ID", "")
-        or os.getenv("POUNDCAKE_AUTH_AZURE_AD_CLIENT_ID", "")
     )
     auth_azure_ad_ui_client_secret: str = Field(
         default_factory=lambda: os.getenv("POUNDCAKE_AUTH_AZURE_AD_UI_CLIENT_SECRET", "")
-        or os.getenv("POUNDCAKE_AUTH_AZURE_AD_CLIENT_SECRET", "")
     )
     auth_azure_ad_ui_callback_url: str = Field(
         default_factory=lambda: os.getenv("POUNDCAKE_AUTH_AZURE_AD_UI_CALLBACK_URL", "")
-        or os.getenv("POUNDCAKE_AUTH_AZURE_AD_CALLBACK_URL", "")
     )
     auth_azure_ad_cli_enabled: bool = Field(
-        default_factory=lambda: bool(
-            os.getenv("POUNDCAKE_AUTH_AZURE_AD_CLI_CLIENT_ID")
-            or os.getenv("POUNDCAKE_AUTH_AZURE_AD_CLIENT_ID")
-        )
+        default_factory=lambda: bool(os.getenv("POUNDCAKE_AUTH_AZURE_AD_CLI_CLIENT_ID"))
     )
     auth_azure_ad_cli_client_id: str = Field(
         default_factory=lambda: os.getenv("POUNDCAKE_AUTH_AZURE_AD_CLI_CLIENT_ID", "")
-        or os.getenv("POUNDCAKE_AUTH_AZURE_AD_CLIENT_ID", "")
     )
 
     # ==========================================================================

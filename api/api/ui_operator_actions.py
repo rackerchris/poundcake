@@ -4,11 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.api.auth import require_auth_if_enabled
+from api.api.auth import require_operator, require_reader
+from api.core.database import get_db
 from api.core.logging import get_logger
-from api.schemas.schemas import UIOperatorActionRequest, UIOperatorActionResponse
+from api.models.models import OperatorAuditEvent
+from api.schemas.schemas import (
+    OperatorAuditEventResponse,
+    UIOperatorActionRequest,
+    UIOperatorActionResponse,
+)
 from api.services.auth_service import AuthContext
 
 router = APIRouter()
@@ -65,11 +73,26 @@ def _redact_details(value: Any) -> Any:
 async def log_ui_operator_action(
     request: Request,
     payload: UIOperatorActionRequest,
-    auth_context: AuthContext | None = Depends(require_auth_if_enabled),
+    db: AsyncSession = Depends(get_db),
+    auth_context: AuthContext = Depends(require_operator),
 ) -> UIOperatorActionResponse:
     """Log a safe, structured record of an operator action initiated in the UI."""
 
     context = auth_context or getattr(request.state, "auth_context", None)
+    details = _redact_details(payload.details)
+    db.add(
+        OperatorAuditEvent(
+            req_id=getattr(request.state, "req_id", None),
+            action=payload.action,
+            surface=payload.surface,
+            status=payload.status,
+            target=payload.target,
+            actor_username=getattr(context, "username", None),
+            actor_role=getattr(context, "role", None),
+            details=details if isinstance(details, dict) else {},
+        )
+    )
+    await db.commit()
     logger.info(
         "UI operator action",
         extra={
@@ -81,7 +104,32 @@ async def log_ui_operator_action(
             "target": payload.target,
             "user": getattr(context, "username", None),
             "role": getattr(context, "role", None),
-            "details": _redact_details(payload.details),
+            "details": details,
         },
     )
     return UIOperatorActionResponse()
+
+
+@router.get("/ui/operator-actions", response_model=list[OperatorAuditEventResponse])
+async def list_ui_operator_actions(
+    surface: str | None = Query(default=None, max_length=120),
+    status: str | None = Query(default=None, max_length=40),
+    limit: int = Query(default=100, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _context: AuthContext = Depends(require_reader),
+) -> list[OperatorAuditEventResponse]:
+    """Return reader-safe UI operator audit events ordered newest first."""
+
+    statement = select(OperatorAuditEvent).order_by(
+        OperatorAuditEvent.created_at.desc(), OperatorAuditEvent.id.desc()
+    )
+    if surface:
+        statement = statement.where(OperatorAuditEvent.surface == surface.strip())
+    if status:
+        statement = statement.where(OperatorAuditEvent.status == status.strip())
+    statement = statement.limit(limit)
+    result = await db.execute(statement)
+    return [
+        OperatorAuditEventResponse.model_validate(row)
+        for row in result.scalars().all()
+    ]

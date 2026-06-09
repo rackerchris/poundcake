@@ -3,7 +3,10 @@
 
 set -euo pipefail
 
-POUNDCAKE_NAMESPACE="${POUNDCAKE_NAMESPACE:-${NAMESPACE:-poundcake}}"
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/load-local-secrets.sh"
+
+POUNDCAKE_NAMESPACE="${POUNDCAKE_NAMESPACE:-poundcake}"
 STACKSTORM_NAMESPACE="${STACKSTORM_NAMESPACE:-stackstorm}"
 STACKSTORM_API_SERVICE="${STACKSTORM_API_SERVICE:-stackstorm-api}"
 STACKSTORM_API_PORT="${STACKSTORM_API_PORT:-9101}"

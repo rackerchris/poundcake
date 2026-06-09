@@ -8,18 +8,4 @@ metadata:
 data:
   mariadb-init.sh: |
 {{ .Files.Get "files/mariadb-init/01-create-databases.sh" | indent 4 }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: poundcake-alembic
-  labels:
-    {{- include "poundcake.labels" . | nindent 4 }}
-data:
-  alembic.ini: |
-{{ .Files.Get "files/poundcake-alembic/alembic.ini" | indent 4 }}
-  env.py: |
-{{ .Files.Get "files/poundcake-alembic/env.py" | indent 4 }}
-  script.py.mako: |
-{{ .Files.Get "files/poundcake-alembic/script.py.mako" | indent 4 }}
 {{- end }}

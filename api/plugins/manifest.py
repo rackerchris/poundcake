@@ -13,6 +13,10 @@ from api.plugins.contract import (
     ServicePluginContractError,
     validate_service_operation,
 )
+from api.plugins.capabilities import (
+    ServicePluginCapabilityError,
+    validate_capability_template,
+)
 from api.plugins.internal_services import INTERNAL_SERVICE_TYPES
 
 if TYPE_CHECKING:
@@ -72,6 +76,7 @@ class ServicePlugin:
     recipe_templates: Sequence[JSONObject] = ()
     communication_routes: Sequence[JSONObject] = ()
     scheduled_tasks: Sequence[JSONObject] = ()
+    capability_templates: Sequence[JSONObject] = ()
     helper_factory: HelperFactory | None = None
     helper_capabilities: Sequence[str] = ()
     required_helper_capabilities: Mapping[str, Sequence[str]] | None = None
@@ -270,6 +275,21 @@ def validate_service_plugin(plugin: ServicePlugin, *, directory_name: str) -> Se
             raise ServicePluginManifestError(
                 f"service_type={service_type!r} communication_routes[{idx}] must be an object"
             )
+    normalized_capabilities: list[JSONObject] = []
+    for idx, template in enumerate(plugin.capability_templates):
+        try:
+            normalized_capabilities.append(
+                validate_capability_template(
+                    template,
+                    service_type=service_type,
+                    ingredient_templates=plugin.ingredient_templates,
+                    label=f"capability_templates[{idx}]",
+                )
+            )
+        except ServicePluginCapabilityError as exc:
+            raise ServicePluginManifestError(
+                f"service_type={service_type!r} capability_templates[{idx}] invalid: {exc}"
+            ) from exc
     seen_task_keys: set[str] = set()
     has_health_task = False
     for idx, task in enumerate(plugin.scheduled_tasks):
@@ -315,6 +335,8 @@ def validate_service_plugin(plugin: ServicePlugin, *, directory_name: str) -> Se
         raise ServicePluginManifestError(
             f"service_type={service_type!r} must declare a plugin_health_check scheduled task"
         )
+    if normalized_capabilities:
+        object.__setattr__(plugin, "capability_templates", tuple(normalized_capabilities))
     return plugin
 
 

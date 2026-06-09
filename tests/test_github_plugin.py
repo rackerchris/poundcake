@@ -79,7 +79,6 @@ async def test_github_client_reads_public_repo_file_without_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     get_settings.cache_clear()
-    monkeypatch.delenv("POUNDCAKE_GITHUB_TOKEN", raising=False)
     content = base64.b64encode(b"groups: []\n").decode("ascii")
     calls: list[dict[str, object]] = []
 
@@ -114,7 +113,6 @@ async def test_github_client_reads_public_repo_file_through_raw_url_without_toke
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     get_settings.cache_clear()
-    monkeypatch.delenv("POUNDCAKE_GITHUB_TOKEN", raising=False)
     calls: list[dict[str, object]] = []
 
     async def fake_request(method: str, url: str, **kwargs: object) -> httpx.Response:
@@ -145,7 +143,6 @@ async def test_github_client_lists_public_repo_files_through_archive_without_tok
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     get_settings.cache_clear()
-    monkeypatch.delenv("POUNDCAKE_GITHUB_TOKEN", raising=False)
     calls: list[dict[str, object]] = []
 
     async def fake_request(method: str, url: str, **kwargs: object) -> httpx.Response:

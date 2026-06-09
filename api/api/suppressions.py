@@ -8,11 +8,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.api.auth import require_operator, require_reader
@@ -58,7 +57,16 @@ from api.services.suppression_service import (
     normalize_utc_datetime,
     suppression_status,
 )
+from api.services.alertmanager_suppressions import (
+    SuppressionLifecycleError,
+    create_alertmanager_suppression,
+    expire_alertmanager_suppression,
+    update_alertmanager_suppression,
+)
+from api.services.plugin_orchestrator import ExecutionOrchestrator
+from api.services.plugin_orchestrator import get_execution_orchestrator
 from api.types import SuppressionMatcherOperator, SuppressionScope, SuppressionStatus
+from api.api.dishes import _sanitize_status_string
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -124,6 +132,10 @@ def _to_suppression_status_response(item: AlertSuppression) -> SuppressionStatus
         starts_at=starts_at,
         ends_at=ends_at,
         canceled_at=normalize_utc_datetime(item.canceled_at),
+        source=item.source,
+        source_service_type=item.source_service_type,
+        source_ref=item.source_ref,
+        last_synced_at=normalize_utc_datetime(item.last_synced_at),
         created_at=created_at,
         updated_at=updated_at,
     )
@@ -177,45 +189,25 @@ async def create_suppression(
     request: Request,
     payload: SuppressionCreate,
     db: AsyncSession = Depends(get_db),
+    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
     _context: object = Depends(require_operator),
 ) -> SuppressionResponse:
     req_id = request.state.req_id
     if payload.ends_at <= payload.starts_at:
         raise HTTPException(status_code=400, detail="ends_at must be greater than starts_at")
-    if payload.scope == "matchers" and not payload.matchers:
-        raise HTTPException(status_code=400, detail="matchers required when scope=matchers")
+    if not payload.matchers:
+        raise HTTPException(status_code=400, detail="matchers are required")
 
-    suppression = AlertSuppression(
-        name=payload.name,
-        reason=payload.reason,
-        scope=payload.scope,
-        enabled=payload.enabled,
-        starts_at=payload.starts_at,
-        ends_at=payload.ends_at,
-        created_by=payload.created_by,
-        summary_ticket_enabled=payload.summary_ticket_enabled,
-        source=payload.source,
-        source_service_type=payload.source_service_type,
-        source_ref=payload.source_ref,
-        source_payload=payload.source_payload,
-        last_synced_at=payload.last_synced_at,
-    )
-    db.add(suppression)
-    await db.flush()
-
-    for matcher in payload.matchers:
-        db.add(
-            AlertSuppressionMatcher(
-                suppression_id=suppression.id,
-                label_key=matcher.label_key,
-                operator=matcher.operator,
-                value=matcher.value,
-            )
+    try:
+        refreshed = await create_alertmanager_suppression(
+            db=db,
+            orchestrator=orchestrator,
+            req_id=req_id,
+            payload=payload,
         )
-    await db.commit()
-    refreshed = await get_suppression(db, suppression.id)
-    if not refreshed:
-        raise HTTPException(status_code=500, detail="Failed to create suppression")
+    except SuppressionLifecycleError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
     logger.info(
         "Created suppression",
         extra={
@@ -269,6 +261,7 @@ async def patch_suppression(
     suppression_id: int,
     payload: SuppressionUpdate,
     db: AsyncSession = Depends(get_db),
+    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
     _context: object = Depends(require_operator),
 ) -> SuppressionResponse:
     req_id = request.state.req_id
@@ -277,37 +270,30 @@ async def patch_suppression(
         raise HTTPException(status_code=404, detail="Suppression not found")
 
     changes = payload.model_dump(exclude_unset=True)
+    if "starts_at" in changes:
+        updated_starts_at = normalize_utc_datetime(changes["starts_at"])
+        ends_at = normalize_utc_datetime(changes.get("ends_at") or suppression.ends_at)
+        if updated_starts_at is not None and ends_at is not None and ends_at <= updated_starts_at:
+            raise HTTPException(status_code=400, detail="ends_at must be greater than starts_at")
     if "ends_at" in changes:
         updated_ends_at = normalize_utc_datetime(changes["ends_at"])
-        starts_at = normalize_utc_datetime(suppression.starts_at)
+        starts_at = normalize_utc_datetime(changes.get("starts_at") or suppression.starts_at)
         if updated_ends_at is not None and starts_at is not None and updated_ends_at <= starts_at:
             raise HTTPException(status_code=400, detail="ends_at must be greater than starts_at")
+    if "matchers" in changes and not payload.matchers:
+        raise HTTPException(status_code=400, detail="matchers are required")
 
-    for field in ("name", "ends_at", "reason", "enabled"):
-        if field in changes:
-            setattr(suppression, field, changes[field])
-
-    if "matchers" in changes:
-        await db.execute(
-            delete(AlertSuppressionMatcher).where(
-                AlertSuppressionMatcher.suppression_id == suppression.id
-            )
+    try:
+        refreshed = await update_alertmanager_suppression(
+            db=db,
+            orchestrator=orchestrator,
+            req_id=req_id,
+            suppression=suppression,
+            payload=payload,
         )
-        for matcher in payload.matchers or []:
-            db.add(
-                AlertSuppressionMatcher(
-                    suppression_id=suppression.id,
-                    label_key=matcher.label_key,
-                    operator=matcher.operator,
-                    value=matcher.value,
-                )
-            )
+    except SuppressionLifecycleError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-    suppression.updated_at = datetime.now(timezone.utc)
-    await db.commit()
-    refreshed = await get_suppression(db, suppression.id)
-    if not refreshed:
-        raise HTTPException(status_code=500, detail="Failed to update suppression")
     logger.info("Updated suppression", extra={"req_id": req_id, "suppression_id": suppression_id})
     return _to_suppression_response(refreshed)
 
@@ -317,20 +303,22 @@ async def cancel_suppression(
     request: Request,
     suppression_id: int,
     db: AsyncSession = Depends(get_db),
+    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
     _context: object = Depends(require_operator),
 ) -> SuppressionResponse:
     req_id = request.state.req_id
     suppression = await get_suppression(db, suppression_id)
     if not suppression:
         raise HTTPException(status_code=404, detail="Suppression not found")
-
-    suppression.canceled_at = datetime.now(timezone.utc)
-    suppression.enabled = False
-    suppression.updated_at = datetime.now(timezone.utc)
-    await db.commit()
-    refreshed = await get_suppression(db, suppression.id)
-    if not refreshed:
-        raise HTTPException(status_code=500, detail="Failed to cancel suppression")
+    try:
+        refreshed = await expire_alertmanager_suppression(
+            db=db,
+            orchestrator=orchestrator,
+            req_id=req_id,
+            suppression=suppression,
+        )
+    except SuppressionLifecycleError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     logger.info("Canceled suppression", extra={"req_id": req_id, "suppression_id": suppression_id})
     return _to_suppression_response(refreshed)
 
@@ -343,7 +331,6 @@ async def get_suppression_stats(
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
 ) -> SuppressionStatsResponse:
-    req_id = request.state.req_id
     suppression = await get_suppression(db, suppression_id)
     if not suppression:
         raise HTTPException(status_code=404, detail="Suppression not found")
@@ -368,7 +355,6 @@ async def get_suppressed_activity(
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
 ) -> list[SuppressedActivityResponse]:
-    req_id = request.state.req_id
     rows = await list_suppression_activity(
         db=db,
         suppression_id=params.suppression_id,
@@ -385,7 +371,6 @@ async def get_observability_overview(
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_reader),
 ) -> ObservabilityOverviewResponse:
-    req_id = request.state.req_id
     active_suppressions = await count_active_suppressions(db)
 
     order_new = await db.scalar(
@@ -409,7 +394,7 @@ async def get_observability_overview(
         .limit(5)
     )
     top_errors = [
-        {"error": str(error), "count": int(count)}
+        {"error": _sanitize_status_string(str(error)), "count": int(count)}
         for error, count in top_errors_result.all()
         if error is not None
     ]

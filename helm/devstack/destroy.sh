@@ -4,7 +4,7 @@
 set -euo pipefail
 
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-poundcake}"
-NAMESPACE="${NAMESPACE:-poundcake}"
+POUNDCAKE_NAMESPACE="${POUNDCAKE_NAMESPACE:-poundcake}"
 RELEASE_NAME="${RELEASE_NAME:-poundcake}"
 UNINSTALL_RELEASE="${UNINSTALL_RELEASE:-true}"
 UNINSTALL_MONITORING="${UNINSTALL_MONITORING:-true}"
@@ -30,6 +30,53 @@ log() {
 fail() {
     printf '[helm-devstack-destroy] ERROR: %s\n' "$*" >&2
     exit 1
+}
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [FLAGS]
+
+Remove one or more Helm devstack components.
+
+Flags:
+  --poundcake              Remove the PoundCake Helm release and namespace
+  --monitoring             Remove the monitoring/observability releases and namespace
+  --observability          Alias for --monitoring
+  --stackstorm             Remove the StackStorm Helm release and namespace
+  --kind-cluster           Remove the kind cluster
+  --all                    Completely tear down the devstack, including the kind cluster
+  -h, --help               Show this help text
+
+When no component flags are provided, the script preserves the current default
+behavior: uninstall PoundCake, monitoring, and StackStorm, delete their
+namespaces, stop local port-forwards, and keep the kind cluster unless
+DELETE_CLUSTER=true is set in the environment.
+EOF
+}
+
+set_target_defaults() {
+    UNINSTALL_RELEASE="false"
+    UNINSTALL_MONITORING="false"
+    UNINSTALL_STACKSTORM="false"
+    DELETE_NAMESPACE="false"
+    DELETE_MONITORING_NAMESPACE="false"
+    DELETE_STACKSTORM_NAMESPACE="false"
+    DELETE_CLUSTER="false"
+}
+
+enable_poundcake_target() {
+    UNINSTALL_RELEASE="true"
+    DELETE_NAMESPACE="true"
+}
+
+enable_monitoring_target() {
+    UNINSTALL_MONITORING="true"
+    DELETE_MONITORING_NAMESPACE="true"
+}
+
+enable_stackstorm_target() {
+    UNINSTALL_STACKSTORM="true"
+    DELETE_STACKSTORM_NAMESPACE="true"
 }
 
 detect_executable() {
@@ -60,6 +107,57 @@ detect_executable() {
     fail "$command_name is not installed or not in PATH"
 }
 
+target_flags_provided="false"
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --poundcake)
+            if [ "$target_flags_provided" = "false" ]; then
+                set_target_defaults
+                target_flags_provided="true"
+            fi
+            enable_poundcake_target
+            ;;
+        --monitoring|--observability)
+            if [ "$target_flags_provided" = "false" ]; then
+                set_target_defaults
+                target_flags_provided="true"
+            fi
+            enable_monitoring_target
+            ;;
+        --stackstorm)
+            if [ "$target_flags_provided" = "false" ]; then
+                set_target_defaults
+                target_flags_provided="true"
+            fi
+            enable_stackstorm_target
+            ;;
+        --kind-cluster)
+            if [ "$target_flags_provided" = "false" ]; then
+                set_target_defaults
+                target_flags_provided="true"
+            fi
+            DELETE_CLUSTER="true"
+            ;;
+        --all)
+            set_target_defaults
+            target_flags_provided="true"
+            enable_poundcake_target
+            enable_monitoring_target
+            enable_stackstorm_target
+            DELETE_CLUSTER="true"
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            fail "unknown argument: $1"
+            ;;
+    esac
+    shift
+done
+
 KIND_BIN="$(detect_executable KIND_BIN kind /opt/homebrew/bin/kind /usr/local/bin/kind)"
 KUBECTL_BIN="$(detect_executable KUBECTL_BIN kubectl /opt/homebrew/bin/kubectl /usr/local/bin/kubectl)"
 HELM_BIN="$(detect_executable HELM_BIN helm /opt/homebrew/bin/helm /usr/local/bin/helm)"
@@ -72,18 +170,18 @@ fi
 
 if [ "$PORT_FORWARD" = "true" ]; then
     log "stopping local port-forwards"
-    NAMESPACE="$NAMESPACE" "$(dirname "$0")/ui-port-forward.sh" stop
+    POUNDCAKE_NAMESPACE="$POUNDCAKE_NAMESPACE" "$(dirname "$0")/ui-port-forward.sh" stop
 else
     log "PORT_FORWARD=false; leaving local port-forwards untouched"
 fi
 
 if [ "$cluster_exists" = true ] && [ "$UNINSTALL_RELEASE" = "true" ]; then
-    if "$HELM_BIN" status "$RELEASE_NAME" --namespace "$NAMESPACE" >/dev/null 2>&1; then
-        helm_args=(uninstall "$RELEASE_NAME" --namespace "$NAMESPACE")
+    if "$HELM_BIN" status "$RELEASE_NAME" --namespace "$POUNDCAKE_NAMESPACE" >/dev/null 2>&1; then
+        helm_args=(uninstall "$RELEASE_NAME" --namespace "$POUNDCAKE_NAMESPACE")
         if [ "$WAIT" = "true" ]; then
             helm_args+=(--wait --timeout "$WAIT_TIMEOUT")
         fi
-        log "uninstalling Helm release $RELEASE_NAME from namespace $NAMESPACE"
+        log "uninstalling Helm release $RELEASE_NAME from namespace $POUNDCAKE_NAMESPACE"
         "$HELM_BIN" "${helm_args[@]}"
     else
         log "Helm release not found: $RELEASE_NAME"
@@ -130,7 +228,7 @@ if [ "$cluster_exists" = true ]; then
 fi
 
 if [ "$cluster_exists" = true ] && [ "$DELETE_NAMESPACE" = "true" ]; then
-    delete_namespace_if_present "$NAMESPACE"
+    delete_namespace_if_present "$POUNDCAKE_NAMESPACE"
 fi
 
 if [ "$cluster_exists" = true ] && [ "$DELETE_MONITORING_NAMESPACE" = "true" ]; then

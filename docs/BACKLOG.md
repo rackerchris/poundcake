@@ -13,7 +13,7 @@ Why `k8s` next:
 
 - It has the broadest provider-facing surface after the core contract cleanup.
 - More native k8s evidence/remediation work will reduce reliance on
-  StackStorm/operator-review fallback paths across the Genestack catalog.
+  StackStorm/manual-review paths across the Genestack catalog.
 
 ### 1. `k8s` (`community`) - highest next-work priority
 
@@ -48,7 +48,7 @@ Outstanding issues:
   bootstrap/import, and StackStorm execution all work together against a real
   StackStorm deployment.
 - Keep narrowing the line between native PoundCake adapters and StackStorm
-  fallback workflows so StackStorm remains the multi-step/workflow adapter, not
+  workflow-based integrations so StackStorm remains the multi-step/workflow adapter, not
   the default home for work that should be native in `k8s` or other domain
   adapters.
 - Define supported-tier promotion criteria and required operational hardening
@@ -119,7 +119,7 @@ Contract fit today:
 
 Outstanding issues:
 
-- Continue promoting alert families from generic operator-review/StackStorm
+- Continue promoting alert families from generic manual-review/StackStorm
   paths into native adapter actions where there is a safe exact target model.
 - Keep the helper dependency contract aligned with the evolving `k8s`,
   `prometheus`, and `github`/`git` boundaries so the composition plugin does
@@ -171,10 +171,6 @@ Outstanding issues:
 - Add explicit credential encryption key rotation workflows. Adapter credentials
   and service identity credentials now use separate key domains; the remaining
   work is controlled rotation without widening either blast radius.
-- Split bootstrap privileges so external plugin metadata/bootstrap code does not
-  run with both migrator database authority and the plugin credential encryption
-  key. Keep schema migration, internal HMAC bootstrap, plugin metadata
-  registration, and adapter credential bootstrap under distinct principals.
 - Introduce operator-managed adapter connection records for non-secret runtime
   configuration. Production Helm values should not carry provider URLs,
   usernames, bearer tokens, repository URLs, or kubeconfigs for external
@@ -190,13 +186,13 @@ Outstanding issues:
 
 ## Genestack Alert Recipe Maturity
 
-- Promote managed Genestack recipes from generic operator-review actions to
+- Promote managed Genestack recipes from generic manual-review actions to
   first-class adapter actions where the adapter can make a safe, scoped decision.
   Keep the current generic recipe as the safety net, but track each alert family
-  as `native_action`, `stackstorm_workflow`, `domain_evidence_only`,
-  `operator_review`, or `adapter_extension_needed`.
+  as `native_remediation`, `workflow_remediation`, `evidence_only`,
+  `manual_review`, or `adapter_gap`.
 - Add richer native remediation actions for alert families that still use
-  conservative operator-review routing after Prometheus, Alertmanager, GitHub,
+  conservative manual-review routing after Prometheus, Alertmanager, GitHub,
   and K8s evidence is gathered.
 - Promote remaining Kubernetes gaps into the K8s adapter before routing them
   through StackStorm: certificate/Secret inspection, richer node triage,
@@ -204,22 +200,16 @@ Outstanding issues:
   ConfigMap metadata diagnostics are available as read-only evidence; remaining
   work is additional domain-specific mappings where alert labels identify safe
   exact targets.
-- Add domain adapters only when repeated StackStorm/operator-review workflows
+- Add domain adapters only when repeated StackStorm/manual-review workflows
   become structured enough to justify first-class capabilities. Likely
   candidates are RabbitMQ, OpenStack, MariaDB, and node/hardware diagnostics.
 - Keep StackStorm for pack-owned multi-step workflows and conservative
-  operator-review workflows. If a workflow is mostly a direct Kubernetes or
+  manual-review workflows. If a workflow is mostly a direct Kubernetes or
   Prometheus operation, prefer the native adapter.
 - Let Bakery own communication lifecycle policy. PoundCake should send stable
   alert/order correlation context and communication intent; Bakery should decide
   whether to create, update/comment, reopen, or close provider records.
 
-## Auth Provider Calls
-
-- Document auth/OIDC/device login routes as an explicit non-Expediter exception
-  or introduce a future auth-provider plugin boundary. Current device/OIDC
-  flows call Auth0/Azure endpoints directly from `auth_service`, which is
-  appropriate for login bootstrap but is still an external HTTP path.
 - Keep `/api/v1/auth/device/start` and `/api/v1/auth/device/poll` scoped to
   operator/user authentication only; do not reuse them for service execution or
   provider automation.
@@ -234,6 +224,33 @@ Outstanding issues:
 
 - Implement credential encryption key rotation workflows using Fernet's `MultiFernet` support. Add an API endpoint that accepts a new encryption key, wraps the old key for decryption of existing values, and rotates stored ciphertexts. Plugin credentials (`POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY`) and service identity credentials (`POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY`) should remain in separate key domains with independent rotation schedules.
 
-### Bootstrap Privilege Separation
+## E2E Cakectl Coverage
 
-- Split startup bootstrap privileges around the current Dishwasher boundary so external plugin metadata/bootstrap code does not run with both migrator database authority and the plugin credential encryption key. Schema migration, plugin-registry bootstrap, internal HMAC bootstrap, and adapter credential bootstrap should each use distinct database principals, while Dishwasher remains the only authority for manifest-driven ingredient, recipe, scheduled-task, and communication-route sync.
+- Keep `tests/lib.sh` as the single control-plane entrypoint for shell e2e API access. The shared helper now resolves `cakectl` and `kubectl`, respects caller-provided `API_ROOT_URL`, and surfaces port-forward logs on readiness failures so we can tell the difference between API regressions and local forwarding failures.
+- Keep `tests/run_e2e.sh`, `tests/run_k8s_pod_action_e2e.sh`, `tests/run_stackstorm_action_e2e.sh`, `tests/run_stackstorm_workflow_remediation_e2e.sh`, `tests/run_genestack_content_sync_k8s_e2e.sh`, and `tests/run_genestack_managed_recipe_e2e.sh` on `cakectl` for PoundCake API requests wherever the operation targets PoundCake routes.
+- Leave direct non-`cakectl` calls only where the test is intentionally validating a boundary outside the PoundCake control plane:
+  - `tests/run_security_abuse_e2e.sh` still needs raw signed HTTP requests for invalid internal-HMAC, replay, tamper, and wrong-token cases because `cakectl` cannot safely craft deliberately malformed service-auth traffic.
+  - `tests/run_stackstorm_workflow_remediation_e2e.sh` and `tests/run_genestack_managed_recipe_e2e.sh` still need direct Alertmanager API seeding/query calls because the test has to create live upstream alert state before PoundCake receives the webhook.
+  - StackStorm-specific e2e scripts still need direct StackStorm API reads for execution confirmation until `cakectl` grows a first-class StackStorm inspection surface.
+
+## Structured Operator Diffs
+
+- Follow `Operator Change Safety` with a UI and CLI diff-quality pass focused on structured operator-facing objects rather than only aggregate field counts or raw JSON blobs.
+- Keep the current auth, RBAC, API route, and credential-manager boundaries unchanged. This follow-on item is presentation and review-UX work only unless a separate contract review explicitly approves broader changes.
+- Add field-aware before/after rendering for communication routes, recipe steps, plugin config objects, and other large mutation payloads so operators can distinguish added, removed, and edited entries quickly.
+- Preserve secret redaction and reader/operator/admin boundaries while improving diff readability. Structured diffs must not expose credential material, hidden provider metadata, or service-only payloads.
+- Add parity checks so the same mutation classes expose the same safety concepts in both the UI review dialogs and `cakectl --dry-run`: summary, before/after diff, consequence, immediate effect, and verification guidance.
+- Prefer reusable shared diff helpers over page-local custom renderers so future operator mutation surfaces inherit the same review model by default.
+
+## Correction Items
+
+- Keep the Helm devstack bootstrap ordering under regression. Fresh installs exposed multiple startup bugs that only show up from an empty kind cluster:
+  - `helm/devstack/create.sh` called `prepare_devstack_secret_values` before the function was defined.
+  - `helm/templates/poundcake-startup-jobs.yaml` rendered `poundcake-mariadb-users` and `poundcake-mariadb-grants` without a YAML document separator, so the migrator/grant sequence was not actually split.
+  - The chart needed an explicit schema bootstrap hook before grant reconciliation on a fresh database.
+- Keep MariaDB bootstrap compatibility under regression:
+  - `adapter_credentials.allow_public_read` must use a MariaDB-safe boolean server default.
+  - Worker-scoped `service_identity_credentials_*` views must exist before worker-reader grants are applied.
+- Keep startup bootstrap scripts import-complete:
+  - `api/services/plugin_bootstrap.py` must keep `Path` imported because the adapter-credential bootstrap marks the plugin-bootstrap ready file during Helm startup.
+- Treat local live e2e port-forwarding as an environment-sensitive path. The shell helper now records port-forward logs, but managed/sandboxed runners may still block `kubectl port-forward` with `operation not permitted`; when that happens, rerun the live shell suites outside the sandbox rather than treating it as a product regression.

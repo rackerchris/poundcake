@@ -13,6 +13,7 @@ from . import (
     overview,
     plugin,
     recipes,
+    scheduled_tasks,
     suppressions,
     webhook,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "overview",
     "plugin",
     "recipes",
+    "scheduled_tasks",
     "suppressions",
     "webhook",
 ]

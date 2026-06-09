@@ -14,10 +14,16 @@ from api.services.database_access import (
     require_database_capability,
 )
 from api.services.plugin_operations import (
+    RecipeManagementState,
     RecipePayload,
     RecipeStepPayload,
     UpsertStats,
+    _managed_recipe_step_key,
+    _managed_step_marker_matches,
+    disable_service_plugin_and_tasks,
     get_ingredient,
+    list_recipe_management_states,
+    resolve_capability_ingredient,
     update_dish_metadata,
     update_scheduled_task,
     update_service_plugin_state,
@@ -47,9 +53,13 @@ class _ExecuteResult:
 class _PluginStateDb:
     def __init__(self, row: ServicePlugin | None) -> None:
         self.row = row
+        self.committed = False
 
     async def execute(self, _statement: object) -> _ExecuteResult:
         return _ExecuteResult(self.row)
+
+    async def commit(self) -> None:
+        self.committed = True
 
 
 class _PluginStateSession:
@@ -61,6 +71,77 @@ class _PluginStateSession:
 
     async def __aexit__(self, *_args: object) -> None:
         return None
+
+
+class _RecipeStateResult:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[object]:
+        return self._rows
+
+
+class _RecipeStateExecuteResult:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> _RecipeStateResult:
+        return _RecipeStateResult(self._rows)
+
+
+class _RecipeStateDb:
+    def __init__(self, rows: list[object]) -> None:
+        self.rows = rows
+
+    async def execute(self, _statement: object) -> _RecipeStateExecuteResult:
+        return _RecipeStateExecuteResult(self.rows)
+
+
+class _RecipeStateSession:
+    def __init__(self, db: _RecipeStateDb) -> None:
+        self.db = db
+
+    async def __aenter__(self) -> _RecipeStateDb:
+        return self.db
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+class _ListScalarResult:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def first(self) -> object | None:
+        return self._rows[0] if self._rows else None
+
+    def all(self) -> list[object]:
+        return list(self._rows)
+
+
+class _ListExecuteResult:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> _ListScalarResult:
+        return _ListScalarResult(self._rows)
+
+
+class _PluginDisableDb:
+    def __init__(self, plugin_row: object | None, task_rows: list[object]) -> None:
+        self.plugin_row = plugin_row
+        self.task_rows = task_rows
+        self.calls = 0
+        self.committed = False
+
+    async def execute(self, _statement: object) -> _ListExecuteResult:
+        self.calls += 1
+        if self.calls == 1:
+            return _ListExecuteResult([] if self.plugin_row is None else [self.plugin_row])
+        return _ListExecuteResult(self.task_rows)
+
+    async def commit(self) -> None:
+        self.committed = True
 
 
 # ----------------------------------------------------------------------
@@ -129,6 +210,43 @@ async def test_upsert_recipes_requires_db_session() -> None:
         # We just verify the RBAC check passes
 
 
+def test_managed_step_marker_matches_current_genestack_marker() -> None:
+    assert _managed_step_marker_matches("managed-by:poundcake-genestack-monitoring") is True
+    assert _managed_step_marker_matches("genestack_monitoring") is False
+    assert _managed_step_marker_matches("github") is False
+
+
+def test_managed_recipe_step_key_prefers_managed_index() -> None:
+    step_row = type(
+        "RecipeIngredientRow",
+        (),
+        {
+            "service_exec_parameters_override": {
+                "managed_by": "managed-by:poundcake-genestack-monitoring",
+                "managed_index": 5,
+            },
+            "step_order": 90,
+        },
+    )()
+
+    assert _managed_recipe_step_key(step_row) == ("index", 5)
+
+
+def test_managed_recipe_step_key_falls_back_to_step_order() -> None:
+    step_row = type(
+        "RecipeIngredientRow",
+        (),
+        {
+            "service_exec_parameters_override": {
+                "managed_by": "managed-by:poundcake-genestack-monitoring",
+            },
+            "step_order": 70,
+        },
+    )()
+
+    assert _managed_recipe_step_key(step_row) == ("step_order", 70)
+
+
 # ----------------------------------------------------------------------
 # get_ingredient returns dict, not SQLAlchemy model
 # ----------------------------------------------------------------------
@@ -166,6 +284,136 @@ async def test_get_ingredient_requires_db_session() -> None:
         assert result is None  # No matching ingredient in mocked DB
     finally:
         patch_obj.stop()
+
+
+async def test_list_recipe_management_states_reads_recipe_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    managed = type(
+        "RecipeRow",
+        (),
+        {
+            "name": "ManagedAlert",
+            "description": "[managed-by:poundcake-genestack-monitoring] managed",
+            "enabled": True,
+            "deleted": False,
+        },
+    )()
+    local = type(
+        "RecipeRow",
+        (),
+        {
+            "name": "LocalAlert",
+            "description": "operator-owned",
+            "enabled": True,
+            "deleted": False,
+        },
+    )()
+    monkeypatch.setattr(
+        "api.services.plugin_operations.plugin_operation_db_session",
+        lambda: _RecipeStateSession(_RecipeStateDb([managed, local])),
+    )
+
+    result = await list_recipe_management_states(
+        requester_service_type="genestack_monitoring",
+        recipe_names=["ManagedAlert", "LocalAlert"],
+    )
+
+    assert result["ManagedAlert"] == RecipeManagementState(
+        name="ManagedAlert",
+        exists=True,
+        managed=True,
+        enabled=True,
+        deleted=False,
+    )
+    assert result["LocalAlert"] == RecipeManagementState(
+        name="LocalAlert",
+        exists=True,
+        managed=False,
+        enabled=True,
+        deleted=False,
+    )
+
+
+async def test_resolve_capability_ingredient_returns_public_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ingredient = type(
+        "IngredientRow",
+        (),
+        {
+            "id": 9,
+            "service_type": "dummy",
+            "service_exec": "communication",
+            "destination_target": "dummy",
+            "task_key_template": "dummy-comms",
+            "ingredient_purpose": "comms",
+            "is_active": True,
+            "default_expected_secs": 1,
+            "default_timeout": 30,
+            "retry_count": 0,
+            "on_failure": "continue",
+        },
+    )()
+    monkeypatch.setattr(
+        "api.services.plugin_operations.resolve_active_capability_ingredient",
+        AsyncMock(
+            return_value=type(
+                "ResolvedCapability",
+                (),
+                {
+                    "capability_id": "dummy.communication.open.default",
+                    "service_type": "dummy",
+                    "mode": "communication",
+                    "operation": "open",
+                    "priority": 100,
+                    "defaults": {"service_payload": {}},
+                    "ingredient": ingredient,
+                },
+            )()
+        ),
+    )
+    monkeypatch.setattr(
+        "api.services.plugin_operations.plugin_operation_db_session",
+        lambda: _RecipeStateSession(_RecipeStateDb([])),
+    )
+
+    result = await resolve_capability_ingredient(
+        requester_service_type="genestack_monitoring",
+        capability={
+            "capability_id": "dummy.communication.open.default",
+            "service_type": "dummy",
+            "mode": "communication",
+            "operation": "open",
+            "ingredient_ref": {
+                "service_exec": "communication",
+                "destination_target": "dummy",
+                "task_key_template": "dummy-comms",
+            },
+        },
+    )
+
+    assert result == {
+        "capability_id": "dummy.communication.open.default",
+        "service_type": "dummy",
+        "mode": "communication",
+        "operation": "open",
+        "priority": 100,
+        "defaults": {"service_payload": {}},
+        "ingredient": {
+            "id": 9,
+            "service_type": "dummy",
+            "service_exec": "communication",
+            "destination_target": "dummy",
+            "task_key_template": "dummy-comms",
+            "ingredient_purpose": "comms",
+            "is_active": True,
+            "default_expected_secs": 1,
+            "default_timeout": 30,
+            "retry_count": 0,
+            "on_failure": "continue",
+        },
+    }
 
 
 # ----------------------------------------------------------------------
@@ -224,9 +472,10 @@ async def test_update_service_plugin_state_updates_plugin_runtime_state(
     )
     before = row.updated_at
     checked_at = datetime(2026, 6, 4, 17, 0, tzinfo=UTC).replace(tzinfo=None)
+    fake_db = _PluginStateDb(row)
     monkeypatch.setattr(
         "api.services.plugin_operations.plugin_operation_db_session",
-        lambda: _PluginStateSession(_PluginStateDb(row)),
+        lambda: _PluginStateSession(fake_db),
     )
 
     updated = await update_service_plugin_state(
@@ -251,6 +500,83 @@ async def test_update_service_plugin_state_updates_plugin_runtime_state(
     assert row.consecutive_failures == 0
     assert row.updated_at is not None
     assert row.updated_at != before
+    assert fake_db.committed is True
+
+
+async def test_disable_service_plugin_and_tasks_returns_false_when_plugin_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "api.services.plugin_operations.plugin_operation_db_session",
+        lambda: _PluginStateSession(_PluginDisableDb(None, [])),
+    )
+
+    updated = await disable_service_plugin_and_tasks(
+        requester_service_type="api",
+        service_type="dummy",
+    )
+
+    assert updated is False
+
+
+async def test_disable_service_plugin_and_tasks_disables_plugin_and_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row = ServicePlugin(
+        id=8,
+        service_type="dummy",
+        plugin_short_id="dum",
+        plugin_type="external_plugin",
+        plugin_tier="community",
+        enabled=True,
+        health_status="healthy",
+    )
+    task_a = type(
+        "ScheduledTaskRow",
+        (),
+        {
+            "is_enabled": True,
+            "status": "idle",
+            "next_run_at": datetime(2026, 6, 4, 18, 0, tzinfo=UTC).replace(tzinfo=None),
+            "updated_at": None,
+        },
+    )()
+    task_b = type(
+        "ScheduledTaskRow",
+        (),
+        {
+            "is_enabled": True,
+            "status": "idle",
+            "next_run_at": datetime(2026, 6, 4, 19, 0, tzinfo=UTC).replace(tzinfo=None),
+            "updated_at": None,
+        },
+    )()
+    fake_db = _PluginDisableDb(row, [task_a, task_b])
+    monkeypatch.setattr(
+        "api.services.plugin_operations.plugin_operation_db_session",
+        lambda: _PluginStateSession(fake_db),
+    )
+
+    updated = await disable_service_plugin_and_tasks(
+        requester_service_type="api",
+        service_type="dummy",
+        health_status="disabled",
+        status_message="Disabled automatically for Bakery",
+        task_status="disabled",
+    )
+
+    assert updated is True
+    assert row.enabled is False
+    assert row.health_status == "disabled"
+    assert row.status_message == "Disabled automatically for Bakery"
+    assert row.updated_at is not None
+    assert task_a.is_enabled is False
+    assert task_a.status == "disabled"
+    assert task_a.next_run_at is None
+    assert task_b.is_enabled is False
+    assert task_b.status == "disabled"
+    assert task_b.next_run_at is None
+    assert fake_db.committed is True
 
 
 # ----------------------------------------------------------------------

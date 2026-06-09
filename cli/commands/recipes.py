@@ -11,13 +11,17 @@ import click
 
 from cli.client import PoundCakeClient, PoundCakeClientError
 from cli.commands.common import (
+    build_preview_changes,
     compact_update_payload,
     get_client,
     get_output_format,
-
+    merge_preview_state,
+    print_dry_run_preview,
     read_mapping_file,
+    validate_request_payload,
 )
 from cli.utils import parse_json_object, print_error, print_output, render_sections, to_plain_data
+from api.schemas.schemas import RecipeCreate, RecipeUpdate
 
 
 def _recipe_rows(rows: list[JSONObject]) -> list[JSONObject]:
@@ -85,6 +89,46 @@ def _recipe_detail_table(item: JSONObject) -> str:
     )
 
 
+def _recipe_status_rows(rows: list[JSONObject]) -> list[JSONObject]:
+    return [
+        {
+            "id": item.get("id"),
+            "name": item.get("name"),
+            "enabled": item.get("enabled"),
+            "can_execute": item.get("can_execute"),
+            "inactive_ingredient_count": item.get("inactive_ingredient_count"),
+            "step_count": item.get("step_count"),
+            "communication_route_count": item.get("communication_route_count"),
+            "updated_at": item.get("updated_at"),
+        }
+        for item in rows
+    ]
+
+
+def _recipe_ingredient_status_table(rows: list[JSONObject]) -> str:
+    return render_sections(
+        [
+            (
+                "Recipe Step Status",
+                [
+                    {
+                        "id": item.get("id"),
+                        "ingredient_id": item.get("ingredient_id"),
+                        "step_order": item.get("step_order"),
+                        "service_type": item.get("service_type"),
+                        "service_exec": item.get("service_exec"),
+                        "task_key_template": item.get("task_key_template"),
+                        "ingredient_is_active": item.get("ingredient_is_active"),
+                        "expected_secs": item.get("expected_secs"),
+                        "timeout_secs": item.get("timeout_secs"),
+                    }
+                    for item in rows
+                ],
+            )
+        ]
+    )
+
+
 def _normalize_recipe_step(step: JSONObject, *, index: int) -> JSONObject:
     ingredient_id = step.get("ingredient_id")
     if ingredient_id is None:
@@ -95,7 +139,10 @@ def _normalize_recipe_step(step: JSONObject, *, index: int) -> JSONObject:
         "on_success": step.get("on_success", "continue"),
         "parallel_group": int(step.get("parallel_group", 0)),
         "depth": int(step.get("depth", 0)),
-        "execution_parameters_override": step.get("execution_parameters_override"),
+        "service_exec_parameters_override": step.get(
+            "service_exec_parameters_override",
+            step.get("execution_parameters_override"),
+        ),
         "run_phase": step.get("run_phase", "both"),
         "run_condition": step.get("run_condition", "always"),
     }
@@ -272,6 +319,84 @@ def show_recipe(ctx: click.Context, recipe_id: int) -> None:
         raise click.Abort() from exc
 
 
+@recipes.command("show-by-name")
+@click.argument("recipe_name")
+@click.pass_context
+def show_recipe_by_name(ctx: click.Context, recipe_name: str) -> None:
+    """Show a recipe by name."""
+    client = get_client(ctx)
+    output_format = get_output_format(ctx)
+    try:
+        payload = client.get_recipe_by_name(recipe_name)
+        print_output(payload, output_format, table_renderer=_recipe_detail_table)
+    except PoundCakeClientError as exc:
+        print_error(f"Failed to show recipe by name: {exc}")
+        raise click.Abort() from exc
+
+
+@recipes.command("status")
+@click.option("--name", default=None)
+@click.option("--enabled", "enabled_filter", flag_value=True, default=None)
+@click.option("--disabled", "enabled_filter", flag_value=False)
+@click.option("--limit", type=int, default=500, show_default=True)
+@click.option("--offset", type=int, default=0, show_default=True)
+@click.pass_context
+def recipe_status(
+    ctx: click.Context,
+    name: str | None,
+    enabled_filter: bool | None,
+    limit: int,
+    offset: int,
+) -> None:
+    """List reader-safe recipe status rows."""
+    client = get_client(ctx)
+    output_format = get_output_format(ctx)
+    try:
+        payload = client.list_recipe_statuses(
+            name=name,
+            enabled=enabled_filter,
+            limit=limit,
+            offset=offset,
+        )
+        if output_format == "table":
+            print_output(_recipe_status_rows(to_plain_data(payload)), output_format)
+            return
+        print_output(payload, output_format)
+    except PoundCakeClientError as exc:
+        print_error(f"Failed to list recipe status: {exc}")
+        raise click.Abort() from exc
+
+
+@recipes.command("status-show")
+@click.argument("recipe_id", type=int)
+@click.pass_context
+def show_recipe_status(ctx: click.Context, recipe_id: int) -> None:
+    """Show one reader-safe recipe status row."""
+    client = get_client(ctx)
+    output_format = get_output_format(ctx)
+    try:
+        payload = client.get_recipe_status(recipe_id)
+        print_output(payload, output_format)
+    except PoundCakeClientError as exc:
+        print_error(f"Failed to show recipe status: {exc}")
+        raise click.Abort() from exc
+
+
+@recipes.command("ingredient-status")
+@click.argument("recipe_id", type=int)
+@click.pass_context
+def recipe_ingredient_status(ctx: click.Context, recipe_id: int) -> None:
+    """Show reader-safe recipe step status rows."""
+    client = get_client(ctx)
+    output_format = get_output_format(ctx)
+    try:
+        payload = client.get_recipe_ingredient_status(recipe_id)
+        print_output(payload, output_format, table_renderer=_recipe_ingredient_status_table)
+    except PoundCakeClientError as exc:
+        print_error(f"Failed to show recipe ingredient status: {exc}")
+        raise click.Abort() from exc
+
+
 @recipes.command("create")
 @click.option(
     "--file",
@@ -287,6 +412,7 @@ def show_recipe(ctx: click.Context, recipe_id: int) -> None:
 @click.option("--communications-mode", type=click.Choice(["inherit", "local"]), default=None)
 @click.option("--step-json", multiple=True, help="JSON object describing one recipe step")
 @click.option("--route-json", multiple=True, help="JSON object describing one communication route")
+@click.option("--dry-run", is_flag=True, help="Validate and preview the recipe payload without saving it")
 @click.pass_context
 def create_recipe(
     ctx: click.Context,
@@ -298,6 +424,7 @@ def create_recipe(
     communications_mode: str | None,
     step_json: tuple[str, ...],
     route_json: tuple[str, ...],
+    dry_run: bool,
 ) -> None:
     """Create a recipe."""
     client = get_client(ctx)
@@ -315,7 +442,44 @@ def create_recipe(
             route_json=route_json,
             creating=True,
         )
-        response = client.create_recipe(payload)
+        validated = validate_request_payload(
+            client,
+            payload,
+            RecipeCreate,
+            "Invalid create recipe payload",
+        )
+        if dry_run:
+            communications = validated.get("communications") or {}
+            routes = communications.get("routes") or []
+            next_recipe = {
+                "name": validated.get("name"),
+                "enabled": bool(validated.get("enabled")),
+                "communications_mode": communications.get("mode") or "inherit",
+                "enabled_route_count": sum(1 for route in routes if route.get("enabled")),
+                "step_count": len(validated.get("recipe_ingredients") or []),
+            }
+            print_dry_run_preview(
+                ctx,
+                command="recipes create",
+                target=str(validated.get("name") or "new recipe"),
+                payload=validated,
+                summary={
+                    "enabled": bool(validated.get("enabled")),
+                    "step_count": len(validated.get("recipe_ingredients") or []),
+                    "communications_mode": communications.get("mode") or "inherit",
+                    "enabled_route_count": sum(1 for route in routes if route.get("enabled")),
+                },
+                impact="If this recipe is enabled, new matching work can use these steps and communication routes immediately after save.",
+                changes=build_preview_changes({}, next_recipe, labels={
+                    "name": "Recipe",
+                    "enabled": "Enabled",
+                    "communications_mode": "Communications",
+                    "enabled_route_count": "Enabled routes",
+                    "step_count": "Steps",
+                }),
+            )
+            return
+        response = client.create_recipe(validated)
         print_output(response, output_format, table_renderer=_recipe_detail_table)
     except (click.BadParameter, PoundCakeClientError) as exc:
         print_error(f"Failed to create recipe: {exc}")
@@ -338,6 +502,7 @@ def create_recipe(
 @click.option("--communications-mode", type=click.Choice(["inherit", "local"]), default=None)
 @click.option("--step-json", multiple=True, help="JSON object describing one recipe step")
 @click.option("--route-json", multiple=True, help="JSON object describing one communication route")
+@click.option("--dry-run", is_flag=True, help="Validate and preview the recipe update without saving it")
 @click.pass_context
 def update_recipe(
     ctx: click.Context,
@@ -350,6 +515,7 @@ def update_recipe(
     communications_mode: str | None,
     step_json: tuple[str, ...],
     route_json: tuple[str, ...],
+    dry_run: bool,
 ) -> None:
     """Update a recipe."""
     client = get_client(ctx)
@@ -369,7 +535,64 @@ def update_recipe(
         )
         if not payload:
             raise click.BadParameter("No update fields provided")
-        response = client.update_recipe(recipe_id, payload)
+        validated = validate_request_payload(
+            client,
+            payload,
+            RecipeUpdate,
+            "Invalid update recipe payload",
+        )
+        if dry_run:
+            current_recipe = client.get_recipe(recipe_id).model_dump(mode="json", by_alias=True)
+            next_recipe = merge_preview_state(current_recipe, validated)
+            communications = validated.get("communications") or {}
+            routes = communications.get("routes") or []
+            print_dry_run_preview(
+                ctx,
+                command="recipes update",
+                target=f"recipe {recipe_id}",
+                payload=validated,
+                summary={
+                    "updated_fields": sorted(validated.keys()),
+                    "step_count": len(validated.get("recipe_ingredients") or []),
+                    "communications_mode": communications.get("mode") or "-",
+                    "enabled_route_count": sum(1 for route in routes if route.get("enabled")),
+                },
+                impact="Any updated recipe fields will affect future matching work immediately after save.",
+                changes=build_preview_changes(
+                    {
+                        "name": current_recipe.get("name"),
+                        "enabled": current_recipe.get("enabled"),
+                        "clear_timeout_sec": current_recipe.get("clear_timeout_sec"),
+                        "communications_mode": (current_recipe.get("communications") or {}).get("mode"),
+                        "enabled_route_count": sum(
+                            1 for route in (current_recipe.get("communications") or {}).get("routes", [])
+                            if isinstance(route, dict) and route.get("enabled")
+                        ),
+                        "step_count": len(current_recipe.get("recipe_ingredients") or []),
+                    },
+                    {
+                        "name": next_recipe.get("name"),
+                        "enabled": next_recipe.get("enabled"),
+                        "clear_timeout_sec": next_recipe.get("clear_timeout_sec"),
+                        "communications_mode": (next_recipe.get("communications") or {}).get("mode"),
+                        "enabled_route_count": sum(
+                            1 for route in (next_recipe.get("communications") or {}).get("routes", [])
+                            if isinstance(route, dict) and route.get("enabled")
+                        ),
+                        "step_count": len(next_recipe.get("recipe_ingredients") or []),
+                    },
+                    labels={
+                        "name": "Recipe",
+                        "enabled": "Enabled",
+                        "clear_timeout_sec": "Resolve wait (sec)",
+                        "communications_mode": "Communications",
+                        "enabled_route_count": "Enabled routes",
+                        "step_count": "Steps",
+                    },
+                ),
+            )
+            return
+        response = client.update_recipe(recipe_id, validated)
         print_output(response, output_format, table_renderer=_recipe_detail_table)
     except (click.BadParameter, PoundCakeClientError) as exc:
         print_error(f"Failed to update recipe: {exc}")

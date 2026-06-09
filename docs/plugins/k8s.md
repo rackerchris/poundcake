@@ -11,7 +11,9 @@
 `k8s` owns bounded Kubernetes API diagnostics and remediation primitives for
 PoundCake recipes. Its primary surface is cluster, pod, workload, deployment,
 node, service, storage, and scheduling inspection through plugin-owned
-ingredients with operation-specific payload validation.
+ingredients with operation-specific payload validation. Under the capability
+catalog contract, this plugin is the preferred provider for exact bounded
+single-step Kubernetes mutations that do not need workflow orchestration.
 
 ## Requirements
 

@@ -9,8 +9,16 @@ from pathlib import Path
 import click
 
 from cli.client import PoundCakeClientError
-from cli.commands.common import get_client, get_output_format, read_mapping_file
+from cli.commands.common import (
+    build_preview_changes,
+    get_client,
+    get_output_format,
+    print_dry_run_preview,
+    read_mapping_file,
+    validate_request_payload,
+)
 from cli.utils import parse_json_object, print_error, print_output, render_sections
+from api.schemas.schemas import CommunicationPolicyUpdate
 
 
 def _normalize_route(route: JSONObject, *, index: int) -> JSONObject:
@@ -108,14 +116,81 @@ def show_policy(ctx: click.Context) -> None:
     help="JSON or YAML policy payload",
 )
 @click.option("--route-json", multiple=True, help="JSON object describing one communication route")
+@click.option("--dry-run", is_flag=True, help="Validate and preview the policy payload without saving it")
 @click.pass_context
-def set_policy(ctx: click.Context, file: Path | None, route_json: tuple[str, ...]) -> None:
+def set_policy(
+    ctx: click.Context,
+    file: Path | None,
+    route_json: tuple[str, ...],
+    dry_run: bool,
+) -> None:
     """Set the communication policy."""
     client = get_client(ctx)
     output_format = get_output_format(ctx)
     try:
         payload = _build_policy_payload(file, route_json)
-        response = client.set_global_communications_policy(payload)
+        validated = validate_request_payload(
+            client,
+            payload,
+            CommunicationPolicyUpdate,
+            "Invalid communications policy payload",
+        )
+        if dry_run:
+            routes = validated.get("routes") or []
+            current_policy = client.get_global_communications_policy().model_dump(mode="json", by_alias=True)
+            current_routes = current_policy.get("routes") or []
+            print_dry_run_preview(
+                ctx,
+                command="comm-policy set",
+                target="global communication policy",
+                payload=validated,
+                summary={
+                    "route_count": len(routes),
+                    "enabled_route_count": sum(1 for route in routes if route.get("enabled")),
+                    "providers": sorted(
+                        {
+                            str(route.get("service_type") or "").strip()
+                            for route in routes
+                            if str(route.get("service_type") or "").strip()
+                        }
+                    ),
+                },
+                impact="Recipes that inherit the communication policy will use this route set immediately after save.",
+                changes=build_preview_changes(
+                    {
+                        "route_count": len(current_routes),
+                        "enabled_route_count": sum(
+                            1 for route in current_routes if isinstance(route, dict) and route.get("enabled")
+                        ),
+                        "providers": sorted(
+                            {
+                                str(route.get("service_type") or route.get("execution_target") or "").strip()
+                                for route in current_routes
+                                if isinstance(route, dict)
+                                and str(route.get("service_type") or route.get("execution_target") or "").strip()
+                            }
+                        ),
+                    },
+                    {
+                        "route_count": len(routes),
+                        "enabled_route_count": sum(1 for route in routes if route.get("enabled")),
+                        "providers": sorted(
+                            {
+                                str(route.get("service_type") or "").strip()
+                                for route in routes
+                                if str(route.get("service_type") or "").strip()
+                            }
+                        ),
+                    },
+                    labels={
+                        "route_count": "Routes",
+                        "enabled_route_count": "Enabled routes",
+                        "providers": "Providers",
+                    },
+                ),
+            )
+            return
+        response = client.set_global_communications_policy(validated)
         print_output(response, output_format, table_renderer=_policy_table)
     except (click.BadParameter, PoundCakeClientError) as exc:
         print_error(f"Failed to set communication policy: {exc}")

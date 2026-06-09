@@ -6,6 +6,7 @@ from api.plugins.contract import health_check_operation_parameters
 from api.types import JSONObject
 
 GENESTACK_MONITORING_CONTENT_SYNC_OPERATION = "sync_content"
+GENESTACK_MONITORING_ALERT_EXPORT_OPERATION = "export_alert_updates"
 GENESTACK_MONITORING_CONTENT_SYNC_PARAMETERS: JSONObject = {
     "operation": GENESTACK_MONITORING_CONTENT_SYNC_OPERATION,
     "allowed_operations": [GENESTACK_MONITORING_CONTENT_SYNC_OPERATION],
@@ -13,6 +14,18 @@ GENESTACK_MONITORING_CONTENT_SYNC_PARAMETERS: JSONObject = {
         GENESTACK_MONITORING_CONTENT_SYNC_OPERATION: {
             "label": "Sync content",
             "description": "Refresh PoundCake recipes from the Genestack Monitoring alert catalog.",
+        },
+    },
+}
+GENESTACK_MONITORING_ALERT_EXPORT_PARAMETERS: JSONObject = {
+    "operation": GENESTACK_MONITORING_ALERT_EXPORT_OPERATION,
+    "allowed_operations": [GENESTACK_MONITORING_ALERT_EXPORT_OPERATION],
+    "operation_metadata": {
+        GENESTACK_MONITORING_ALERT_EXPORT_OPERATION: {
+            "label": "Export alert updates",
+            "description": (
+                "Render the current Genestack-managed PrometheusRule update and create a GitHub PR."
+            ),
         },
     },
 }
@@ -51,6 +64,33 @@ GENESTACK_MONITORING_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
         },
         "service_payload_template": {},
         "service_exec_parameters": GENESTACK_MONITORING_CONTENT_SYNC_PARAMETERS,
+        "default_expected_secs": 30,
+        "default_timeout": 180,
+        "service_exec_expected_outcome_default": {"success": True},
+        "ingredient_purpose": "utility",
+        "is_blocking": True,
+        "retry_count": 0,
+        "retry_delay": 0,
+        "on_failure": "continue",
+    },
+    {
+        "service_type": "genestack_monitoring",
+        "service_exec": "repo_sync",
+        "destination_target": "genestack-monitoring",
+        "task_key_template": "genestack-monitoring-alert-export",
+        "payload_schema": {
+            "type": "object",
+            "properties": {
+                "namespace": {"type": "string"},
+                "crd_name": {"type": "string"},
+                "group_name": {"type": "string"},
+                "rule_name": {"type": "string"},
+            },
+            "required": ["crd_name", "group_name", "rule_name"],
+            "additionalProperties": False,
+        },
+        "service_payload_template": {},
+        "service_exec_parameters": GENESTACK_MONITORING_ALERT_EXPORT_PARAMETERS,
         "default_expected_secs": 30,
         "default_timeout": 180,
         "service_exec_expected_outcome_default": {"success": True},

@@ -32,6 +32,7 @@ from api.models.models import (
     ServicePlugin,
 )
 from api.schemas.schemas import (
+    IncidentTimelineOrderResponse,
     IncidentTimelineEvent,
     IncidentTimelineResponse,
     OrderCreate,
@@ -53,7 +54,7 @@ from api.services.dish_planner import (
 )
 from api.services.order_types import (
     ensure_raw_data_order_type,
-    infer_order_type,
+    require_order_type,
     order_matches_filters,
 )
 from api.types import (
@@ -184,7 +185,7 @@ def _serialize_order_status(order: Order) -> OrderStatusResponse:
         {
             "id": order.id,
             "req_id": order.req_id,
-            "order_type": infer_order_type(raw_data=order.raw_data, labels=order.labels),
+            "order_type": require_order_type(order.raw_data),
             "alert_status": order.alert_status,
             "alert_group_name": order.alert_group_name,
             "processing_status": order.processing_status,
@@ -208,6 +209,12 @@ def _serialize_order_status(order: Order) -> OrderStatusResponse:
     )
 
 
+def _serialize_timeline_order(order: Order) -> IncidentTimelineOrderResponse:
+    payload = _serialize_order_status(order).model_dump(mode="json")
+    payload["labels"] = order.labels if isinstance(order.labels, dict) else {}
+    return IncidentTimelineOrderResponse.model_validate(payload)
+
+
 def _effective_order_scope(
     *,
     order_scope: OrderScope,
@@ -227,7 +234,6 @@ def _filter_orders(
         for order in orders
         if order_matches_filters(
             raw_data=order.raw_data,
-            labels=order.labels,
             order_scope=order_scope,
             order_type=order_type,
         )
@@ -807,4 +813,4 @@ async def get_order_timeline(
         "Built incident timeline",
         extra={"req_id": req_id, "order_id": order_id, "event_count": len(events)},
     )
-    return IncidentTimelineResponse(order=_serialize_order_status(order), events=events)
+    return IncidentTimelineResponse(order=_serialize_timeline_order(order), events=events)

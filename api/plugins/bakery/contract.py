@@ -24,6 +24,7 @@ class CommunicationOpenRequest(_BakeryContractModel):
     severity: str | None = Field(default=None, max_length=50)
     category: str | None = Field(default=None, max_length=100)
     source: str | None = Field(default=None, max_length=100)
+    state: str | None = Field(default=None, max_length=50)
     context: JSONObject = Field(default_factory=dict)
 
 

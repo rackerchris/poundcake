@@ -18,6 +18,7 @@ from api.plugins.contract import (
     validate_service_operation,
 )
 from api.plugins.dummy.adapter import DummyExecutionAdapter
+from api.plugins.dummy.capabilities import load_dummy_capability_templates
 from api.plugins.dummy.bootstrap import bootstrap_dummy_helper_validation
 from api.plugins.dummy.helper import DummyPluginHelper
 from api.plugins.dummy.templates import (
@@ -65,15 +66,27 @@ def test_catalog_defaults_to_dummy(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [plugin.service_type for plugin in plugins] == ["dummy"]
 
 
+def test_catalog_excludes_dummy_when_bakery_is_listed_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POUNDCAKE_ENABLED_PLUGINS", "bakery,dummy")
+
+    plugins = get_enabled_plugins()
+
+    assert [plugin.service_type for plugin in plugins] == ["bakery"]
+
+
 def test_dummy_manifest_validates() -> None:
     plugin = get_enabled_plugins()[0]
-    assert validate_service_plugin(plugin, directory_name="dummy") is plugin
-    assert plugin.plugin_tier == "supported"
-    assert plugin.plugin_log_key == "dummy"
-    assert plugin.helper_factory is not None
-    assert plugin.helper_capabilities == ("dummy.echo",)
-    assert plugin.required_helper_capabilities == {"dummy": ("dummy.echo",)}
-    assert plugin.bootstrap_factory is not None
+    validated = validate_service_plugin(plugin, directory_name="dummy")
+    assert validated.service_type == "dummy"
+    assert validated.plugin_tier == "supported"
+    assert validated.plugin_log_key == "dummy"
+    assert validated.helper_factory is not None
+    assert validated.helper_capabilities == ("dummy.echo",)
+    assert validated.required_helper_capabilities == {"dummy": ("dummy.echo",)}
+    assert validated.bootstrap_factory is not None
+    assert len(validated.capability_templates) == 1
 
 
 def test_dummy_helper_is_registered() -> None:
@@ -198,6 +211,7 @@ def test_dummy_templates_are_strict_service_plugin_templates() -> None:
         "positive_result",
         "negative_result",
         "slow_result",
+        "fast_result",
         "sleep_10",
         "communication",
     }
@@ -237,6 +251,15 @@ def test_dummy_templates_are_strict_service_plugin_templates() -> None:
     )
     assert service_task["service_type"] == "dummy"
     assert service_task["service_exec"] == "positive_result"
+
+
+def test_dummy_capability_templates_match_communication_ingredient() -> None:
+    capability = load_dummy_capability_templates()[0]
+
+    assert capability["capability_id"] == "dummy.communication.open.default"
+    assert capability["ingredient_ref"]["service_exec"] == "communication"
+    assert capability["operation"] == "open"
+    assert capability["mode"] == "communication"
     for template in DUMMY_INGREDIENT_TEMPLATES:
         assert template["service_type"] == "dummy"
         assert template["service_exec"]

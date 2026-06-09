@@ -125,6 +125,9 @@ bash tests/run_e2e.sh --list
 - `rapid-parallel`: posts multiple alerts back-to-back using the parallel slow
   dummy recipe, verifies Cook dispatches two runtime rows for each order, then
   resolves each alert and confirms both rows cancel cleanly.
+- `prometheus-rule-reload-order`: edits a live managed `PrometheusRule` through
+  `cakectl`, relies on the automatic Prometheus reload path, and verifies the
+  local devstack cluster generates and executes the resulting remediation order.
 
 ## StackStorm Adapter E2E
 
@@ -172,6 +175,23 @@ steps succeeded before confirming the test pod was deleted.
 Useful overrides:
 
 ```bash
-NAMESPACE=poundcake TEST_NAMESPACE=poundcake bash tests/run_k8s_pod_action_e2e.sh
+POUNDCAKE_NAMESPACE=poundcake TEST_NAMESPACE=poundcake bash tests/run_k8s_pod_action_e2e.sh
 API_URL=http://127.0.0.1:8000/api/v1 bash tests/run_k8s_pod_action_e2e.sh
 ```
+
+## Prometheus Rule Reload Order E2E
+
+The PrometheusRule reload e2e runner validates the live devstack path from
+editing a managed `PrometheusRule` through cluster alert evaluation and order
+execution:
+
+```bash
+bash tests/run_prometheus_rule_reload_order_e2e.sh
+```
+
+It runs Genestack content sync, creates a temporary crash-looping pod, edits an
+existing managed alert rule with `cakectl plugins k8s rule set`, waits for
+Prometheus to fire the edited rule, then verifies PoundCake receives the
+cluster-generated alert and executes the managed remediation flow successfully.
+It then edits the rule back to a non-firing expression and verifies no new
+order is generated for the same alert group.

@@ -20,6 +20,38 @@ def compact_json(data: Any) -> str:
     return json.dumps(data, separators=(",", ":"), sort_keys=True)
 
 
+def review_value(value: Any) -> str:
+    if value in (None, ""):
+        return "-"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, (dict, list)):
+        return compact_json(value)
+    return str(value)
+
+
+def build_diff_rows(
+    current: JSONObject,
+    next: JSONObject,
+    *,
+    labels: dict[str, str] | None = None,
+) -> list[dict[str, str]]:
+    resolved_labels = labels or {}
+    keys = list(dict.fromkeys([*current.keys(), *next.keys()]))
+    rows: list[dict[str, str]] = []
+    for key in keys:
+        if compact_json(to_plain_data(current.get(key))) == compact_json(to_plain_data(next.get(key))):
+            continue
+        rows.append(
+            {
+                "field": resolved_labels.get(key, titleize(key)),
+                "current": review_value(current.get(key)),
+                "next": review_value(next.get(key)),
+            }
+        )
+    return rows
+
+
 def to_plain_data(data: Any) -> Any:
     if isinstance(data, PydanticModel):
         return {
@@ -191,3 +223,27 @@ def render_sections(sections: Sequence[tuple[str, Any]]) -> str:
             rendered.append(format_table(value))
         rendered.append("")
     return "\n".join(rendered).rstrip()
+
+
+_SENSITIVE_KEY_PARTS = (
+    "auth",
+    "credential",
+    "password",
+    "secret",
+    "token",
+)
+
+
+def redact_sensitive_data(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = str(key).lower()
+            if any(part in normalized for part in _SENSITIVE_KEY_PARTS):
+                redacted[str(key)] = "[redacted]"
+            else:
+                redacted[str(key)] = redact_sensitive_data(item)
+        return redacted
+    if isinstance(value, list):
+        return [redact_sensitive_data(item) for item in value]
+    return value

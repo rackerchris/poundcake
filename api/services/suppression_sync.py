@@ -78,6 +78,8 @@ async def upsert_plugin_suppressions(
         row.ends_at = ends_at
         row.canceled_at = now if status == "expired" else None
         row.created_by = str(item.get("created_by") or "") or None
+        if "summary_ticket_enabled" in item:
+            row.summary_ticket_enabled = bool(item.get("summary_ticket_enabled"))
         row.source = "plugin"
         row.source_service_type = normalized_service
         row.source_ref = source_ref

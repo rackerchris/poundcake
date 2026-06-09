@@ -8,10 +8,11 @@
 
 from __future__ import annotations
 
-import os
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
+
+from api.core.time import utc_now
 from typing import Any
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.core.config import get_settings
 from api.core.database import auth_verifier_db_session, get_db
 from api.core.logging import get_logger
+from api.core.rate_limit import enforce_internal_service_rate_limit
 from api.services.service_identity import internal_hmac_credential_for_key
 from api.schemas.schemas import (
     AuthLoginRequest,
@@ -247,11 +249,7 @@ async def require_auth_if_enabled(
 ) -> AuthContext | None:
     """Global dependency that authenticates and authorizes API requests."""
     settings = get_settings()
-    if (
-        os.getenv("TESTING", "").strip().lower() in {"1", "true", "yes"}
-        or settings.testing
-        or not settings.auth_enabled
-    ):
+    if not settings.auth_enabled:
         context = AuthContext(
             provider="local",
             subject_id="auth-disabled",
@@ -334,9 +332,6 @@ async def _check_nonce_in_session(db: AsyncSession, nonce_key: str, ttl_seconds:
 
 async def _check_nonce(nonce_key: str, ttl_seconds: int) -> bool:
     """Atomically check-and-set a nonce for HMAC replay protection."""
-    if get_settings().internal_hmac_nonce_store == "database":
-        async with auth_verifier_db_session() as auth_db:
-            return await _check_nonce_in_session(auth_db, nonce_key, ttl_seconds)
     return await get_session_store().put_if_absent(
         _HMAC_NONCE_STATE_KIND,
         nonce_key,
@@ -466,6 +461,7 @@ async def require_admin(
 
 
 async def require_service(
+    request: Request,
     context: AuthContext | None = Depends(require_auth_if_enabled),
 ) -> AuthContext:
     if context is None:
@@ -476,6 +472,9 @@ async def require_service(
         )
     if context is None or context.role != "service":
         raise HTTPException(status_code=403, detail="Service access required")
+    service_type = str(context.service_type or "").strip().lower()
+    if service_type:
+        enforce_internal_service_rate_limit(request, service_type)
     return context
 
 

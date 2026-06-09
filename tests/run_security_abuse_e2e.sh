@@ -11,7 +11,7 @@ source "${SCRIPT_DIR}/lib.sh"
 : "${DB_ROOT_PASSWORD:=rootpassword}"
 : "${DB_NAME:=poundcake}"
 : "${POUNDCAKE_SERVICE_IDENTITY_CREDENTIAL_ENCRYPTION_KEY:=poundcake-dev-service-identity-key}"
-: "${WEBHOOK_BEARER_TOKEN:=security-test-webhook-token}"
+: "${WEBHOOK_BEARER_TOKEN:=}"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT

@@ -71,9 +71,10 @@ done
 
 export API_URL
 export CAKECTL="/Users/chris.breu/code/poundcake/.venv/bin/cakectl"
-export AUTH_USERNAME="${AUTH_USERNAME:-admin}"
-export AUTH_PASSWORD="${AUTH_PASSWORD:-cjK1c6tYTsUYf8cDHmE49FjS}"
-export WEBHOOK_BEARER_TOKEN="${WEBHOOK_BEARER_TOKEN:-vkd27OTVDoHnxenX9VAGNu0osWNNncHqtO6sNURwjHWiZyjh}"
+export AUTH_USERNAME="${AUTH_USERNAME:-}"
+export AUTH_PROVIDER="${AUTH_PROVIDER:-}"
+export AUTH_PASSWORD="${AUTH_PASSWORD:-}"
+export WEBHOOK_BEARER_TOKEN="${WEBHOOK_BEARER_TOKEN:-}"
 
 preflight() {
   require_cmd curl
@@ -353,11 +354,9 @@ run_suppressed() {
         name: $name,
         starts_at: $starts_at,
         ends_at: $ends_at,
-        scope: "matchers",
         reason: $reason,
         created_by: "tests/run_e2e.sh",
         summary_ticket_enabled: false,
-        enabled: true,
         matchers: [
           {label_key: "instance", operator: "eq", value: $instance}
         ]

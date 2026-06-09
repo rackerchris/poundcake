@@ -50,7 +50,6 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # init_db() is removed from here
     logger.info("PoundCake API is starting up", extra={"req_id": "SYSTEM-STARTUP"})
     yield
     await close_async_http_client()
@@ -89,8 +88,10 @@ app.add_middleware(
 
 # --- Kubernetes / Prometheus Internal Metrics ---
 @app.get("/metrics")
-async def metrics():
+@limiter.limit(settings.rate_limit_internal)
+async def metrics(request: Request):
     """Scrape endpoint for Prometheus Operator / ServiceMonitor."""
+    _ = request.state.req_id
     if not settings.metrics_enabled:
         raise HTTPException(status_code=404, detail="Metrics disabled")
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
@@ -102,7 +103,7 @@ async def probe_liveness_check() -> LivenessResponse:
     return LivenessResponse(status="alive", version=settings.app_version)
 
 
-@app.get("/readyz", response_model=HealthResponse, response_model_exclude_none=True)
+@app.get("/readyz", response_model=HealthResponse)
 async def probe_readiness_check() -> HealthResponse:
     """Unauthenticated kubelet readiness probe outside the PoundCake API namespace."""
     return HealthResponse(

@@ -63,6 +63,8 @@ class KubernetesOperatorConfig:
     """Non-secret operator configuration for the Kubernetes plugin."""
 
     namespace: str = ""
+    capabilities_enabled: JSONObject | None = None
+    capability_overrides: JSONObject | None = None
 
 
 class KubernetesExecutionAdapter(ExecutionAdapter):
@@ -82,7 +84,11 @@ class KubernetesExecutionAdapter(ExecutionAdapter):
     def _resolve_operator_config(self) -> KubernetesOperatorConfig:
         if self._operator_config is None:
             normalized = self.normalize_operator_config(None)
-            self._operator_config = KubernetesOperatorConfig(namespace=str(normalized["namespace"]))
+            self._operator_config = KubernetesOperatorConfig(
+                namespace=str(normalized["namespace"]),
+                capabilities_enabled=dict(normalized.get("capabilities_enabled") or {}),
+                capability_overrides=dict(normalized.get("capability_overrides") or {}),
+            )
         return self._operator_config
 
     def _build_helper(self, *, credential_key_id: str = "default") -> KubernetesHelper:
@@ -123,6 +129,16 @@ class KubernetesExecutionAdapter(ExecutionAdapter):
             "type": "object",
             "properties": {
                 "namespace": {"type": "string", "title": "Namespace"},
+                "capabilities_enabled": {
+                    "type": "object",
+                    "title": "Capability enablement overrides",
+                    "additionalProperties": {"type": "boolean"},
+                },
+                "capability_overrides": {
+                    "type": "object",
+                    "title": "Capability payload overrides",
+                    "additionalProperties": {"type": "object"},
+                },
             },
             "required": [],
             "additionalProperties": False,
@@ -133,7 +149,11 @@ class KubernetesExecutionAdapter(ExecutionAdapter):
         namespace = str(settings.prometheus_crd_namespace or "").strip()
         if not namespace:
             raise ValueError("Kubernetes namespace is required")
-        return {"namespace": namespace}
+        return {
+            "namespace": namespace,
+            "capabilities_enabled": {},
+            "capability_overrides": {},
+        }
 
     def normalize_operator_config(self, config: JSONObject | None) -> JSONObject:
         raw = dict(config or {})
@@ -141,11 +161,25 @@ class KubernetesExecutionAdapter(ExecutionAdapter):
         namespace = str(raw.get("namespace") or settings.prometheus_crd_namespace or "").strip()
         if not namespace:
             raise ValueError("Kubernetes namespace is required")
-        return {"namespace": namespace}
+        capabilities_enabled = raw.get("capabilities_enabled")
+        capability_overrides = raw.get("capability_overrides")
+        return {
+            "namespace": namespace,
+            "capabilities_enabled": (
+                dict(capabilities_enabled) if isinstance(capabilities_enabled, dict) else {}
+            ),
+            "capability_overrides": (
+                dict(capability_overrides) if isinstance(capability_overrides, dict) else {}
+            ),
+        }
 
     def with_operator_config(self, config: JSONObject | None) -> "KubernetesExecutionAdapter":
         normalized = self.normalize_operator_config(config)
-        op_config = KubernetesOperatorConfig(namespace=str(normalized["namespace"]))
+        op_config = KubernetesOperatorConfig(
+            namespace=str(normalized["namespace"]),
+            capabilities_enabled=dict(normalized.get("capabilities_enabled") or {}),
+            capability_overrides=dict(normalized.get("capability_overrides") or {}),
+        )
         return KubernetesExecutionAdapter(operator_config=op_config)
 
     def validate_credential_payload(self, credential_type: str, payload: JSONObject) -> str | None:

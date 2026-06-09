@@ -237,13 +237,13 @@ spec:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: poundcake-migrate
+  name: poundcake-bootstrap-schema
   labels:
-    app.kubernetes.io/component: poundcake-migrate
+    app.kubernetes.io/component: poundcake-bootstrap-schema
     {{- include "poundcake.labels" . | nindent 4 }}
   annotations:
     "helm.sh/hook": post-install,post-upgrade
-    "helm.sh/hook-weight": "25"
+    "helm.sh/hook-weight": "24"
     "helm.sh/hook-delete-policy": {{ include "poundcake.startupHookDeletePolicy" . | quote }}
 spec:
   backoffLimit: 3
@@ -251,8 +251,8 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/component: poundcake-migrate
-        {{- include "poundcake.logLabelsForComponent" (dict "component" "poundcake-migrate") | nindent 8 }}
+        app.kubernetes.io/component: poundcake-bootstrap-schema
+        {{- include "poundcake.logLabelsForComponent" (dict "component" "poundcake-bootstrap-schema") | nindent 8 }}
         {{- include "poundcake.selectorLabels" . | nindent 8 }}
     spec:
       enableServiceLinks: false
@@ -265,7 +265,7 @@ spec:
       serviceAccountName: poundcake-startup
       restartPolicy: OnFailure
       containers:
-        - name: migrate
+        - name: initialize-schema
           image: {{ include "poundcake.poundcakeImageRef" . }}
           securityContext:
             {{- toYaml .Values.utilitySecurityContext | nindent 12 }}
@@ -276,7 +276,7 @@ spec:
             - -ec
             - |
               export POUNDCAKE_DATABASE_URL="mysql+pymysql://${DB_MIGRATOR_USER}:${DB_MIGRATOR_PASSWORD}@{{ include "poundcake.databaseHost" . }}:3306/${DB_NAME}"
-              python3 -m alembic upgrade head
+              python3 -m api.scripts.bootstrap_schema
           env:
             - name: PYTHONPATH
               value: /app
@@ -296,7 +296,7 @@ spec:
                   name: poundcake-secrets
                   key: DB_MIGRATOR_PASSWORD
             - name: SERVICE_NAME
-              value: "poundcake-migrate"
+              value: "schema-bootstrap"
 ---
 apiVersion: batch/v1
 kind: Job
@@ -545,6 +545,8 @@ spec:
             - name: POUNDCAKE_ENABLED_PLUGINS
               value: {{ include "poundcake.enabledPlugins" . | quote }}
             {{- include "poundcake.monitoringEnv" . | nindent 12 }}
+            {{- include "poundcake.stackstormEnv" . | nindent 12 }}
+            {{- include "poundcake.bakeryEnv" . | nindent 12 }}
             - name: POUNDCAKE_AUTH_ENABLED
               value: {{ .Values.auth.enabled | quote }}
             - name: SERVICE_NAME
@@ -684,6 +686,20 @@ spec:
             - name: POUNDCAKE_ENABLED_PLUGINS
               value: {{ include "poundcake.enabledPlugins" . | quote }}
             {{- include "poundcake.monitoringEnv" . | nindent 12 }}
+            {{- include "poundcake.stackstormEnv" . | nindent 12 }}
+            {{- include "poundcake.bakeryEnv" . | nindent 12 }}
+            {{- if .Values.bakery.client.enabled }}
+            - name: POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "bakery.client.auth.existingSecret is required when bakery.client.enabled=true" .Values.bakery.client.auth.existingSecret }}
+                  key: {{ .Values.bakery.client.auth.secretKeys.keyId }}
+            - name: POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bakery.client.auth.existingSecret }}
+                  key: {{ .Values.bakery.client.auth.secretKeys.secret }}
+            {{- end }}
             - name: POUNDCAKE_AUTH_ENABLED
               value: {{ .Values.auth.enabled | quote }}
             - name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY

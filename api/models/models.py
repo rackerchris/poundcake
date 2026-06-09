@@ -24,6 +24,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -312,7 +313,7 @@ class AdapterCredential(Base):
     credential_key_id: Mapped[str] = mapped_column(String(255), nullable=False)
     encrypted_payload: Mapped[str] = mapped_column(Text, nullable=False)
     allow_public_read: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default="false", default=False
+        Boolean, nullable=False, server_default=text("0"), default=False
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=get_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -419,6 +420,31 @@ class ScheduledTask(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=get_utc_now, onupdate=get_utc_now, nullable=False
     )
+
+
+class OperatorAuditEvent(Base):
+    """Reader-safe audit trail for UI-initiated operator actions."""
+
+    __tablename__ = "operator_audit_events"
+    __table_args__ = (
+        Index("ix_operator_audit_events_created_at", "created_at"),
+        Index("ix_operator_audit_events_surface_status", "surface", "status"),
+        Index("ix_operator_audit_events_actor_username", "actor_username"),
+        CheckConstraint("action <> ''", name="ck_operator_audit_events_action_present"),
+        CheckConstraint("surface <> ''", name="ck_operator_audit_events_surface_present"),
+        CheckConstraint("status <> ''", name="ck_operator_audit_events_status_present"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    req_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    action: Mapped[str] = mapped_column(String(120), nullable=False)
+    surface: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="attempt")
+    target: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    actor_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    actor_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    details: Mapped[JSONObject] = mapped_column(MYSQL_JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=get_utc_now, nullable=False)
 
 
 class Dish(Base):

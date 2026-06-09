@@ -631,13 +631,13 @@ def _ctx(
 
 def test_k8s_manifest_validates() -> None:
     plugin = get_plugin()
+    validated = validate_service_plugin(plugin, directory_name="k8s")
 
-    assert validate_service_plugin(plugin, directory_name="k8s") is plugin
-    assert plugin.service_type == "k8s"
-    assert plugin.plugin_tier == "community"
-    assert plugin.plugin_log_key is None
-    assert plugin.helper_factory is not None
-    assert plugin.helper_capabilities == (
+    assert validated.service_type == "k8s"
+    assert validated.plugin_tier == "community"
+    assert validated.plugin_log_key is None
+    assert validated.helper_factory is not None
+    assert validated.helper_capabilities == (
         "k8s.cluster.connect",
         "k8s.deployments.manage",
         "k8s.deployments.read",
@@ -649,6 +649,10 @@ def test_k8s_manifest_validates() -> None:
         "k8s.workloads.manage",
         "k8s.workloads.read",
     )
+    capability_ids = {template["capability_id"] for template in validated.capability_templates}
+    assert "k8s.remediation.kubernetes.kube-pod-crash-looping" in capability_ids
+    assert "k8s.remediation.kubernetes.kube-deployment-rollout-stuck" in capability_ids
+    assert "k8s.remediation.kubernetes.kube-daemonset-rollout-stuck" in capability_ids
 
 
 def test_k8s_adapter_declares_optional_kubeconfig_credential() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from api.plugins.github.capabilities import load_github_capability_templates
 from api.plugins.github.client import get_github_helper
 from api.plugins.github.templates import (
     GITHUB_INGREDIENT_TEMPLATES,
@@ -30,6 +31,7 @@ def get_plugin() -> ServicePlugin:
         ingredient_templates=GITHUB_INGREDIENT_TEMPLATES,
         recipe_templates=GITHUB_RECIPE_TEMPLATES,
         scheduled_tasks=GITHUB_SCHEDULED_TASKS,
+        capability_templates=load_github_capability_templates(),
         helper_factory=get_github_helper,
         helper_capabilities=(
             "repo.read",
