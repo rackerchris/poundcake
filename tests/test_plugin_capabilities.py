@@ -293,7 +293,8 @@ def test_stackstorm_explicit_capability_entries_override_legacy_generated_duplic
     capabilities = [
         template
         for template in load_stackstorm_capability_templates()
-        if template["capability_id"] == "stackstorm.workflow.blackbox.blackbox-service-down.remediation"
+        if template["capability_id"]
+        == "stackstorm.workflow.blackbox.blackbox-service-down.remediation"
     ]
 
     assert len(capabilities) == 1
@@ -307,9 +308,13 @@ def test_stackstorm_explicit_capability_entries_override_legacy_generated_duplic
 
 
 def test_k8s_capability_templates_surface_bounded_native_mutations() -> None:
-    capabilities = {template["capability_id"]: template for template in load_k8s_capability_templates()}
+    capabilities = {
+        template["capability_id"]: template for template in load_k8s_capability_templates()
+    }
 
-    assert capabilities["k8s.remediation.kubernetes.kube-pod-crash-looping"]["operation"] == "delete"
+    assert (
+        capabilities["k8s.remediation.kubernetes.kube-pod-crash-looping"]["operation"] == "delete"
+    )
     assert (
         capabilities["k8s.remediation.kubernetes.kube-deployment-rollout-stuck"]["operation"]
         == "rollout_restart"
@@ -333,8 +338,7 @@ def test_k8s_capability_templates_surface_bounded_native_mutations() -> None:
 
 def test_alertmanager_capability_templates_surface_guard_and_evidence() -> None:
     capabilities = {
-        template["capability_id"]: template
-        for template in load_alertmanager_capability_templates()
+        template["capability_id"]: template for template in load_alertmanager_capability_templates()
     }
 
     assert (
@@ -355,8 +359,7 @@ def test_alertmanager_capability_templates_surface_guard_and_evidence() -> None:
 
 def test_prometheus_capability_templates_surface_alert_evidence_and_reload() -> None:
     capabilities = {
-        template["capability_id"]: template
-        for template in load_prometheus_capability_templates()
+        template["capability_id"]: template for template in load_prometheus_capability_templates()
     }
 
     capability = capabilities["prometheus.inspect.alert-evidence.generic"]
@@ -370,21 +373,22 @@ def test_prometheus_capability_templates_surface_alert_evidence_and_reload() -> 
 
 def test_github_capability_templates_surface_source_evidence_and_write() -> None:
     capabilities = {
-        template["capability_id"]: template
-        for template in load_github_capability_templates()
+        template["capability_id"]: template for template in load_github_capability_templates()
     }
 
     assert capabilities["github.repo.read.genestack-source-rule"]["operation"] == "read_file"
-    assert capabilities["github.repo.read.genestack-source-rule"]["defaults"][
-        "service_exec_parameters"
-    ]["managed_role"] == "gather_source_rule_evidence"
+    assert (
+        capabilities["github.repo.read.genestack-source-rule"]["defaults"][
+            "service_exec_parameters"
+        ]["managed_role"]
+        == "gather_source_rule_evidence"
+    )
     assert capabilities["github.repo.write.commit-and-pr"]["operation"] == "commit_and_pr"
 
 
 def test_git_capability_templates_surface_read_and_write_operations() -> None:
     capabilities = {
-        template["capability_id"]: template
-        for template in load_git_capability_templates()
+        template["capability_id"]: template for template in load_git_capability_templates()
     }
 
     assert capabilities["git.repo.read.file"]["operation"] == "read_file"
@@ -395,8 +399,7 @@ def test_git_capability_templates_surface_read_and_write_operations() -> None:
 
 def test_bakery_capability_templates_surface_default_communication() -> None:
     capabilities = {
-        template["capability_id"]: template
-        for template in load_bakery_capability_templates()
+        template["capability_id"]: template for template in load_bakery_capability_templates()
     }
 
     capability = capabilities["bakery.communication.open.default"]
@@ -408,8 +411,7 @@ def test_bakery_capability_templates_surface_default_communication() -> None:
 
 def test_dummy_capability_templates_surface_default_communication() -> None:
     capabilities = {
-        template["capability_id"]: template
-        for template in load_dummy_capability_templates()
+        template["capability_id"]: template for template in load_dummy_capability_templates()
     }
 
     capability = capabilities["dummy.communication.open.default"]
@@ -434,15 +436,18 @@ def test_provider_ownership_matrix_matches_expected_policy() -> None:
     assert PLUGIN_CAPABILITY_OWNERSHIP_MATRIX["stackstorm"]["category"] == "workflow_orchestration"
     assert PLUGIN_CAPABILITY_OWNERSHIP_MATRIX["bakery"]["category"] == "communication"
     assert PLUGIN_CAPABILITY_OWNERSHIP_MATRIX["dummy"]["category"] == "communication"
-    assert alert_group_provider_policy(
-        domain="kubernetes", alert_group="kube-pod-crash-looping"
-    ) == "k8s"
-    assert alert_group_provider_policy(
-        domain="blackbox", alert_group="blackbox-service-down"
-    ) == "stackstorm"
-    assert alert_group_provider_policy(
-        domain="kubernetes", alert_group="kube-node-not-ready"
-    ) == "operator_guidance_only"
+    assert (
+        alert_group_provider_policy(domain="kubernetes", alert_group="kube-pod-crash-looping")
+        == "k8s"
+    )
+    assert (
+        alert_group_provider_policy(domain="blackbox", alert_group="blackbox-service-down")
+        == "stackstorm"
+    )
+    assert (
+        alert_group_provider_policy(domain="kubernetes", alert_group="kube-node-not-ready")
+        == "operator_guidance_only"
+    )
     assert NATIVE_K8S_PREFERRED_ALERT_GROUPS
     assert OPERATOR_GUIDANCE_ONLY_ALERT_GROUPS
 
@@ -522,7 +527,10 @@ def test_capability_catalog_can_disable_default_bakery_communication(
                 },
                 "operation": "open",
                 "mode": "communication",
-                "defaults": {"service_payload": {}, "service_exec_parameters": {"operation": "open"}},
+                "defaults": {
+                    "service_payload": {},
+                    "service_exec_parameters": {"operation": "open"},
+                },
                 "safety_class": "operator_guidance",
                 "trigger_match": {"phase": "communicate"},
                 "priority": 200,
@@ -570,7 +578,9 @@ def test_capability_catalog_ignores_forbidden_override_fields(
         }
     )
 
-    capability = catalog[0]
+    capability = next(
+        c for c in catalog if c["capability_id"] == "bakery.communication.open.default"
+    )
 
     assert capability["priority"] == 250
     assert capability["ingredient_ref"]["service_exec"] == "communication"

@@ -22,6 +22,7 @@ from api.services.order_types import ensure_raw_data_order_type
 from api.types import WEBHOOK_ALERT_ORDER_TYPE
 from api.core.config import get_settings
 from api.core.logging import get_logger
+from api.plugins.prometheus.watchdog import is_watchdog_alert, record_watchdog_heartbeat
 from api.core.metrics import record_order_resolved_before_dish_start
 from api.core.statuses import can_transition_to_resolving, is_order_terminal, should_keep_active
 
@@ -267,6 +268,24 @@ async def _process_alert(
             "fingerprint": fingerprint,
         },
     )
+
+    # Intercept watchdog alerts before order processing
+    if settings.watchdog_heartbeat_enabled and is_watchdog_alert(labels):
+        if await _in_transaction(db):
+            await db.rollback()
+        watchdog_result = await record_watchdog_heartbeat(
+            db,
+            alert_data,
+            fingerprint=fingerprint,
+            alert_name=alert_name,
+            req_id=req_id,
+        )
+        return {
+            "status": "watchdog_heartbeat",
+            "order_id": None,
+            "fingerprint": fingerprint,
+            "watchdog": watchdog_result,
+        }
 
     if await _in_transaction(db):
         await db.rollback()

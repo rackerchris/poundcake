@@ -26,11 +26,13 @@ from api.services.communications import (
     normalize_destination_type,
     normalize_route_provider_config,
 )
+from api.core.config import get_settings
 from api.services.recipe_ingredient_cleanup import detach_recipe_ingredient_ids_safely
 
 MANAGED_TASK_PREFIX = "pcmcomms."
 MANAGED_RECIPE_NAME_GLOBAL = "pcm-policy-global"
 MANAGED_DESCRIPTION_GLOBAL = "[managed-comms:global]"
+MANAGED_DESCRIPTION_FALLBACK = "[managed-comms:fallback]"
 POLICY_METADATA_KEY = "poundcake_policy"
 
 MATCHED_ROUTE_EVENTS = (
@@ -155,7 +157,11 @@ def is_hidden_workflow_recipe(recipe: Recipe | None) -> bool:
         return False
     if (recipe.name or "") == MANAGED_RECIPE_NAME_GLOBAL:
         return True
-    return False
+    settings = get_settings()
+    catch_all_name = str(settings.catch_all_recipe_name or "").strip()
+    if catch_all_name and (recipe.name or "") == catch_all_name:
+        return True
+    return (recipe.description or "").startswith(MANAGED_DESCRIPTION_FALLBACK)
 
 
 def is_route_available_for_update(
@@ -462,7 +468,9 @@ async def _recipe_communication_steps(
         )
         unique_result = result.unique() if hasattr(result, "unique") else result
         return [row for row in unique_result.scalars().all() if is_communication_step(row)]
-    return [ri for ri in getattr(recipe, "recipe_ingredients", []) or [] if is_communication_step(ri)]
+    return [
+        ri for ri in getattr(recipe, "recipe_ingredients", []) or [] if is_communication_step(ri)
+    ]
 
 
 async def replace_recipe_communication_steps(
@@ -471,9 +479,7 @@ async def replace_recipe_communication_steps(
     recipe: Recipe,
     step_specs: list[JSONObject],
 ) -> None:
-    capability_catalog = build_enabled_plugin_capability_catalog(
-        await _enabled_plugin_configs(db)
-    )
+    capability_catalog = build_enabled_plugin_capability_catalog(await _enabled_plugin_configs(db))
     comm_steps = await _recipe_communication_steps(db, recipe=recipe)
     existing_by_key: dict[str, RecipeIngredient] = {}
     remove_ids: list[int] = []
@@ -693,6 +699,86 @@ async def sync_recipe_local_policy(
 async def clear_recipe_local_policy(db: AsyncSession, *, recipe: Recipe) -> None:
     await replace_recipe_communication_steps(db, recipe=recipe, step_specs=[])
     recipe.updated_at = _now()
+
+
+def _route_lists_match(
+    existing: list[CommunicationRoute], desired: list[CommunicationRoute]
+) -> bool:
+    if len(existing) != len(desired):
+        return False
+    existing_targets = {r.destination_target for r in existing if r.enabled}
+    desired_targets = {r.destination_target for r in desired if r.enabled}
+    return existing_targets == desired_targets
+
+
+async def sync_fallback_policy_recipe(
+    db: AsyncSession,
+    *,
+    routes: list[CommunicationRoute],
+) -> Recipe | None:
+    """Sync the fallback recipe so it stays in step with the current global policy routes.
+
+    When no enabled routes are configured the fallback recipe is disabled.
+    When routes exist the fallback recipe is enabled with ``fallback_open``
+    and ``fallback_close`` steps for each enabled route.
+    """
+    settings = get_settings()
+    recipe_name = str(settings.catch_all_recipe_name or "").strip()
+    if not recipe_name:
+        return None
+
+    result = await db.execute(
+        select(Recipe)
+        .options(joinedload(Recipe.recipe_ingredients).joinedload(RecipeIngredient.ingredient))
+        .where(Recipe.name == recipe_name)
+        .with_for_update()
+    )
+    recipe = result.unique().scalars().first()
+    now = _now()
+
+    if recipe is None:
+        recipe = Recipe(
+            name=recipe_name,
+            description=f"{MANAGED_DESCRIPTION_FALLBACK} Fallback communications policy",
+            enabled=True,
+            clear_timeout_sec=None,
+            deleted=False,
+            deleted_at=None,
+            updated_at=now,
+            recipe_ingredients=[],
+        )
+        db.add(recipe)
+        await db.flush()
+    else:
+        recipe.description = f"{MANAGED_DESCRIPTION_FALLBACK} Fallback communications policy"
+        recipe.deleted = False
+        recipe.deleted_at = None
+        recipe.updated_at = now
+
+    enabled_routes = [route for route in routes if route.enabled]
+    if not enabled_routes:
+        if recipe.enabled is False and not get_recipe_local_routes(recipe):
+            return recipe
+        recipe.enabled = False
+        await replace_recipe_communication_steps(db, recipe=recipe, step_specs=[])
+        return recipe
+
+    existing_routes = get_recipe_local_routes(recipe)
+    if recipe.enabled and _route_lists_match(existing_routes, enabled_routes):
+        return recipe
+
+    recipe.enabled = True
+    await replace_recipe_communication_steps(
+        db,
+        recipe=recipe,
+        step_specs=_build_route_step_specs(
+            routes=enabled_routes,
+            scope="fallback",
+            owner_key="fallback",
+            fallback=True,
+        ),
+    )
+    return recipe
 
 
 async def get_global_policy_recipe_for_dispatch(db: AsyncSession) -> Recipe | None:

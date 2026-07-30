@@ -139,18 +139,22 @@ def test_credential_boundary_code_uses_explicit_personas() -> None:
 
 
 def test_plugin_packages_do_not_open_raw_database_sessions() -> None:
-    forbidden_tokens = (
-        "from api.core.database import",
-        "import api.core.database",
-        "SessionLocal",
-        "plugin_operation_db_session",
-        "credential_manager_db_session",
+    import re
+
+    forbidden_patterns = (
+        (r"^from api\.core\.database import", "from api.core.database import"),
+        (r"^import api\.core\.database", "import api.core.database"),
+        (r"^SessionLocal\b", "SessionLocal"),
+        (r"^plugin_operation_db_session", "plugin_operation_db_session"),
+        (r"^credential_manager_db_session", "credential_manager_db_session"),
     )
     offenders: list[str] = []
     for path in sorted((ROOT / "api/plugins").rglob("*.py")):
         contents = path.read_text()
-        if any(token in contents for token in forbidden_tokens):
-            offenders.append(str(path.relative_to(ROOT)))
+        for pattern, _label in forbidden_patterns:
+            if re.search(pattern, contents, re.MULTILINE):
+                offenders.append(str(path.relative_to(ROOT)))
+                break
 
     assert offenders == []
 

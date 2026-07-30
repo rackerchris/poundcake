@@ -21,6 +21,7 @@ from api.services.communications_policy import (
     lifecycle_summary,
     policy_has_enabled_routes,
     serialize_route,
+    sync_fallback_policy_recipe,
     sync_global_policy_routes,
 )
 
@@ -67,6 +68,8 @@ async def put_communications_policy(
         routes = await sync_global_policy_routes(
             db, routes=[item.model_dump() for item in payload.routes]
         )
+        # Also sync the fallback recipe with the updated routes
+        await sync_fallback_policy_recipe(db, routes=routes)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await db.commit()

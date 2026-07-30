@@ -230,6 +230,43 @@ class Settings(BaseSettings):
     suppression_lifecycle_enabled: bool = True
     suppression_lifecycle_batch_limit: int = 25
 
+    # ==========================================================================
+    # Watchdog Heartbeat Settings
+    # ==========================================================================
+    watchdog_heartbeat_enabled: bool = True
+    watchdog_heartbeat_missing_threshold_seconds: int = 300
+    watchdog_heartbeat_check_interval_seconds: int = 30
+
+    # ==========================================================================
+    # Incident Reconciliation Settings
+    # ==========================================================================
+    incident_reconcile_enabled: bool = True
+    incident_reconcile_interval_seconds: int = 60
+    incident_reconcile_limit: int = 25
+
+    # ==========================================================================
+    # Fallback Recipe Settings
+    # ==========================================================================
+    catch_all_recipe_name: str = "fallback-recipe"
+
+    # ==========================================================================
+    # Release Update Notification Settings
+    # ==========================================================================
+    release_update_enabled: bool = True
+    release_update_check_interval_seconds: int = 21600
+    release_update_oci_repository: str = (
+        "oci://ghcr.io/rackerlabs/charts/poundcake"
+    )
+    release_update_include_prereleases: bool = False
+    release_update_registry_username: str = ""
+    release_update_registry_password: str = ""
+    release_update_registry_token: str = ""
+
+    # ==========================================================================
+    # Chart Version (for release comparison)
+    # ==========================================================================
+    chart_version: str = "1.0.0"
+
     @model_validator(mode="after")
     def _validate_cors_config(self) -> "Settings":
         """Prohibit wildcard origins with credentials (RFC 6454)."""

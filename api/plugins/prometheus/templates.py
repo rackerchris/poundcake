@@ -68,6 +68,14 @@ PROMETHEUS_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
         timeout=60,
     ),
     _template("reload_config", expected_secs=10, timeout=60),
+    _template(
+        "watchdog",
+        payload_schema=_schema({}),
+        payload_template={},
+        expected_secs=10,
+        timeout=30,
+        purpose="monitoring",
+    ),
 )
 
 PROMETHEUS_INGREDIENT_TEMPLATES[1]["service_exec_parameters"] = {
@@ -109,6 +117,20 @@ PROMETHEUS_INGREDIENT_TEMPLATES[2]["service_exec_parameters"] = {
         }
     },
 }
+PROMETHEUS_INGREDIENT_TEMPLATES[3]["service_exec_parameters"] = {
+    "operation": "check_heartbeat",
+    "allowed_operations": ["check_heartbeat", "record_heartbeat"],
+    "operation_metadata": {
+        "check_heartbeat": {
+            "label": "Check heartbeat",
+            "description": "Periodic watchdog heartbeat check — creates synthetic incident if missing.",
+        },
+        "record_heartbeat": {
+            "label": "Record heartbeat",
+            "description": "Record a watchdog heartbeat tick (typically called from pre_heat).",
+        },
+    },
+}
 
 
 PROMETHEUS_RECIPE_TEMPLATES: tuple[JSONObject, ...] = (
@@ -148,6 +170,20 @@ PROMETHEUS_SCHEDULED_TASKS: tuple[JSONObject, ...] = (
         "timeout_seconds": 30,
         "task_payload": {},
         "task_parameters": health_check_operation_parameters(),
+        "expected_outcome": {"success": True},
+    },
+    {
+        "task_key": "watchdog-heartbeat-check:prometheus",
+        "task_type": "service_execution",
+        "service_type": "prometheus",
+        "service_exec": "watchdog",
+        "source": "plugin_manifest",
+        "is_enabled": True,
+        "run_interval_seconds": 30,
+        "priority": 15,
+        "timeout_seconds": 30,
+        "task_payload": {},
+        "task_parameters": {"operation": "check_heartbeat"},
         "expected_outcome": {"success": True},
     },
 )

@@ -149,6 +149,7 @@ def test_prometheus_templates_are_valid_service_plugin_templates() -> None:
         "health_check",
         "inspect",
         "reload_config",
+        "watchdog",
     }
     inspect_template = next(
         template
@@ -169,7 +170,8 @@ def test_prometheus_templates_are_valid_service_plugin_templates() -> None:
         "plugin-health-check:prometheus"
     }
     assert {task["task_key"] for task in PROMETHEUS_SCHEDULED_TASKS} == {
-        "plugin-health-check:prometheus"
+        "plugin-health-check:prometheus",
+        "watchdog-heartbeat-check:prometheus",
     }
     for template in PROMETHEUS_INGREDIENT_TEMPLATES:
         assert template["service_type"] == "prometheus"

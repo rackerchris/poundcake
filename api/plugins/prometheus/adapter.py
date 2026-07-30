@@ -11,6 +11,9 @@ from api.plugins.state import (
     PLUGIN_RUN_STATE_HEALTHY,
 )
 from api.plugins.types import ExecutionContext, ExecutionResult, PluginHealthResult
+from api.plugins.prometheus.watchdog import (
+    check_watchdog_heartbeat_once,
+)
 from api.services.credential_manager import read_adapter_credential_payload
 from api.services.prometheus_service import PrometheusClient
 from api.types import JSONObject
@@ -19,6 +22,7 @@ PROMETHEUS_SERVICE_EXECS = {
     "health_check",
     "inspect",
     "reload_config",
+    "watchdog",
 }
 
 PROMETHEUS_INSPECT_OPERATIONS = {
@@ -30,6 +34,10 @@ PROMETHEUS_INSPECT_OPERATIONS = {
     "list_label_values",
     "query",
     "range_query",
+}
+PROMETHEUS_WATCHDOG_OPERATIONS = {
+    "check_heartbeat",
+    "record_heartbeat",
 }
 PROMETHEUS_CREDENTIAL_TYPE = "prometheus_http_auth"
 
@@ -84,6 +92,14 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
         service_exec = (ctx.service_exec or "").strip().lower()
         if service_exec not in PROMETHEUS_SERVICE_EXECS:
             return f"Unsupported prometheus service_exec: {ctx.service_exec}"
+        if service_exec == "watchdog":
+            operation = _operation(ctx)
+            if operation and operation not in PROMETHEUS_WATCHDOG_OPERATIONS:
+                return (
+                    f"prometheus watchdog operation must be one of: "
+                    f"{', '.join(sorted(PROMETHEUS_WATCHDOG_OPERATIONS))}"
+                )
+            return None
         transport_error = self.client.validate_transport_security()
         if transport_error:
             return transport_error
@@ -147,6 +163,43 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
 
     async def dispatch(self, ctx: ExecutionContext) -> ExecutionResult:
         service_exec = (ctx.service_exec or "").strip().lower()
+
+        # Watchdog operations need their own DB session
+        if service_exec == "watchdog":
+            watchdog_operation = _operation(ctx)
+            service_exec_id = f"prometheus:watchdog:{watchdog_operation}:{uuid4()}"
+            try:
+                result = await self._execute_watchdog(
+                    watchdog_operation, ctx.service_payload or {}, ctx.req_id
+                )
+                status = self._status_from_result(result)
+                return ExecutionResult(
+                    service_type=self.service_type,
+                    status=status,
+                    service_exec_id=service_exec_id,
+                    service_exec_error=(
+                        None if status == "succeeded" else str(result.get("message") or "")
+                    ),
+                    result=result,
+                    raw=result,
+                    retryable=False,
+                )
+            except Exception as exc:  # noqa: BLE001
+                outcome: JSONObject = {
+                    "success": False,
+                    "status": "errored",
+                    "message": str(exc),
+                }
+                return ExecutionResult(
+                    service_type=self.service_type,
+                    status="errored",
+                    service_exec_id=service_exec_id,
+                    service_exec_error=str(exc),
+                    result=outcome,
+                    raw=outcome,
+                    retryable=False,
+                )
+
         operation = _operation(ctx) if service_exec == "inspect" else service_exec
         service_exec_id = f"prometheus:{operation}:{uuid4()}"
         client = await self._client_with_credentials()
@@ -175,6 +228,26 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
                 raw=outcome,
                 retryable=False,
             )
+
+    async def _execute_watchdog(
+        self,
+        operation: str,
+        payload: JSONObject,
+        req_id: str,
+    ) -> JSONObject:
+        from api.core.database import SessionLocal
+
+        async with SessionLocal() as db:
+            try:
+                async with db.begin():
+                    if operation in ("check_heartbeat", ""):
+                        result = await check_watchdog_heartbeat_once(db)
+                        await db.commit()
+                        return {**result, "success": True, "status": "succeeded"}
+                    raise ValueError(f"Unsupported watchdog operation: {operation}")
+            except Exception:
+                await db.rollback()
+                raise
 
     async def poll(self, ctx: ExecutionContext, service_exec_id: str) -> ExecutionResult:
         # All prometheus operations complete synchronously during dispatch.

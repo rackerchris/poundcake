@@ -47,7 +47,9 @@ from api.services.communications_policy import (
     get_recipe_local_routes,
     global_policy_configured,
     policy_has_enabled_routes,
+    sync_fallback_policy_recipe,
 )
+from api.core.config import get_settings as _get_settings
 from api.services.dish_planner import (
     expected_run_secs_from_recipe_snapshot,
     seed_dish_ingredients_for_phase,
@@ -70,6 +72,17 @@ GLOBAL_COMMS_INHERIT_PHASES = {"firing", "resolving"}
 MAX_COOK_DISPATCH_ATTEMPTS = 3
 RETRYABLE_COOK_DB_ERROR_CODES = {1020, 1205, 1213}
 COOK_DISPATCH_RETRY_BACKOFF_SECONDS = (0.05, 0.1, 0.2)
+
+
+async def _get_global_policy_routes_for_fallback(db: AsyncSession) -> list:
+    """Load global policy routes for fallback recipe sync.
+
+    Returns a list of CommunicationRoute objects from the global policy
+    recipe.  These routes are passed to ``sync_fallback_policy_recipe``.
+    """
+    from api.services.communications_policy import get_global_policy_routes
+
+    return await get_global_policy_routes(db)
 
 
 @asynccontextmanager
@@ -641,19 +654,51 @@ async def _dispatch_order_once(
                 )
 
         if not recipe:
-            order.processing_status = "resolving"
-            order.remediation_outcome = "none"
-            order.clear_timeout_sec = None
-            order.clear_deadline_at = None
-            order.clear_timed_out_at = None
-            order.auto_close_eligible = False
-            order.is_active = True
-            order.updated_at = now
-            response = OrderDispatchResponse(
-                status="skipped",
-                order_id=order.id,
-                reason=f"No recipe for {order.alert_group_name}",
-            )
+            # Attempt to fall back to the fallback recipe
+            settings = _get_settings()
+            fallback_recipe_name = str(settings.catch_all_recipe_name or "").strip()
+            if fallback_recipe_name:
+                fallback_result = await db.execute(
+                    select(Recipe)
+                    .options(
+                        selectinload(Recipe.recipe_ingredients).selectinload(
+                            RecipeIngredient.ingredient
+                        )
+                    )
+                    .where(Recipe.name == fallback_recipe_name, Recipe.enabled.is_(True))
+                )
+                fallback_recipe = fallback_result.unique().scalars().first()
+                if fallback_recipe:
+                    # Ensure the fallback recipe is in sync with current global routes
+                    global_routes = await _get_global_policy_routes_for_fallback(db)
+                    await sync_fallback_policy_recipe(db, routes=global_routes)
+                    # Reload the fallback recipe with updated ingredients
+                    fallback_result = await db.execute(
+                        select(Recipe)
+                        .options(
+                            selectinload(Recipe.recipe_ingredients).selectinload(
+                                RecipeIngredient.ingredient
+                            )
+                        )
+                        .where(Recipe.name == fallback_recipe_name, Recipe.enabled.is_(True))
+                    )
+                    fallback_recipe = fallback_result.unique().scalars().first()
+                    if fallback_recipe:
+                        recipe = fallback_recipe
+            if not recipe:
+                order.processing_status = "resolving"
+                order.remediation_outcome = "none"
+                order.clear_timeout_sec = None
+                order.clear_deadline_at = None
+                order.clear_timed_out_at = None
+                order.auto_close_eligible = False
+                order.is_active = True
+                order.updated_at = now
+                response = OrderDispatchResponse(
+                    status="skipped",
+                    order_id=order.id,
+                    reason=f"No recipe for {order.alert_group_name}",
+                )
         else:
             inactive_ingredients = _inactive_ingredients(recipe)
             if inactive_ingredients:

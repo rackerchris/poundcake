@@ -545,6 +545,9 @@ async def test_dispatch_order_skips_when_recipe_is_missing_even_if_global_comms_
     async def _global_policy_configured(_db: object) -> bool:
         return True
 
+    monkeypatch.setattr(
+        orders_api, "_get_settings", lambda: SimpleNamespace(catch_all_recipe_name="")
+    )
     monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
     monkeypatch.setattr(orders_api, "global_policy_configured", _global_policy_configured)
     monkeypatch.setattr(

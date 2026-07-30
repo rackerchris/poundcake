@@ -93,11 +93,95 @@ def _comms_template(provider: str) -> JSONObject:
     }
 
 
+def _incident_reconcile_ingredient() -> JSONObject:
+    return {
+        "service_type": "bakery",
+        "service_exec": "incident_reconcile",
+        "destination_target": "bakery",
+        "task_key_template": "bakery-incident-reconcile",
+        "payload_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1},
+            },
+            "additionalProperties": False,
+        },
+        "service_payload_template": {},
+        "service_exec_parameters": {
+            "operation": "reconcile",
+            "allowed_operations": ["reconcile"],
+            "operation_metadata": {
+                "reconcile": {
+                    "label": "Reconcile",
+                    "description": "Reconcile active orders against Prometheus alerts and Bakery ticket state.",
+                },
+            },
+        },
+        "default_expected_secs": 30,
+        "default_timeout": 300,
+        "service_exec_expected_outcome_default": {"success": True},
+        "ingredient_purpose": "scheduled_reconciliation",
+        "is_blocking": False,
+        "retry_count": 0,
+        "retry_delay": 0,
+        "on_failure": "continue",
+    }
+
+
+def _collect_ingredient() -> JSONObject:
+    return {
+        "service_type": "bakery",
+        "service_exec": "collect",
+        "destination_target": "bakery",
+        "task_key_template": "bakery-collect",
+        "payload_schema": {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "integer", "minimum": 1},
+                "req_id": {"type": "string"},
+                "bakery_ticket_id": {"type": "string"},
+                "namespace": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+            },
+            "additionalProperties": False,
+        },
+        "service_payload_template": {},
+        "service_exec_parameters": {
+            "operation": "monitor_diagnostics",
+            "allowed_operations": ["monitor_diagnostics", "cluster_inventory", "ticket_context"],
+            "operation_metadata": {
+                "monitor_diagnostics": {
+                    "label": "Monitor Diagnostics",
+                    "description": "Return plugin health, configuration, and credential status.",
+                },
+                "cluster_inventory": {
+                    "label": "Cluster Inventory",
+                    "description": "Collect Kubernetes cluster topology and workload inventory.",
+                },
+                "ticket_context": {
+                    "label": "Ticket Context",
+                    "description": "Query orders, dishes, and ingredients by order_id, req_id, or bakery_ticket_id.",
+                },
+            },
+        },
+        "default_expected_secs": 15,
+        "default_timeout": 120,
+        "service_exec_expected_outcome_default": {"success": True},
+        "ingredient_purpose": "collection",
+        "is_blocking": False,
+        "retry_count": 0,
+        "retry_delay": 0,
+        "on_failure": "continue",
+    }
+
+
 def ingredient_templates() -> tuple[JSONObject, ...]:
     provider = _active_provider()
     return (
         BAKERY_HEALTH_INGREDIENT,
         _comms_template(provider),
+        _incident_reconcile_ingredient(),
+        _collect_ingredient(),
     )
 
 
@@ -158,5 +242,28 @@ BAKERY_SCHEDULED_TASKS: tuple[JSONObject, ...] = (
         "task_payload": {},
         "task_parameters": health_check_operation_parameters(),
         "expected_outcome": {"status": "healthy"},
+    },
+    {
+        "task_key": "incident-reconcile:bakery",
+        "task_type": "service_execution",
+        "service_type": "bakery",
+        "service_exec": "incident_reconcile",
+        "source": "plugin_manifest",
+        "is_enabled": True,
+        "run_interval_seconds": 60,
+        "priority": 10,
+        "timeout_seconds": 300,
+        "task_payload": {},
+        "task_parameters": {
+            "operation": "reconcile",
+            "allowed_operations": ["reconcile"],
+            "operation_metadata": {
+                "reconcile": {
+                    "label": "Reconcile",
+                    "description": "Reconcile active orders against Prometheus alerts and Bakery ticket state.",
+                },
+            },
+        },
+        "expected_outcome": {"success": True},
     },
 )

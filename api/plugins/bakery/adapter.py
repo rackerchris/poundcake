@@ -365,6 +365,10 @@ class BakeryExecutionAdapter(ExecutionAdapter):
             service_exec = (ctx.service_exec or "").strip().lower()
             if service_exec == "health_check":
                 return validate_transport_config()
+            if service_exec == "incident_reconcile":
+                return validate_transport_config()
+            if service_exec == "collect":
+                return self._validate_collect(ctx)
             if service_exec != "communication":
                 return f"Unsupported bakery service_exec: {ctx.service_exec}"
             config_error = validate_transport_config()
@@ -601,6 +605,150 @@ class BakeryExecutionAdapter(ExecutionAdapter):
         finally:
             reset_bakery_client_config(token)
 
+    def _validate_collect(self, ctx: ExecutionContext) -> str | None:
+        """Validate collect service_exec parameters."""
+        parameters = (
+            ctx.service_exec_parameters if isinstance(ctx.service_exec_parameters, dict) else {}
+        )
+        operation = str(parameters.get("operation") or "").strip().lower()
+        allowed = {"cluster_inventory", "ticket_context", "monitor_diagnostics"}
+        if operation not in allowed:
+            return f"Bakery collect operation must be one of: " f"{', '.join(sorted(allowed))}"
+        return None
+
+    async def _dispatch_incident_reconcile(self, ctx: ExecutionContext) -> ExecutionResult:
+        """Execute incident reconciliation across all active orders."""
+        token = self._activate_config()
+        start = time.time()
+        try:
+            from api.core.config import get_settings
+            from api.core.database import SessionLocal
+            from api.plugins.bakery.incident_reconciliation import reconcile_active_orders
+
+            settings = get_settings()
+            limit = (
+                ctx.service_exec_parameters.get("limit")
+                if isinstance(ctx.service_exec_parameters, dict)
+                else None
+            )
+            effective_limit = (
+                int(limit)
+                if isinstance(limit, int) and limit > 0
+                else getattr(settings, "incident_reconcile_limit", 25) or 25
+            )
+
+            async with SessionLocal() as db:
+                reconciliation_result = await reconcile_active_orders(
+                    db,
+                    req_id=ctx.req_id,
+                    limit=effective_limit,
+                )
+
+            receipt = f"bakery:incident_reconcile:{uuid4()}"
+            outcome = {
+                "success": True,
+                "status": reconciliation_result.get("status", "unknown"),
+                "message": (
+                    f"Reconciled {reconciliation_result.get('reconciled', 0)} of "
+                    f"{reconciliation_result.get('orders_processed', 0)} active orders"
+                ),
+                "latency_ms": int((time.time() - start) * 1000),
+                "details": reconciliation_result,
+            }
+            return ExecutionResult(
+                service_type=self.service_type,
+                status="succeeded",
+                service_exec_id=receipt,
+                result=outcome,
+                raw=outcome,
+                retryable=False,
+            )
+        except Exception as exc:
+            logger.error(
+                "Incident reconciliation failed",
+                extra={
+                    "req_id": ctx.req_id,
+                    "error": str(exc),
+                },
+            )
+            return ExecutionResult(
+                service_type=self.service_type,
+                status="errored",
+                service_exec_error=str(exc),
+                retryable=True,
+            )
+        finally:
+            reset_bakery_client_config(token)
+
+    async def _dispatch_collect(self, ctx: ExecutionContext) -> ExecutionResult:
+        """Execute bakery collection job: diagnostics, cluster inventory, or ticket context."""
+        token = self._activate_config()
+        start = time.time()
+        try:
+            from api.plugins.bakery.collectors import run_collection_job
+
+            parameters = (
+                ctx.service_exec_parameters if isinstance(ctx.service_exec_parameters, dict) else {}
+            )
+            operation = str(parameters.get("operation") or "").strip().lower()
+            allowed_ops = {"cluster_inventory", "ticket_context", "monitor_diagnostics"}
+            if operation not in allowed_ops:
+                return ExecutionResult(
+                    service_type=self.service_type,
+                    status="errored",
+                    service_exec_error=(
+                        f"Unsupported collect operation: {operation}. "
+                        f"Expected one of: {', '.join(sorted(allowed_ops))}"
+                    ),
+                    retryable=False,
+                )
+
+            job_payload: dict = dict(parameters.get("parameters") or {})
+            if "parameters" not in parameters and operation == "ticket_context":
+                for key in ("order_id", "req_id", "bakery_ticket_id", "limit"):
+                    if key in parameters:
+                        job_payload[key] = parameters[key]
+
+            result = await run_collection_job(
+                collector_type=operation,
+                parameters=job_payload,
+                req_id=ctx.req_id,
+            )
+
+            receipt = f"bakery:collect:{operation}:{uuid4()}"
+            outcome = {
+                "success": True,
+                "collector_type": operation,
+                "message": f"Bakery {operation} collection completed",
+                "latency_ms": int((time.time() - start) * 1000),
+                "details": result,
+            }
+            return ExecutionResult(
+                service_type=self.service_type,
+                status="succeeded",
+                service_exec_id=receipt,
+                result=outcome,
+                raw=outcome,
+                retryable=False,
+            )
+        except Exception as exc:
+            logger.error(
+                "Bakery collect job failed",
+                extra={
+                    "req_id": ctx.req_id,
+                    "operation": operation,
+                    "error": str(exc),
+                },
+            )
+            return ExecutionResult(
+                service_type=self.service_type,
+                status="errored",
+                service_exec_error=str(exc),
+                retryable=True,
+            )
+        finally:
+            reset_bakery_client_config(token)
+
     def health_check(self) -> PluginHealthResult:
         token = self._activate_config()
         start = time.time()
@@ -671,6 +819,10 @@ class BakeryExecutionAdapter(ExecutionAdapter):
     async def _dispatch_with_config(self, ctx: ExecutionContext) -> ExecutionResult:
         if (ctx.service_exec or "").strip().lower() == "health_check":
             return await self._execute_health_check(ctx)
+        if (ctx.service_exec or "").strip().lower() == "incident_reconcile":
+            return await self._dispatch_incident_reconcile(ctx)
+        if (ctx.service_exec or "").strip().lower() == "collect":
+            return await self._dispatch_collect(ctx)
         payload = _payload_with_dish_evidence(
             ctx.service_payload if isinstance(ctx.service_payload, dict) else {},
             ctx,

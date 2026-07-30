@@ -35,10 +35,14 @@ def test_bakery_manifest_validates(monkeypatch) -> None:
     assert validated.plugin_tier == "supported"
     assert validated.plugin_log_key == "bakery"
     assert validated.bootstrap_factory is None
-    assert len(validated.ingredient_templates) == 2
+    assert (
+        len(validated.ingredient_templates) == 4
+    )  # health_check, communication, incident_reconcile, collect
     assert len(validated.recipe_templates) == 1
     assert len(validated.communication_routes) == 1
-    assert len(validated.capability_templates) == 1
+    assert (
+        len(validated.capability_templates) == 5
+    )  # communication + incident_reconcile + 3 collectors
 
 
 def test_bakery_plugin_excludes_dummy_when_both_are_configured(monkeypatch) -> None:
@@ -71,6 +75,8 @@ def test_bakery_templates_are_valid_service_plugin_templates() -> None:
     assert {template["service_exec"] for template in ingredient_templates()} == {
         "health_check",
         "communication",
+        "incident_reconcile",
+        "collect",
     }
     comms_template = next(
         template
@@ -84,7 +90,10 @@ def test_bakery_templates_are_valid_service_plugin_templates() -> None:
         "close",
     ]
     assert {recipe["name"] for recipe in recipe_templates()} == {"plugin-health-check:bakery"}
-    assert {task["task_key"] for task in BAKERY_SCHEDULED_TASKS} == {"plugin-health-check:bakery"}
+    assert {task["task_key"] for task in BAKERY_SCHEDULED_TASKS} == {
+        "plugin-health-check:bakery",
+        "incident-reconcile:bakery",
+    }
     for template in ingredient_templates():
         assert template["service_type"] == "bakery"
         validate_payload_schema(template["payload_schema"])
