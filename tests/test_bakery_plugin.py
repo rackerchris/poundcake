@@ -203,11 +203,11 @@ def test_bakery_hmac_headers_match_shared_contract(monkeypatch) -> None:
 
 def test_bakery_transport_requires_https_outside_dev(monkeypatch) -> None:
     monkeypatch.delenv("TESTING", raising=False)
-    monkeypatch.delenv("POUNDCAKE_BAKERY_ALLOW_INSECURE_HTTP", raising=False)
     monkeypatch.setenv("POUNDCAKE_BAKERY_BASE_URL", "http://bakery.example.com")
 
     assert client.validate_transport_config() == (
-        "POUNDCAKE_BAKERY_BASE_URL must use https outside test/dev"
+        "POUNDCAKE_BAKERY_BASE_URL must use https, loopback HTTP, "
+        "or in-cluster service DNS"
     )
 
 
@@ -227,7 +227,6 @@ def test_bakery_adapter_exposes_operator_connection_config(monkeypatch) -> None:
             "max_retries": "3",
             "poll_interval_seconds": "1.5",
             "poll_timeout_seconds": "90",
-            "allow_insecure_http": True,
             "plugin_id": "rackspace/kronos-poundcake",
             "tags": "dev,kind",
         }
@@ -242,7 +241,6 @@ def test_bakery_adapter_exposes_operator_connection_config(monkeypatch) -> None:
         "max_retries": 3,
         "poll_interval_seconds": 1.5,
         "poll_timeout_seconds": 90,
-        "allow_insecure_http": True,
         "plugin_id": "rackspace/kronos-poundcake",
         "tags": "dev,kind",
     }
@@ -252,23 +250,6 @@ def test_bakery_adapter_exposes_operator_connection_config(monkeypatch) -> None:
 def test_bakery_adapter_validates_monitor_hmac_payload() -> None:
     adapter = BakeryExecutionAdapter()
 
-    assert (
-        adapter.validate_credential_payload(
-            "bakery_bootstrap_hmac",
-            {
-                "hmac_key_id": "bootstrap",
-                "hmac_secret": "secret",
-            },
-        )
-        is None
-    )
-    assert (
-        adapter.validate_credential_payload(
-            "bakery_bootstrap_hmac",
-            {"hmac_key_id": "bootstrap"},
-        )
-        == "Bakery bootstrap credential requires hmac_key_id and hmac_secret"
-    )
     assert (
         adapter.validate_credential_payload(
             "bakery_monitor_hmac",
@@ -305,37 +286,26 @@ def test_plugin_credentials_encrypt_without_plaintext(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bakery_bootstrap_uses_configured_bootstrap_hmac_credential(monkeypatch) -> None:
-    calls: list[dict[str, object]] = []
-    written: list[dict[str, object]] = []
-
+async def test_bakery_credential_check_uses_configured_monitor_hmac_credential(
+    monkeypatch,
+) -> None:
     async def read_adapter_credential_payload(
         *,
         service_type: str,
         credential_type: str,
         credential_key_id: str = "default",
     ) -> dict[str, object] | None:
-        if credential_type == "bakery_bootstrap_hmac":
-            return {"hmac_key_id": "bootstrap-id", "hmac_secret": "bootstrap-secret"}
-        return None
-
-    class _Response:
-        status_code = 200
-
-        def json(self) -> dict[str, object]:
+        if credential_type == "bakery_monitor_hmac" and credential_key_id == "default":
             return {
                 "monitor_uuid": "monitor-uuid",
                 "monitor_id": "rackspace/kronos-poundcake",
                 "hmac_key_id": "active-id",
                 "hmac_secret": "active-secret",
             }
+        return None
 
-    async def request_with_retry(*args: object, **kwargs: object) -> _Response:
-        calls.append({"args": args, "kwargs": kwargs})
-        return _Response()
-
-    async def write_adapter_credential(**kwargs: object) -> None:
-        written.append(kwargs)
+    async def unexpected_remote_call(*args: object, **kwargs: object) -> object:
+        raise AssertionError("Bakery bootstrap must not register credentials remotely")
 
     token = client.set_bakery_client_config(
         BakeryClientConfig(
@@ -344,30 +314,23 @@ async def test_bakery_bootstrap_uses_configured_bootstrap_hmac_credential(monkey
         )
     )
     monkeypatch.setattr(client, "read_adapter_credential_payload", read_adapter_credential_payload)
-    monkeypatch.setattr(client, "request_with_retry", request_with_retry)
-    monkeypatch.setattr(client, "write_adapter_credential", write_adapter_credential)
+    monkeypatch.setattr(client, "request_with_retry", unexpected_remote_call)
     try:
         credential = await client.bootstrap_monitor_credential(force=True)
     finally:
         client.reset_bakery_client_config(token)
 
     assert credential.monitor_uuid == "monitor-uuid"
-    assert calls
-    headers = calls[0]["kwargs"]["headers"]  # type: ignore[index]
-    assert "bootstrap-id:" in headers["Authorization"]  # type: ignore[index]
-    assert written[0]["credential_type"] == "bakery_monitor_hmac"
+    assert credential.monitor_id == "rackspace/kronos-poundcake"
+    assert credential.hmac_key_id == "active-id"
 
 
 @pytest.mark.asyncio
 async def test_bakery_health_execution_bootstraps_before_remote_health(monkeypatch) -> None:
     calls: list[tuple[str, str | None]] = []
 
-    async def bootstrap(
-        *,
-        force: bool = False,
-        db: object | None = None,
-    ) -> BakeryMonitorCredential:
-        calls.append(("bootstrap", "credential-manager"))
+    async def ensure() -> BakeryMonitorCredential:
+        calls.append(("credential_check", "credential-manager"))
         return BakeryMonitorCredential(
             monitor_uuid="monitor-1",
             monitor_id="poundcake",
@@ -379,7 +342,7 @@ async def test_bakery_health_execution_bootstraps_before_remote_health(monkeypat
         calls.append(("health", None))
         return BakeryHealth(status="healthy", version="unit")
 
-    monkeypatch.setattr("api.plugins.bakery.adapter.bootstrap_monitor_credential", bootstrap)
+    monkeypatch.setattr("api.plugins.bakery.adapter.ensure_monitor_credential_configured", ensure)
     monkeypatch.setattr("api.plugins.bakery.adapter.get_health", health)
 
     result = await BakeryExecutionAdapter().dispatch(
@@ -390,11 +353,11 @@ async def test_bakery_health_execution_bootstraps_before_remote_health(monkeypat
         )
     )
 
-    assert calls == [("bootstrap", "credential-manager"), ("health", None)]
+    assert calls == [("credential_check", "credential-manager"), ("health", None)]
     assert result.status == "succeeded"
     assert result.result
     assert result.result["status"] == "healthy"
-    assert result.result["details"]["bootstrap_status"] == "ready"
+    assert result.result["details"]["credential_check_status"] == "ready"
 
 
 @pytest.mark.asyncio
@@ -402,11 +365,7 @@ async def test_bakery_adapter_bootstrap_uses_credential_manager_boundary(monkeyp
     """Verify adapter goes through credential-manager boundary (writer_service_type removed)."""
     writers: list[bool] = []
 
-    async def bootstrap(
-        *,
-        force: bool = False,
-        db: object | None = None,
-    ) -> BakeryMonitorCredential:
+    async def ensure() -> BakeryMonitorCredential:
         writers.append(True)
         return BakeryMonitorCredential(
             monitor_uuid="monitor-1",
@@ -415,7 +374,7 @@ async def test_bakery_adapter_bootstrap_uses_credential_manager_boundary(monkeyp
             hmac_secret="secret",
         )
 
-    monkeypatch.setattr("api.plugins.bakery.adapter.bootstrap_monitor_credential", bootstrap)
+    monkeypatch.setattr("api.plugins.bakery.adapter.ensure_monitor_credential_configured", ensure)
 
     await BakeryExecutionAdapter().bootstrap_credentials()
 
@@ -423,15 +382,11 @@ async def test_bakery_adapter_bootstrap_uses_credential_manager_boundary(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_bakery_bootstrap_failure_is_initializing_and_redacted(monkeypatch) -> None:
-    async def bootstrap(
-        *,
-        force: bool = False,
-        db: object | None = None,
-    ) -> BakeryMonitorCredential:
+async def test_bakery_credential_failure_is_initializing_and_redacted(monkeypatch) -> None:
+    async def ensure() -> BakeryMonitorCredential:
         raise RuntimeError("Authorization HMAC signature hmac_secret encrypted_payload")
 
-    monkeypatch.setattr("api.plugins.bakery.adapter.bootstrap_monitor_credential", bootstrap)
+    monkeypatch.setattr("api.plugins.bakery.adapter.ensure_monitor_credential_configured", ensure)
 
     result = await BakeryExecutionAdapter().dispatch(
         ExecutionContext(service_type="bakery", service_exec="health_check", req_id="unit-test")

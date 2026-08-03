@@ -408,8 +408,10 @@ if [ "$INSTALL_CHART" = "true" ]; then
     fi
     bakery_env_ready="false"
     if [ -n "${BAKERY_URL:-}" ] && \
-       [ -n "${BAKERY_BOOTSTRAP_HMAC_KEY_ID:-}" ] && \
-       [ -n "${BAKERY_BOOTSTRAP_HMAC_SECRET:-}" ]; then
+       [ -n "${BAKERY_MONITOR_ID:-}" ] && \
+       [ -n "${BAKERY_MONITOR_UUID:-}" ] && \
+       [ -n "${BAKERY_MONITOR_HMAC_KEY_ID:-}" ] && \
+       [ -n "${BAKERY_MONITOR_HMAC_SECRET:-}" ]; then
         bakery_env_ready="true"
     fi
     if [ "$CONFIGURE_BAKERY_ADAPTER" = "true" ] || { [ "$CONFIGURE_BAKERY_ADAPTER" = "auto" ] && [ "$bakery_env_ready" = "true" ]; }; then

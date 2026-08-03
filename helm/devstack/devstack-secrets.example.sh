@@ -13,7 +13,9 @@ export GITHUB_TOKEN=""
 # StackStorm e2e helpers
 export STACKSTORM_API_KEY=""
 
-# Optional remote Bakery bootstrap
+# Optional remote Bakery monitor credential
 export BAKERY_URL=""
-export BAKERY_BOOTSTRAP_HMAC_KEY_ID=""
-export BAKERY_BOOTSTRAP_HMAC_SECRET=""
+export BAKERY_MONITOR_ID=""
+export BAKERY_MONITOR_UUID=""
+export BAKERY_MONITOR_HMAC_KEY_ID=""
+export BAKERY_MONITOR_HMAC_SECRET=""

@@ -72,23 +72,17 @@ async def check_once() -> dict:
             "message": "Current version is up to date.",
         }
 
-    from api.core.database import SessionLocal
+    from api.services.adapter_runtime import process_release_update_notification
 
-    async with SessionLocal() as db:
-        async with db.begin():
-            from api.plugins.release.delivery import process_release_notification
-
-            result = await process_release_notification(
-                db,
-                oci_repository=settings.release_update_oci_repository,
-                current_app_version=settings.app_version,
-                current_chart_version=settings.chart_version,
-                available_app_version=latest.app_version,
-                available_chart_version=latest.chart_version,
-                available_created_at=latest.created_at,
-                req_id="SYSTEM-RELEASE-UPDATE",
-            )
-            await db.commit()
+    result = await process_release_update_notification(
+        oci_repository=settings.release_update_oci_repository,
+        current_app_version=settings.app_version,
+        current_chart_version=settings.chart_version,
+        available_app_version=latest.app_version,
+        available_chart_version=latest.chart_version,
+        available_created_at=latest.created_at,
+        req_id="SYSTEM-RELEASE-UPDATE",
+    )
 
     logger.info(
         "Release update check completed",

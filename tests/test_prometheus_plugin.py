@@ -105,8 +105,6 @@ def _ctx(service_exec: str, payload: dict[str, object] | None = None) -> Executi
                 "list_metrics",
                 "list_labels",
                 "list_label_values",
-                "query",
-                "range_query",
             ],
         }
     return ExecutionContext(
@@ -163,8 +161,6 @@ def test_prometheus_templates_are_valid_service_plugin_templates() -> None:
         "list_metrics",
         "list_labels",
         "list_label_values",
-        "query",
-        "range_query",
     ]
     assert {recipe["name"] for recipe in PROMETHEUS_RECIPE_TEMPLATES} == {
         "plugin-health-check:prometheus"
@@ -222,8 +218,6 @@ def test_prometheus_adapter_validates_label_value_payload() -> None:
                     "list_metrics",
                     "list_labels",
                     "list_label_values",
-                    "query",
-                    "range_query",
                     "alert_evidence",
                 ],
             },
@@ -233,18 +227,9 @@ def test_prometheus_adapter_validates_label_value_payload() -> None:
     assert error == "prometheus list_label_values requires service_payload.label_name"
 
 
-def test_prometheus_adapter_validates_query_payloads() -> None:
+def test_prometheus_adapter_validates_alert_evidence_payload() -> None:
     adapter = PrometheusExecutionAdapter(client=_FakePrometheusClient())  # type: ignore[arg-type]
 
-    query_error = adapter.validate(
-        ExecutionContext(
-            service_type="prometheus",
-            service_exec="inspect",
-            req_id="unit-test",
-            service_payload={},
-            service_exec_parameters={"operation": "query"},
-        )
-    )
     evidence_error = adapter.validate(
         ExecutionContext(
             service_type="prometheus",
@@ -255,7 +240,6 @@ def test_prometheus_adapter_validates_query_payloads() -> None:
         )
     )
 
-    assert query_error == "prometheus query requires service_payload.query"
     assert evidence_error == "prometheus alert_evidence requires service_payload.alert_name"
 
 

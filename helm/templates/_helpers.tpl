@@ -82,8 +82,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.bakery.client.pollIntervalSeconds | quote }}
 - name: POUNDCAKE_BAKERY_POLL_TIMEOUT_SECONDS
   value: {{ .Values.bakery.client.pollTimeoutSeconds | quote }}
-- name: POUNDCAKE_BAKERY_ALLOW_INSECURE_HTTP
-  value: {{ .Values.bakery.client.allowInsecureHttp | quote }}
 - name: POUNDCAKE_BAKERY_PLUGIN_ID
   value: {{ .Values.bakery.client.pluginId | quote }}
 - name: POUNDCAKE_BAKERY_ACTIVE_PROVIDER

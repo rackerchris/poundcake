@@ -54,10 +54,6 @@ PROMETHEUS_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
                 "metric": {"type": "string", "minLength": 1},
                 "label_name": {"type": "string", "minLength": 1},
                 "query": {"type": "string", "minLength": 1},
-                "time": {"type": "string", "minLength": 1},
-                "start": {"type": "string", "minLength": 1},
-                "end": {"type": "string", "minLength": 1},
-                "step": {"type": ["string", "integer"], "minLength": 1},
                 "alert_name": {"type": "string", "minLength": 1},
                 "labels": {"type": "object", "additionalProperties": True},
                 "lookback_seconds": {"type": "integer", "minimum": 60},
@@ -87,8 +83,6 @@ PROMETHEUS_INGREDIENT_TEMPLATES[1]["service_exec_parameters"] = {
         "list_metrics",
         "list_labels",
         "list_label_values",
-        "query",
-        "range_query",
     ],
     "operation_metadata": {
         "alert_evidence": {
@@ -103,8 +97,6 @@ PROMETHEUS_INGREDIENT_TEMPLATES[1]["service_exec_parameters"] = {
             "label": "List label values",
             "description": "List values for a label.",
         },
-        "query": {"label": "Query", "description": "Run an instant PromQL query."},
-        "range_query": {"label": "Range query", "description": "Run a range PromQL query."},
     },
 }
 PROMETHEUS_INGREDIENT_TEMPLATES[2]["service_exec_parameters"] = {
@@ -119,15 +111,11 @@ PROMETHEUS_INGREDIENT_TEMPLATES[2]["service_exec_parameters"] = {
 }
 PROMETHEUS_INGREDIENT_TEMPLATES[3]["service_exec_parameters"] = {
     "operation": "check_heartbeat",
-    "allowed_operations": ["check_heartbeat", "record_heartbeat"],
+    "allowed_operations": ["check_heartbeat"],
     "operation_metadata": {
         "check_heartbeat": {
             "label": "Check heartbeat",
             "description": "Periodic watchdog heartbeat check — creates synthetic incident if missing.",
-        },
-        "record_heartbeat": {
-            "label": "Record heartbeat",
-            "description": "Record a watchdog heartbeat tick (typically called from pre_heat).",
         },
     },
 }

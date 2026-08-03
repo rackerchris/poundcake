@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import importlib
 import os
+import shlex
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlparse, urlunparse
 
 from api.core.config import get_settings
 from api.core.logging import get_logger
@@ -268,7 +270,12 @@ class GitClient:
             credentialed_url = self._credentialed_repo_url(repo_url=repo_url)
             if credentialed_url:
                 repo.remotes.origin.set_url(credentialed_url)
-            repo.git.push("--set-upstream", "origin", branch_name, env=self._git_env())
+            repo.git.push(
+                "--set-upstream",
+                "origin",
+                branch_name,
+                env=self._git_env(repo_url=repo_url),
+            )
         repo.git.checkout(current_ref)
         return {
             "success": True,
@@ -364,13 +371,13 @@ class GitClient:
             origin = repo.remotes.origin
             if credentialed_url:
                 origin.set_url(credentialed_url)
-            origin.pull(branch, env=self._git_env())
+            origin.pull(branch, env=self._git_env(repo_url=url))
         else:
             git.Repo.clone_from(
                 credentialed_url or url,
                 self.repo_path,
                 branch=branch,
-                env=self._git_env(),
+                env=self._git_env(repo_url=url),
             )
         return self.repo_path
 
@@ -380,9 +387,15 @@ class GitClient:
 
     def _credentialed_repo_url(self, *, repo_url: str | None = None) -> str:
         url = (repo_url or self.repo_url).strip()
-        if self.token and url.startswith("https://") and "github.com" in url:
-            return url.replace("https://", f"https://x-access-token:{self.token}@")
-        return url
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return url
+        netloc = parsed.hostname
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunparse(
+            (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+        )
 
     def _require_read_access(self) -> None:
         if self.has_auth_credentials() or self.allow_public_read:
@@ -392,14 +405,61 @@ class GitClient:
             "or authenticated repository credentials"
         )
 
-    def _git_env(self) -> dict[str, str]:
+    def _credential_store_path(self) -> Path:
+        store_dir = self.work_dir / ".credentials"
+        store_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            store_dir.chmod(0o700)
+        except OSError:
+            logger.warning("Unable to restrict Git credential directory permissions")
+        return store_dir / "git-credentials"
+
+    def _write_git_credentials_file(self, *, repo_url: str | None = None) -> Path:
+        url = self._credentialed_repo_url(repo_url=repo_url)
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise GitClientError("Git token authentication requires an HTTPS repository URL")
+        username = "x-access-token" if "github.com" in parsed.netloc.lower() else "oauth2"
+        credential_url = urlunparse(
+            (
+                parsed.scheme,
+                f"{quote(username, safe='')}:{quote(self.token, safe='')}@{parsed.netloc}",
+                "",
+                "",
+                "",
+                "",
+            )
+        )
+        path = self._credential_store_path()
+        path.write_text(f"{credential_url}\n", encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            logger.warning("Unable to restrict Git credential file permissions")
+        return path
+
+    def _git_env(self, *, repo_url: str | None = None) -> dict[str, str]:
         env = os.environ.copy()
-        if self.token and "github.com" in self.repo_url:
-            env["GIT_ASKPASS"] = "echo"
-            env["GIT_USERNAME"] = "oauth2"
-            env["GIT_PASSWORD"] = self.token
+        config_entries: list[tuple[str, str]] = []
+        if self.token:
+            credential_store = self._write_git_credentials_file(repo_url=repo_url)
+            config_entries.extend(
+                [
+                    ("credential.helper", f"store --file={shlex.quote(str(credential_store))}"),
+                    ("credential.useHttpPath", "false"),
+                ]
+            )
+            env["GIT_TERMINAL_PROMPT"] = "0"
+        for index, (key, value) in enumerate(config_entries):
+            env[f"GIT_CONFIG_KEY_{index}"] = key
+            env[f"GIT_CONFIG_VALUE_{index}"] = value
+        if config_entries:
+            env["GIT_CONFIG_COUNT"] = str(len(config_entries))
         if self.ssh_key_path:
-            env["GIT_SSH_COMMAND"] = f"ssh -i {self.ssh_key_path} -o StrictHostKeyChecking=no"
+            env["GIT_SSH_COMMAND"] = (
+                f"ssh -i {shlex.quote(self.ssh_key_path)} "
+                "-o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+            )
         return env
 
     def _require_git_module(self) -> Any:

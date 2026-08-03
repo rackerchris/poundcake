@@ -20,7 +20,7 @@ The supported production shape is Helm based:
 
 1. Deploy Bakery as its own Helm release.
 2. Expose Bakery at a stable HTTPS URL.
-3. Generate a Bakery bootstrap HMAC credential for the PoundCake plugin identity.
+3. Provision a Bakery monitor HMAC credential for the PoundCake plugin identity.
 4. Enable the `bakery` service plugin in PoundCake.
 5. Configure Bakery's non-secret adapter settings through `/api/v1/plugins/bakery/configuration`.
 6. Configure Bakery's monitor HMAC material through `/api/v1/plugins/bakery/credentials`.
@@ -37,7 +37,7 @@ config:
   enabledPlugins: dummy,k8s,git,github,prometheus,alertmanager,bakery,stackstorm,genestack_monitoring
 ```
 
-Production deployments should save a `url` that uses HTTPS, keep `verify_ssl=true`, and leave `allow_insecure_http=false`.
+Production deployments should save a `url` that uses HTTPS and keep `verify_ssl=true`. HTTP is accepted only for loopback or in-cluster service DNS endpoints.
 
 ## Monitor Credential
 
@@ -49,6 +49,7 @@ Admins configure monitor HMAC material through the adapter credentials contract:
   "credential_key_id": "default",
   "credential_payload": {
     "monitor_uuid": "<value issued by Bakery>",
+    "monitor_id": "<stable PoundCake plugin identity>",
     "hmac_key_id": "<value issued by Bakery>",
     "hmac_secret": "<value issued by Bakery>"
   },
@@ -121,7 +122,7 @@ If the Bakery plugin does not become healthy:
 - confirm `bakery` is included in `config.enabledPlugins`
 - confirm the saved Bakery plugin `url` is HTTPS
 - confirm the `bakery_monitor_hmac/default` credential exists
-- check `poundcake-api` logs for Bakery bootstrap or HMAC errors
+- check `poundcake-api` logs for Bakery monitor HMAC errors
 - check `/api/v1/plugins/bakery/health` for `health_message` and `health_error_code`
 - check the latest `plugin-health-check:bakery` scheduled task order timeline
 

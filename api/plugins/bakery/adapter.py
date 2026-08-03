@@ -13,15 +13,14 @@ from uuid import uuid4
 from api.core.logging import get_logger
 from api.services.communications import normalize_communication_operation
 from api.plugins.bakery.client import (
-    BAKERY_BOOTSTRAP_CREDENTIAL_TYPE,
     BAKERY_CREDENTIAL_TYPE,
     BakeryClientConfig,
     BakeryTicketAccepted,
     add_ticket_comment_with_key,
-    bootstrap_monitor_credential,
     close_ticket_with_key,
     create_ticket_with_key,
     current_bakery_config,
+    ensure_monitor_credential_configured,
     get_health,
     poll_operation,
     reset_bakery_client_config,
@@ -237,10 +236,6 @@ class BakeryExecutionAdapter(ExecutionAdapter):
                     "minimum": 1,
                     "maximum": 3600,
                 },
-                "allow_insecure_http": {
-                    "type": "boolean",
-                    "title": "Allow insecure HTTP",
-                },
                 "plugin_id": {"type": "string", "title": "Plugin ID"},
                 "environment_label": {"type": "string", "title": "Environment label"},
                 "region": {"type": "string", "title": "Region"},
@@ -261,7 +256,6 @@ class BakeryExecutionAdapter(ExecutionAdapter):
             "max_retries": self.config.max_retries,
             "poll_interval_seconds": self.config.poll_interval_seconds,
             "poll_timeout_seconds": self.config.poll_timeout_seconds,
-            "allow_insecure_http": self.config.allow_insecure_http,
             "plugin_id": self.config.plugin_id,
             "environment_label": self.config.environment_label,
             "region": self.config.region,
@@ -310,9 +304,6 @@ class BakeryExecutionAdapter(ExecutionAdapter):
             "max_retries": int(max_retries),
             "poll_interval_seconds": poll_interval_seconds,
             "poll_timeout_seconds": int(poll_timeout_seconds),
-            "allow_insecure_http": _bool_setting(
-                raw.get("allow_insecure_http", defaults["allow_insecure_http"])
-            ),
             "plugin_id": str(raw.get("plugin_id") or defaults["plugin_id"] or "").strip(),
             "environment_label": str(
                 raw.get("environment_label") or defaults["environment_label"] or ""
@@ -334,7 +325,6 @@ class BakeryExecutionAdapter(ExecutionAdapter):
                 max_retries=int(normalized["max_retries"]),
                 poll_interval_seconds=float(normalized["poll_interval_seconds"]),
                 poll_timeout_seconds=int(normalized["poll_timeout_seconds"]),
-                allow_insecure_http=bool(normalized["allow_insecure_http"]),
                 plugin_id=str(normalized["plugin_id"]),
                 environment_label=str(normalized["environment_label"]),
                 region=str(normalized["region"]),
@@ -396,28 +386,11 @@ class BakeryExecutionAdapter(ExecutionAdapter):
     def credential_requirements(self) -> list[JSONObject]:
         return [
             {
-                "credential_type": BAKERY_BOOTSTRAP_CREDENTIAL_TYPE,
-                "credential_key_id": "default",
-                "required": True,
-                "usage": "Bootstrap HMAC credential used to register this PoundCake monitor with Bakery.",
-                "credential_schema": {
-                    "type": "object",
-                    "properties": {
-                        "hmac_key_id": {"type": "string", "title": "Bootstrap HMAC key ID"},
-                        "hmac_secret": {"type": "string", "title": "Bootstrap HMAC secret"},
-                    },
-                    "required": ["hmac_key_id", "hmac_secret"],
-                    "additionalProperties": False,
-                },
-            },
-            {
                 "credential_type": BAKERY_CREDENTIAL_TYPE,
                 "credential_key_id": "default",
-                "required": False,
-                "managed": True,
+                "required": True,
                 "usage": (
-                    "Adapter-managed Bakery monitor HMAC credential returned by "
-                    "remote Bakery registration."
+                    "Bakery monitor HMAC credential provisioned through Credential Manager."
                 ),
                 "credential_schema": {
                     "type": "object",
@@ -428,23 +401,17 @@ class BakeryExecutionAdapter(ExecutionAdapter):
                         "hmac_secret": {"type": "string", "title": "HMAC secret"},
                     },
                     "required": ["monitor_uuid", "monitor_id", "hmac_key_id", "hmac_secret"],
-                    "additionalProperties": False,
+                    "additionalProperties": True,
                 },
             },
         ]
 
     def validate_credential_payload(self, credential_type: str, payload: JSONObject) -> str | None:
-        if credential_type == BAKERY_BOOTSTRAP_CREDENTIAL_TYPE:
-            hmac_key_id = str(payload.get("hmac_key_id") or payload.get("key_id") or "").strip()
-            hmac_secret = str(payload.get("hmac_secret") or "").strip()
-            if hmac_key_id and hmac_secret:
-                return None
-            return "Bakery bootstrap credential requires hmac_key_id and hmac_secret"
         if credential_type != BAKERY_CREDENTIAL_TYPE:
             return "Unsupported Bakery credential type"
         monitor_uuid = str(payload.get("monitor_uuid") or "").strip()
         monitor_id = str(payload.get("monitor_id") or "").strip()
-        hmac_key_id = str(payload.get("hmac_key_id") or "").strip()
+        hmac_key_id = str(payload.get("hmac_key_id") or payload.get("key_id") or "").strip()
         hmac_secret = str(payload.get("hmac_secret") or "").strip()
         if monitor_uuid and monitor_id and hmac_key_id and hmac_secret:
             return None
@@ -457,9 +424,7 @@ class BakeryExecutionAdapter(ExecutionAdapter):
     ) -> None:
         token = self._activate_config()
         try:
-            await bootstrap_monitor_credential(
-                force=force,
-            )
+            await ensure_monitor_credential_configured()
         finally:
             reset_bakery_client_config(token)
 
@@ -471,15 +436,13 @@ class BakeryExecutionAdapter(ExecutionAdapter):
     ) -> PluginBootstrapResult:
         token = self._activate_config()
         try:
-            credential = await bootstrap_monitor_credential(
-                force=force,
-            )
+            credential = await ensure_monitor_credential_configured()
             return PluginBootstrapResult(
                 service_type=self.service_type,
                 status="ready",
-                message="Bakery plugin bootstrap complete",
+                message="Bakery plugin credentials verified",
                 details={
-                    "bootstrap_status": "ready",
+                    "bootstrap_status": "not_required",
                     "credential_status": "ready",
                     "monitor_uuid_present": bool(credential.monitor_uuid),
                     "hmac_key_id_present": bool(credential.hmac_key_id),
@@ -490,10 +453,10 @@ class BakeryExecutionAdapter(ExecutionAdapter):
             return PluginBootstrapResult(
                 service_type=self.service_type,
                 status="failed",
-                message="Bakery plugin bootstrap configuration is invalid",
+                message="Bakery plugin credential configuration is invalid",
                 error_code=exc.__class__.__name__,
                 details={
-                    "bootstrap_status": "failed",
+                    "bootstrap_status": "not_required",
                     "credential_status": "error",
                     "error": _safe_error_message(exc),
                 },
@@ -502,10 +465,10 @@ class BakeryExecutionAdapter(ExecutionAdapter):
             return PluginBootstrapResult(
                 service_type=self.service_type,
                 status="initializing",
-                message="Bakery plugin bootstrap is still initializing",
+                message="Bakery plugin credential verification is still initializing",
                 error_code=exc.__class__.__name__,
                 details={
-                    "bootstrap_status": "initializing",
+                    "bootstrap_status": "not_required",
                     "credential_status": "pending",
                     "error": _safe_error_message(exc),
                 },
@@ -523,25 +486,28 @@ class BakeryExecutionAdapter(ExecutionAdapter):
         start = time.time()
         try:
             receipt = service_exec_id or f"bakery:health_check:{uuid4()}"
-            bootstrap = await self.bootstrap_plugin(ctx)
-            bootstrap_details = bootstrap.model_dump(mode="json", exclude_none=True)
-            if bootstrap.status != "ready":
+            credential_check = await self.bootstrap_plugin(ctx)
+            credential_check_details = credential_check.model_dump(mode="json", exclude_none=True)
+            if credential_check.status != "ready":
                 outcome: JSONObject = {
                     "success": False,
                     "status": (
                         PLUGIN_RUN_STATE_INITIALIZING
-                        if bootstrap.status == "initializing"
+                        if credential_check.status == "initializing"
                         else PLUGIN_RUN_STATE_FAILED
                     ),
-                    "message": bootstrap.message or "Bakery plugin bootstrap is not ready",
-                    "error_code": bootstrap.error_code,
+                    "message": (
+                        credential_check.message or "Bakery plugin credentials are not ready"
+                    ),
+                    "error_code": credential_check.error_code,
                     "latency_ms": int((time.time() - start) * 1000),
                     "details": {
-                        "bootstrap_status": bootstrap.status,
+                        "credential_check_status": credential_check.status,
                         "credential_status": (
-                            (bootstrap.details or {}).get("credential_status") or "unknown"
+                            (credential_check.details or {}).get("credential_status")
+                            or "unknown"
                         ),
-                        "bootstrap": bootstrap_details,
+                        "credential_check": credential_check_details,
                     },
                 }
                 return ExecutionResult(
@@ -566,7 +532,7 @@ class BakeryExecutionAdapter(ExecutionAdapter):
                 "service_type": self.service_type,
                 "latency_ms": int((time.time() - start) * 1000),
                 "details": {
-                    "bootstrap_status": "ready",
+                    "credential_check_status": "ready",
                     "credential_status": "ready",
                     "remote_health_status": remote_status,
                     "remote": raw,
@@ -584,11 +550,11 @@ class BakeryExecutionAdapter(ExecutionAdapter):
             outcome = {
                 "success": False,
                 "status": PLUGIN_RUN_STATE_FAILED,
-                "message": "Bakery remote health check failed after bootstrap",
+                "message": "Bakery remote health check failed after credential verification",
                 "error_code": exc.__class__.__name__,
                 "latency_ms": int((time.time() - start) * 1000),
                 "details": {
-                    "bootstrap_status": "ready",
+                    "credential_check_status": "ready",
                     "credential_status": "ready",
                     "remote_health_status": PLUGIN_RUN_STATE_FAILED,
                     "error": _safe_error_message(exc),
@@ -622,8 +588,7 @@ class BakeryExecutionAdapter(ExecutionAdapter):
         start = time.time()
         try:
             from api.core.config import get_settings
-            from api.core.database import SessionLocal
-            from api.plugins.bakery.incident_reconciliation import reconcile_active_orders
+            from api.services.adapter_runtime import reconcile_bakery_active_orders
 
             settings = get_settings()
             limit = (
@@ -637,12 +602,10 @@ class BakeryExecutionAdapter(ExecutionAdapter):
                 else getattr(settings, "incident_reconcile_limit", 25) or 25
             )
 
-            async with SessionLocal() as db:
-                reconciliation_result = await reconcile_active_orders(
-                    db,
-                    req_id=ctx.req_id,
-                    limit=effective_limit,
-                )
+            reconciliation_result = await reconcile_bakery_active_orders(
+                req_id=ctx.req_id,
+                limit=effective_limit,
+            )
 
             receipt = f"bakery:incident_reconcile:{uuid4()}"
             outcome = {

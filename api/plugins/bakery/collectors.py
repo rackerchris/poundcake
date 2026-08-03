@@ -7,11 +7,13 @@ from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import or_, select, text
-
 from api.core.config import get_settings
 from api.core.logging import get_logger
-from api.models.models import Dish, DishIngredient, Order, ServicePlugin
+from api.services.adapter_runtime import (
+    check_database_health,
+    get_bakery_ticket_context,
+    get_service_plugin_state,
+)
 
 logger = get_logger(__name__)
 
@@ -172,8 +174,6 @@ def _service_ports(service: Any) -> list[str]:
 
 
 async def _collector_health_snapshot() -> dict[str, Any]:
-    from api.core.database import SessionLocal
-
     settings = get_settings()
     components: dict[str, dict[str, Any]] = {
         "database": {"status": "unknown", "message": ""},
@@ -186,12 +186,7 @@ async def _collector_health_snapshot() -> dict[str, Any]:
             "message": getattr(settings, "redis_url", None) or "redis url not configured",
         },
     }
-    async with SessionLocal() as db:
-        try:
-            await db.execute(text("SELECT 1"))
-            components["database"] = {"status": "healthy", "message": "Connected"}
-        except Exception as exc:
-            components["database"] = {"status": "unhealthy", "message": str(exc)}
+    components["database"] = await check_database_health()
 
     overall = "healthy"
     if any(item["status"] == "unhealthy" for item in components.values()):
@@ -216,34 +211,9 @@ def _resolve_instance_id() -> str:
 
 
 async def _monitor_diagnostics(parameters: dict[str, Any]) -> dict[str, Any]:
-    from api.core.database import SessionLocal
-
     settings = get_settings()
     health = await _collector_health_snapshot()
-
-    plugin_state = None
-    async with SessionLocal() as db:
-        result = await db.execute(
-            select(ServicePlugin).where(ServicePlugin.service_type == "bakery")
-        )
-        plugin = result.scalars().first()
-
-    if plugin is not None:
-        plugin_state = {
-            "service_type": plugin.service_type,
-            "plugin_short_id": plugin.plugin_short_id,
-            "enabled": plugin.enabled,
-            "health_status": plugin.health_status,
-            "health_message": plugin.health_message,
-            "health_error_code": plugin.health_error_code,
-            "credential_status": plugin.credential_status,
-            "credential_error": plugin.credential_error,
-            "consecutive_failures": plugin.consecutive_failures,
-            "last_health_check_at": plugin.last_health_check_at,
-            "last_success_at": plugin.last_success_at,
-            "last_credential_bootstrap_at": plugin.last_credential_bootstrap_at,
-            "updated_at": plugin.updated_at,
-        }
+    plugin_state = await get_service_plugin_state("bakery")
 
     return {
         "collector_type": "monitor_diagnostics",
@@ -565,108 +535,21 @@ async def _cluster_inventory(parameters: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _ticket_context(parameters: dict[str, Any]) -> dict[str, Any]:
-    from api.core.database import SessionLocal
-
     order_id = int(parameters["order_id"]) if parameters.get("order_id") is not None else None
     req_id = str(parameters.get("req_id") or "").strip()
     bakery_ticket_id = str(parameters.get("bakery_ticket_id") or "").strip()
     limit = max(1, min(int(parameters.get("limit") or 20), 100))
-
-    criteria = {
-        "order_id": order_id,
-        "req_id": req_id or None,
-        "bakery_ticket_id": bakery_ticket_id or None,
-        "limit": limit,
-    }
-
-    async with SessionLocal() as db:
-        order_query = select(Order)
-        if order_id is not None:
-            order_query = order_query.where(Order.id == order_id)
-        if req_id:
-            order_query = order_query.where(Order.req_id == req_id)
-        if bakery_ticket_id:
-            order_query = order_query.where(Order.fingerprint == bakery_ticket_id)
-        orders = (
-            (await db.execute(order_query.order_by(Order.updated_at.desc()).limit(limit)))
-            .scalars()
-            .all()
-        )
-
-        order_ids = [item.id for item in orders]
-        req_ids = [item.req_id for item in orders]
-
-        ingredients: list[DishIngredient] = []
-        if order_ids:
-            ingredient_query = (
-                select(DishIngredient)
-                .where(DishIngredient.req_id.in_(req_ids))
-                .order_by(DishIngredient.updated_at.desc())
-            )
-            ingredients = (await db.execute(ingredient_query.limit(limit))).scalars().all()
-
-        dish_query = select(Dish)
-        if order_ids:
-            dish_query = dish_query.where(
-                or_(Dish.order_id.in_(order_ids), Dish.req_id.in_(req_ids))
-            )
-        elif req_id:
-            dish_query = dish_query.where(Dish.req_id == req_id)
-        dishes = (
-            (await db.execute(dish_query.order_by(Dish.updated_at.desc()).limit(limit)))
-            .scalars()
-            .all()
-        )
+    context = await get_bakery_ticket_context(
+        order_id=order_id,
+        req_id=req_id or None,
+        bakery_ticket_id=bakery_ticket_id or None,
+        limit=limit,
+    )
 
     return {
         "collector_type": "ticket_context",
         "collected_at": _now().isoformat(),
-        "criteria": criteria,
-        "orders": [
-            {
-                "id": item.id,
-                "req_id": item.req_id,
-                "alert_group_name": item.alert_group_name,
-                "alert_status": item.alert_status,
-                "processing_status": item.processing_status,
-                "remediation_outcome": item.remediation_outcome,
-                "fingerprint": item.fingerprint,
-                "is_active": item.is_active,
-                "created_at": item.created_at,
-                "updated_at": item.updated_at,
-            }
-            for item in orders
-        ],
-        "ingredients": [
-            {
-                "id": item.id,
-                "req_id": item.req_id,
-                "dish_id": item.dish_id,
-                "task_key": item.task_key,
-                "service_type": item.service_type,
-                "service_exec": item.service_exec,
-                "destination_target": item.destination_target,
-                "service_exec_id": item.service_exec_id,
-                "service_exec_status": item.service_exec_status,
-                "service_exec_error": item.service_exec_error,
-                "updated_at": item.updated_at,
-            }
-            for item in ingredients
-        ],
-        "dishes": [
-            {
-                "id": item.id,
-                "req_id": item.req_id,
-                "order_id": item.order_id,
-                "recipe_id": item.recipe_id,
-                "run_phase": item.run_phase,
-                "processing_status": item.processing_status,
-                "dish_exec_status": item.dish_exec_status,
-                "created_at": item.created_at,
-                "updated_at": item.updated_at,
-            }
-            for item in dishes
-        ],
+        **context,
     }
 
 

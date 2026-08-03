@@ -10,14 +10,15 @@ POUNDCAKE_NAMESPACE="${POUNDCAKE_NAMESPACE:-poundcake}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-10m}"
 
 BAKERY_URL="${BAKERY_URL:-}"
-BAKERY_BOOTSTRAP_HMAC_KEY_ID="${BAKERY_BOOTSTRAP_HMAC_KEY_ID:-}"
-BAKERY_BOOTSTRAP_HMAC_SECRET="${BAKERY_BOOTSTRAP_HMAC_SECRET:-}"
+BAKERY_MONITOR_ID="${BAKERY_MONITOR_ID:-}"
+BAKERY_MONITOR_UUID="${BAKERY_MONITOR_UUID:-}"
+BAKERY_MONITOR_HMAC_KEY_ID="${BAKERY_MONITOR_HMAC_KEY_ID:-}"
+BAKERY_MONITOR_HMAC_SECRET="${BAKERY_MONITOR_HMAC_SECRET:-}"
 BAKERY_VERIFY_SSL="${BAKERY_VERIFY_SSL:-true}"
 BAKERY_TIMEOUT_SECONDS="${BAKERY_TIMEOUT_SECONDS:-15}"
 BAKERY_MAX_RETRIES="${BAKERY_MAX_RETRIES:-2}"
 BAKERY_POLL_INTERVAL_SECONDS="${BAKERY_POLL_INTERVAL_SECONDS:-2.0}"
 BAKERY_POLL_TIMEOUT_SECONDS="${BAKERY_POLL_TIMEOUT_SECONDS:-60}"
-BAKERY_ALLOW_INSECURE_HTTP="${BAKERY_ALLOW_INSECURE_HTTP:-false}"
 BAKERY_PLUGIN_ID="${BAKERY_PLUGIN_ID:-rackspace/kronos-poundcake}"
 BAKERY_ENVIRONMENT_LABEL="${BAKERY_ENVIRONMENT_LABEL:-devstack}"
 BAKERY_REGION="${BAKERY_REGION:-ord}"
@@ -66,24 +67,27 @@ detect_executable() {
 KUBECTL_BIN="$(detect_executable KUBECTL_BIN kubectl /opt/homebrew/bin/kubectl /usr/local/bin/kubectl)"
 
 [ -n "$BAKERY_URL" ] || fail "BAKERY_URL is required"
-[ -n "$BAKERY_BOOTSTRAP_HMAC_KEY_ID" ] || fail "BAKERY_BOOTSTRAP_HMAC_KEY_ID is required"
-[ -n "$BAKERY_BOOTSTRAP_HMAC_SECRET" ] || fail "BAKERY_BOOTSTRAP_HMAC_SECRET is required"
+[ -n "$BAKERY_MONITOR_ID" ] || fail "BAKERY_MONITOR_ID is required"
+[ -n "$BAKERY_MONITOR_UUID" ] || fail "BAKERY_MONITOR_UUID is required"
+[ -n "$BAKERY_MONITOR_HMAC_KEY_ID" ] || fail "BAKERY_MONITOR_HMAC_KEY_ID is required"
+[ -n "$BAKERY_MONITOR_HMAC_SECRET" ] || fail "BAKERY_MONITOR_HMAC_SECRET is required"
 
 log "waiting for PoundCake API"
 "$KUBECTL_BIN" -n "$POUNDCAKE_NAMESPACE" wait --for=condition=Available deployment/poundcake-api --timeout="$WAIT_TIMEOUT"
 
-log "writing Bakery adapter configuration and bootstrap credential through PoundCake runtime"
+log "writing Bakery adapter configuration and monitor credential through PoundCake runtime"
 "$KUBECTL_BIN" -n "$POUNDCAKE_NAMESPACE" exec -i deploy/poundcake-api -- \
     env \
         BAKERY_URL="$BAKERY_URL" \
-        BAKERY_BOOTSTRAP_HMAC_KEY_ID="$BAKERY_BOOTSTRAP_HMAC_KEY_ID" \
-        BAKERY_BOOTSTRAP_HMAC_SECRET="$BAKERY_BOOTSTRAP_HMAC_SECRET" \
+        BAKERY_MONITOR_ID="$BAKERY_MONITOR_ID" \
+        BAKERY_MONITOR_UUID="$BAKERY_MONITOR_UUID" \
+        BAKERY_MONITOR_HMAC_KEY_ID="$BAKERY_MONITOR_HMAC_KEY_ID" \
+        BAKERY_MONITOR_HMAC_SECRET="$BAKERY_MONITOR_HMAC_SECRET" \
         BAKERY_VERIFY_SSL="$BAKERY_VERIFY_SSL" \
         BAKERY_TIMEOUT_SECONDS="$BAKERY_TIMEOUT_SECONDS" \
         BAKERY_MAX_RETRIES="$BAKERY_MAX_RETRIES" \
         BAKERY_POLL_INTERVAL_SECONDS="$BAKERY_POLL_INTERVAL_SECONDS" \
         BAKERY_POLL_TIMEOUT_SECONDS="$BAKERY_POLL_TIMEOUT_SECONDS" \
-        BAKERY_ALLOW_INSECURE_HTTP="$BAKERY_ALLOW_INSECURE_HTTP" \
         BAKERY_PLUGIN_ID="$BAKERY_PLUGIN_ID" \
         BAKERY_ENVIRONMENT_LABEL="$BAKERY_ENVIRONMENT_LABEL" \
         BAKERY_REGION="$BAKERY_REGION" \
@@ -116,14 +120,20 @@ def _bool(value: str) -> bool:
 
 async def main() -> None:
     url = os.environ["BAKERY_URL"].strip().rstrip("/")
-    key_id = os.environ["BAKERY_BOOTSTRAP_HMAC_KEY_ID"].strip()
-    secret = os.environ["BAKERY_BOOTSTRAP_HMAC_SECRET"].strip()
+    monitor_id = os.environ["BAKERY_MONITOR_ID"].strip()
+    monitor_uuid = os.environ["BAKERY_MONITOR_UUID"].strip()
+    key_id = os.environ["BAKERY_MONITOR_HMAC_KEY_ID"].strip()
+    secret = os.environ["BAKERY_MONITOR_HMAC_SECRET"].strip()
     if not url:
         raise SystemExit("BAKERY_URL is empty")
+    if not monitor_id:
+        raise SystemExit("BAKERY_MONITOR_ID is empty")
+    if not monitor_uuid:
+        raise SystemExit("BAKERY_MONITOR_UUID is empty")
     if not key_id:
-        raise SystemExit("BAKERY_BOOTSTRAP_HMAC_KEY_ID is empty")
+        raise SystemExit("BAKERY_MONITOR_HMAC_KEY_ID is empty")
     if not secret:
-        raise SystemExit("BAKERY_BOOTSTRAP_HMAC_SECRET is empty")
+        raise SystemExit("BAKERY_MONITOR_HMAC_SECRET is empty")
 
     plugin_config = {
         "url": url,
@@ -132,7 +142,6 @@ async def main() -> None:
         "max_retries": int(os.environ["BAKERY_MAX_RETRIES"]),
         "poll_interval_seconds": float(os.environ["BAKERY_POLL_INTERVAL_SECONDS"]),
         "poll_timeout_seconds": int(os.environ["BAKERY_POLL_TIMEOUT_SECONDS"]),
-        "allow_insecure_http": _bool(os.environ["BAKERY_ALLOW_INSECURE_HTTP"]),
         "plugin_id": os.environ["BAKERY_PLUGIN_ID"].strip(),
         "environment_label": os.environ["BAKERY_ENVIRONMENT_LABEL"].strip(),
         "region": os.environ["BAKERY_REGION"].strip(),
@@ -156,9 +165,11 @@ async def main() -> None:
     try:
         await write_adapter_credential(
             service_type="bakery",
-            credential_type="bakery_bootstrap_hmac",
+            credential_type="bakery_monitor_hmac",
             credential_key_id="default",
             payload={
+                "monitor_id": monitor_id,
+                "monitor_uuid": monitor_uuid,
                 "hmac_key_id": key_id,
                 "hmac_secret": secret,
             },

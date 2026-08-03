@@ -27,29 +27,10 @@ def test_external_plugins_advertise_credentials_without_db_policy(monkeypatch) -
     ]
     assert requirements_by_service["bakery"] == [
         {
-            "credential_type": "bakery_bootstrap_hmac",
-            "credential_key_id": "default",
-            "required": True,
-            "usage": "Bootstrap HMAC credential used to register this PoundCake monitor with Bakery.",
-            "credential_schema": {
-                "type": "object",
-                "properties": {
-                    "hmac_key_id": {"type": "string", "title": "Bootstrap HMAC key ID"},
-                    "hmac_secret": {"type": "string", "title": "Bootstrap HMAC secret"},
-                },
-                "required": ["hmac_key_id", "hmac_secret"],
-                "additionalProperties": False,
-            },
-        },
-        {
             "credential_type": "bakery_monitor_hmac",
             "credential_key_id": "default",
-            "required": False,
-            "managed": True,
-            "usage": (
-                "Adapter-managed Bakery monitor HMAC credential returned by "
-                "remote Bakery registration."
-            ),
+            "required": True,
+            "usage": "Bakery monitor HMAC credential provisioned through Credential Manager.",
             "credential_schema": {
                 "type": "object",
                 "properties": {
@@ -59,7 +40,7 @@ def test_external_plugins_advertise_credentials_without_db_policy(monkeypatch) -
                     "hmac_secret": {"type": "string", "title": "HMAC secret"},
                 },
                 "required": ["monitor_uuid", "monitor_id", "hmac_key_id", "hmac_secret"],
-                "additionalProperties": False,
+                "additionalProperties": True,
             },
         },
     ]

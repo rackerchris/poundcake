@@ -19,20 +19,28 @@ logger = get_logger(__name__)
 
 async def main() -> None:
     """Run startup adapter credential initialization."""
-    bakery_key_id = os.getenv("POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID", "").strip()
-    bakery_secret = os.getenv("POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_SECRET", "").strip()
-    if bool(bakery_key_id) != bool(bakery_secret):
+    bakery_monitor_id = os.getenv("POUNDCAKE_BAKERY_MONITOR_ID", "").strip()
+    bakery_monitor_uuid = os.getenv("POUNDCAKE_BAKERY_MONITOR_UUID", "").strip()
+    bakery_key_id = os.getenv("POUNDCAKE_BAKERY_MONITOR_HMAC_KEY_ID", "").strip()
+    bakery_secret = os.getenv("POUNDCAKE_BAKERY_MONITOR_HMAC_SECRET", "").strip()
+    bakery_values = (bakery_monitor_id, bakery_monitor_uuid, bakery_key_id, bakery_secret)
+    if any(bakery_values) and not all(bakery_values):
         raise RuntimeError(
-            "Bakery bootstrap credential requires both "
-            "POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID and "
-            "POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_SECRET"
+            "Bakery monitor credential requires POUNDCAKE_BAKERY_MONITOR_ID, "
+            "POUNDCAKE_BAKERY_MONITOR_UUID, POUNDCAKE_BAKERY_MONITOR_HMAC_KEY_ID, "
+            "and POUNDCAKE_BAKERY_MONITOR_HMAC_SECRET"
         )
     if bakery_key_id:
         await write_adapter_credential(
             service_type="bakery",
-            credential_type="bakery_bootstrap_hmac",
+            credential_type="bakery_monitor_hmac",
             credential_key_id="default",
-            payload={"hmac_key_id": bakery_key_id, "hmac_secret": bakery_secret},
+            payload={
+                "monitor_id": bakery_monitor_id,
+                "monitor_uuid": bakery_monitor_uuid,
+                "hmac_key_id": bakery_key_id,
+                "hmac_secret": bakery_secret,
+            },
         )
     async with SessionLocal() as db:
         stats = await bootstrap_adapter_credentials(db)

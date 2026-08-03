@@ -11,9 +11,6 @@ from api.plugins.state import (
     PLUGIN_RUN_STATE_HEALTHY,
 )
 from api.plugins.types import ExecutionContext, ExecutionResult, PluginHealthResult
-from api.plugins.prometheus.watchdog import (
-    check_watchdog_heartbeat_once,
-)
 from api.services.credential_manager import read_adapter_credential_payload
 from api.services.prometheus_service import PrometheusClient
 from api.types import JSONObject
@@ -32,12 +29,9 @@ PROMETHEUS_INSPECT_OPERATIONS = {
     "list_metrics",
     "list_labels",
     "list_label_values",
-    "query",
-    "range_query",
 }
 PROMETHEUS_WATCHDOG_OPERATIONS = {
     "check_heartbeat",
-    "record_heartbeat",
 }
 PROMETHEUS_CREDENTIAL_TYPE = "prometheus_http_auth"
 
@@ -108,13 +102,11 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
             return (
                 "prometheus inspect operation must be one of: "
                 "alert_evidence, list_label_values, list_labels, list_metrics, "
-                "list_rule_groups, list_rules, query, range_query"
+                "list_rule_groups, list_rules"
             )
         payload = ctx.service_payload if isinstance(ctx.service_payload, dict) else {}
         if operation == "list_label_values" and not str(payload.get("label_name") or "").strip():
             return "prometheus list_label_values requires service_payload.label_name"
-        if operation in {"query", "range_query"} and not str(payload.get("query") or "").strip():
-            return f"prometheus {operation} requires service_payload.query"
         if operation == "alert_evidence":
             if not str(payload.get("query") or "").strip():
                 return "prometheus alert_evidence requires service_payload.query"
@@ -164,7 +156,6 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
     async def dispatch(self, ctx: ExecutionContext) -> ExecutionResult:
         service_exec = (ctx.service_exec or "").strip().lower()
 
-        # Watchdog operations need their own DB session
         if service_exec == "watchdog":
             watchdog_operation = _operation(ctx)
             service_exec_id = f"prometheus:watchdog:{watchdog_operation}:{uuid4()}"
@@ -235,19 +226,12 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
         payload: JSONObject,
         req_id: str,
     ) -> JSONObject:
-        from api.core.database import SessionLocal
+        from api.services.adapter_runtime import check_prometheus_watchdog_heartbeat_once
 
-        async with SessionLocal() as db:
-            try:
-                async with db.begin():
-                    if operation in ("check_heartbeat", ""):
-                        result = await check_watchdog_heartbeat_once(db)
-                        await db.commit()
-                        return {**result, "success": True, "status": "succeeded"}
-                    raise ValueError(f"Unsupported watchdog operation: {operation}")
-            except Exception:
-                await db.rollback()
-                raise
+        if operation in ("check_heartbeat", ""):
+            result = await check_prometheus_watchdog_heartbeat_once()
+            return {**result, "success": True, "status": "succeeded"}
+        raise ValueError(f"Unsupported watchdog operation: {operation}")
 
     async def poll(self, ctx: ExecutionContext, service_exec_id: str) -> ExecutionResult:
         # All prometheus operations complete synchronously during dispatch.
@@ -322,28 +306,6 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
                     label_name,
                     metric=_optional_str(payload.get("metric")),
                 ),
-            }
-        if service_exec == "query":
-            result = await client.query(
-                str(payload.get("query") or ""),
-                time_value=_optional_str(payload.get("time")),
-            )
-            return {
-                "success": result.get("success") is True,
-                "status": result.get("status"),
-                **result,
-            }
-        if service_exec == "range_query":
-            result = await client.range_query(
-                str(payload.get("query") or ""),
-                start=_optional_str(payload.get("start")),
-                end=_optional_str(payload.get("end")),
-                step=payload.get("step"),
-            )
-            return {
-                "success": result.get("success") is True,
-                "status": result.get("status"),
-                **result,
             }
         if service_exec == "alert_evidence":
             labels = payload.get("labels") if isinstance(payload.get("labels"), dict) else {}

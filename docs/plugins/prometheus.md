@@ -40,8 +40,7 @@ points PoundCake at that in-cluster service.
 
 - `health_check`
 - `inspect` operations: `list_rules`, `list_rule_groups`, `list_metrics`,
-  `list_labels`, `list_label_values`, `query`, `range_query`, and
-  `alert_evidence`
+  `list_labels`, `list_label_values`, and `alert_evidence`
 - `reload_config`
 - Helper capabilities: `alert_rules.parse`, `alert_rules.index`, and
   `alert_rules.render`

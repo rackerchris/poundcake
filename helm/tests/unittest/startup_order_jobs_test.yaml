@@ -55,34 +55,49 @@ tests:
           value: 300
         documentIndex: 6
 
-  - it: runs split bootstrap stages with isolated personas
+  - it: runs the schema bootstrap stage with its isolated persona
+    documentSelector:
+      path: metadata.name
+      value: poundcake-bootstrap-schema
     asserts:
       - matchRegex:
           path: spec.template.spec.containers[0].command[2]
           pattern: "api.scripts.bootstrap_schema"
-        documentIndex: 3
+
+  - it: runs the plugin registry bootstrap stage with its isolated persona
+    documentSelector:
+      path: metadata.name
+      value: poundcake-bootstrap-plugin-registry
+    asserts:
       - matchRegex:
           path: spec.template.spec.containers[0].command[2]
           pattern: "api.scripts.bootstrap_plugin_registry"
-        documentIndex: 4
       - contains:
           path: spec.template.spec.containers[0].env
           content:
             name: POUNDCAKE_ENABLED_PLUGINS
             value: dummy
-        documentIndex: 4
+
+  - it: runs the service identity bootstrap stage with its isolated persona
+    documentSelector:
+      path: metadata.name
+      value: poundcake-bootstrap-service-identity
+    asserts:
       - matchRegex:
           path: spec.template.spec.containers[0].command[2]
           pattern: "api.scripts.bootstrap_service_identities"
-        documentIndex: 5
+
+  - it: runs the adapter credential bootstrap stage with its isolated persona
+    documentSelector:
+      path: metadata.name
+      value: poundcake-bootstrap-adapter-credentials
+    asserts:
       - matchRegex:
           path: spec.template.spec.containers[0].command[2]
           pattern: "api.scripts.bootstrap_adapter_credentials"
-        documentIndex: 6
       - equal:
           path: spec.template.spec.serviceAccountName
           value: poundcake-startup
-          documentIndex: 0
 
   - it: disables Kubernetes service environment variable injection
     asserts:
@@ -115,41 +130,22 @@ tests:
           value: false
         documentIndex: 6
 
-  - it: applies startup image and pull-secret wiring
+  - it: applies startup image and pull-secret wiring to the schema job
     set:
       poundcakeImage.repository: example/poundcake
       poundcakeImage.tag: test
       poundcakeImage.pullSecrets:
         - name: regcred
+    documentSelector:
+      path: metadata.name
+      value: poundcake-bootstrap-schema
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
           value: example/poundcake:test
-        documentIndex: 2
-      - equal:
-          path: spec.template.spec.containers[0].image
-          value: example/poundcake:test
-        documentIndex: 3
       - equal:
           path: spec.template.spec.imagePullSecrets[0].name
           value: regcred
-        documentIndex: 3
-      - equal:
-          path: spec.template.spec.containers[0].image
-          value: example/poundcake:test
-        documentIndex: 5
-      - equal:
-          path: spec.template.spec.imagePullSecrets[0].name
-          value: regcred
-        documentIndex: 5
-      - equal:
-          path: spec.template.spec.containers[0].image
-          value: example/poundcake:test
-        documentIndex: 6
-      - equal:
-          path: spec.template.spec.imagePullSecrets[0].name
-          value: regcred
-        documentIndex: 6
 
   - it: allows startup hook ttl override
     set:
