@@ -129,6 +129,9 @@ ExecutionPurpose = Literal[
     "plugin_health",
     "suppression_sync",
     "suppression_lifecycle",
+    "monitoring",
+    "scheduled_reconciliation",
+    "collection",
 ]
 
 RemediationOutcome = Literal[

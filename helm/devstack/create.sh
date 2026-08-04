@@ -51,6 +51,20 @@ fail() {
     exit 1
 }
 
+split_image_ref() {
+    local image="$1"
+    local path_part="${image%%@*}"
+    local last_segment="${path_part##*/}"
+
+    if [[ "$last_segment" == *:* ]]; then
+        SPLIT_IMAGE_REPOSITORY="${image%:*}"
+        SPLIT_IMAGE_TAG="${image##*:}"
+    else
+        SPLIT_IMAGE_REPOSITORY="$image"
+        SPLIT_IMAGE_TAG="latest"
+    fi
+}
+
 cleanup() {
     if [ -n "${DEVSTACK_TMP_VALUES_FILE:-}" ] && [ -f "$DEVSTACK_TMP_VALUES_FILE" ]; then
         rm -f "$DEVSTACK_TMP_VALUES_FILE"
@@ -254,7 +268,7 @@ prepare_devstack_secret_values() {
     if [ -z "${DEVSTACK_DB_ROOT_PASSWORD:-}" ]; then
         return 0
     fi
-    DEVSTACK_TMP_VALUES_FILE="$(mktemp "${TMPDIR:-/tmp}/poundcake-devstack-values.XXXXXX.yaml")"
+    DEVSTACK_TMP_VALUES_FILE="$(mktemp "${TMPDIR:-/tmp}/poundcake-devstack-values.XXXXXX")"
     cat >"$DEVSTACK_TMP_VALUES_FILE" <<EOF
 secrets:
   dbRootPassword: "${DEVSTACK_DB_ROOT_PASSWORD}"
@@ -389,6 +403,28 @@ if [ "$INSTALL_CHART" = "true" ]; then
         read -r -a extra_args <<< "$HELM_EXTRA_ARGS"
         helm_args+=("${extra_args[@]}")
     fi
+    app_image_repository=""
+    app_image_tag=""
+    ui_image_repository=""
+    ui_image_tag=""
+    SPLIT_IMAGE_REPOSITORY=""
+    SPLIT_IMAGE_TAG=""
+    split_image_ref "$APP_IMAGE"
+    app_image_repository="$SPLIT_IMAGE_REPOSITORY"
+    app_image_tag="$SPLIT_IMAGE_TAG"
+    split_image_ref "$UI_IMAGE"
+    ui_image_repository="$SPLIT_IMAGE_REPOSITORY"
+    ui_image_tag="$SPLIT_IMAGE_TAG"
+    helm_args+=(
+        --set-string
+        "poundcakeImage.repository=$app_image_repository"
+        --set-string
+        "poundcakeImage.tag=$app_image_tag"
+        --set-string
+        "uiImage.repository=$ui_image_repository"
+        --set-string
+        "uiImage.tag=$ui_image_tag"
+    )
 
     log "installing Helm release $RELEASE_NAME in namespace $POUNDCAKE_NAMESPACE"
     "$HELM_BIN" "${helm_args[@]}"
@@ -451,9 +487,15 @@ fi
 
 if [ "$PORT_FORWARD" = "true" ]; then
     log "starting local port-forwards"
-    POUNDCAKE_NAMESPACE="$POUNDCAKE_NAMESPACE" "$SCRIPT_DIR/ui-port-forward.sh" start
+    ENABLE_PROMETHEUS_PORT_FORWARD="$INSTALL_MONITORING" \
+        ENABLE_ALERTMANAGER_PORT_FORWARD="$INSTALL_MONITORING" \
+        POUNDCAKE_NAMESPACE="$POUNDCAKE_NAMESPACE" \
+        "$SCRIPT_DIR/ui-port-forward.sh" start
     log "verifying local port-forwards"
-    POUNDCAKE_NAMESPACE="$POUNDCAKE_NAMESPACE" "$SCRIPT_DIR/ui-port-forward.sh" verify
+    ENABLE_PROMETHEUS_PORT_FORWARD="$INSTALL_MONITORING" \
+        ENABLE_ALERTMANAGER_PORT_FORWARD="$INSTALL_MONITORING" \
+        POUNDCAKE_NAMESPACE="$POUNDCAKE_NAMESPACE" \
+        "$SCRIPT_DIR/ui-port-forward.sh" verify
 else
     log "PORT_FORWARD=false; skipping local port-forwards"
 fi
@@ -464,6 +506,8 @@ log "namespace: $POUNDCAKE_NAMESPACE"
 log "release: $RELEASE_NAME"
 if [ "$PORT_FORWARD" = "true" ]; then
     log "ui: http://127.0.0.1:${LOCAL_PORT:-8080}"
-    log "prometheus: http://127.0.0.1:${PROMETHEUS_LOCAL_PORT:-9090}"
-    log "alertmanager: http://127.0.0.1:${ALERTMANAGER_LOCAL_PORT:-9093}"
+    if [ "$INSTALL_MONITORING" = "true" ]; then
+        log "prometheus: http://127.0.0.1:${PROMETHEUS_LOCAL_PORT:-9090}"
+        log "alertmanager: http://127.0.0.1:${ALERTMANAGER_LOCAL_PORT:-9093}"
+    fi
 fi

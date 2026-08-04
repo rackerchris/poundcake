@@ -586,6 +586,8 @@
                 "secretKeys": {
                   "type": "object",
                   "properties": {
+                    "monitorId": {"type": "string"},
+                    "monitorUuid": {"type": "string"},
                     "keyId": {"type": "string"},
                     "secret": {"type": "string"}
                   }
@@ -668,13 +670,39 @@
           "type": "boolean",
           "default": false
         },
-        "className": {
-          "type": "string",
-          "default": "envoyproxy"
-        },
-        "name": {
+        "gatewayName": {
           "type": "string",
           "default": "poundcake-gateway"
+        },
+        "gatewayNamespace": {
+          "type": "string",
+          "default": ""
+        },
+        "listener": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "default": ""
+            },
+            "hostname": {
+              "type": "string",
+              "default": ""
+            }
+          }
+        },
+        "hostnames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "listeners": {
           "type": "object",
@@ -718,6 +746,14 @@
                 "pathPrefix": {
                   "type": "string",
                   "default": "/"
+                },
+                "requestTimeout": {
+                  "type": "string",
+                  "default": "300s"
+                },
+                "backendRequestTimeout": {
+                  "type": "string",
+                  "default": "300s"
                 }
               }
             },

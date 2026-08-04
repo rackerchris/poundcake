@@ -12,7 +12,10 @@ from api.core.database import get_db
 from api.core.time import utc_now_db
 from api.api.auth import require_admin, require_operator, require_reader, require_service
 from api.models.models import Ingredient, ScheduledTask
-from api.plugins.contract import ServicePluginContractError, validate_service_payload
+from api.plugins.contract import (
+    ServicePluginContractError,
+    validate_service_payload_for_operation,
+)
 from api.schemas.schemas import (
     ScheduledTaskCreate,
     ScheduledTaskResponse,
@@ -142,7 +145,11 @@ async def _validate_scheduled_task_payload(
     task_payload = getattr(payload, "task_payload", None)
     if task_payload is None and existing is not None:
         task_payload = existing.task_payload
-    task_payload = task_payload or {}
+    if task_payload is None:
+        task_payload = {}
+    task_parameters = getattr(payload, "task_parameters", None)
+    if task_parameters is None and existing is not None:
+        task_parameters = existing.task_parameters
 
     result = await db.execute(
         select(Ingredient).where(
@@ -161,8 +168,15 @@ async def _validate_scheduled_task_payload(
 
     errors: list[str] = []
     for ingredient in ingredients:
+        service_exec_parameters = dict(ingredient.service_exec_parameters or {})
+        if isinstance(task_parameters, dict):
+            service_exec_parameters.update(task_parameters)
         try:
-            validate_service_payload(task_payload, ingredient.payload_schema)
+            validate_service_payload_for_operation(
+                task_payload,
+                ingredient.payload_schema,
+                service_exec_parameters or None,
+            )
             return
         except ServicePluginContractError as exc:
             errors.append(str(exc))

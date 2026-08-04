@@ -38,6 +38,36 @@ def _ingredient() -> Ingredient:
     )
 
 
+def _operation_ingredient() -> Ingredient:
+    ingredient = _ingredient()
+    ingredient.service_exec = "operation_result"
+    ingredient.task_key_template = "dummy-operation-result"
+    ingredient.service_payload_template = {}
+    ingredient.payload_schema = {
+        "type": "object",
+        "properties": {
+            "message": {"type": "string"},
+            "target": {"type": "string", "minLength": 1},
+        },
+        "additionalProperties": False,
+    }
+    ingredient.service_exec_parameters = {
+        "operation": "run",
+        "allowed_operations": ["run"],
+        "operation_metadata": {
+            "run": {
+                "payload_schema": {
+                    "type": "object",
+                    "properties": {"target": {"type": "string", "minLength": 1}},
+                    "required": ["target"],
+                    "additionalProperties": False,
+                }
+            }
+        },
+    }
+    return ingredient
+
+
 def _comms_ingredient() -> Ingredient:
     return Ingredient(
         service_type="dummy",
@@ -174,6 +204,51 @@ def test_seed_dish_ingredients_hydrates_payload_from_order_context() -> None:
     assert rows[0].service_exec_expected_outcome == {"success": True}
 
 
+def test_seed_dish_ingredients_uses_operator_action_order_payload() -> None:
+    ingredient = _operation_ingredient()
+    recipe_ingredient = RecipeIngredient(
+        id=113,
+        ingredient=ingredient,
+        step_order=1,
+        parallel_group=1,
+        depth=1,
+        run_phase="firing",
+        run_condition="always",
+        service_payload={},
+    )
+    recipe = Recipe(
+        id=514,
+        name="operator-action:dummy:operation",
+        enabled=True,
+        recipe_ingredients=[recipe_ingredient],
+    )
+    order = SimpleNamespace(
+        id=611,
+        req_id="req-operator-action",
+        alert_group_name="operator-action:dummy:operation",
+        alert_status="firing",
+        labels={},
+        annotations={},
+        raw_data={
+            "operator_action": True,
+            "service_type": "dummy",
+            "service_exec": "operation_result",
+            "task_key_template": "dummy-operation-result",
+            "service_payload": {"target": "api"},
+        },
+    )
+
+    rows = seed_dish_ingredients_for_phase(
+        dish_id=9013,
+        recipe=recipe,
+        phase="firing",
+        order=order,
+    )
+
+    assert len(rows) == 1
+    assert rows[0].service_payload == {"target": "api"}
+
+
 def test_seed_dish_ingredients_applies_resolving_run_conditions() -> None:
     ingredient = _ingredient()
     recipe_ingredient = RecipeIngredient(
@@ -255,6 +330,28 @@ def test_seed_dish_ingredients_validates_payload_before_dispatch() -> None:
 
     with pytest.raises(ServicePluginContractError, match="service_payload.message"):
         seed_dish_ingredients_for_phase(dish_id=9006, recipe=recipe, phase="firing")
+
+
+def test_seed_dish_ingredients_uses_operation_payload_schema_before_dispatch() -> None:
+    recipe_ingredient = RecipeIngredient(
+        id=106,
+        ingredient=_operation_ingredient(),
+        step_order=1,
+        parallel_group=1,
+        depth=1,
+        run_phase="firing",
+        run_condition="always",
+        service_payload={"message": "top-level-only"},
+    )
+    recipe = Recipe(
+        id=507,
+        name="invalid-operation-payload",
+        enabled=True,
+        recipe_ingredients=[recipe_ingredient],
+    )
+
+    with pytest.raises(ServicePluginContractError, match="target"):
+        seed_dish_ingredients_for_phase(dish_id=9007, recipe=recipe, phase="firing")
 
 
 def test_seed_dish_ingredients_places_comms_after_current_dish_shape() -> None:

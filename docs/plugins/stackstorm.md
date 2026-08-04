@@ -51,6 +51,17 @@ router does not expose a direct StackStorm content-sync action. The sync
 implementation lives in `api/plugins/stackstorm/content_sync.py`, matching the
 standard adapter layout for plugin-owned recurring import/sync work.
 
+## Payload contracts
+
+Operation-level `payload_schema` validation is authoritative. Invalid payloads
+are rejected before adapter execution.
+
+- `action_execution.execute_action` requires `action_ref` and accepts optional
+  object `parameters`.
+- `workflow_execution.execute_workflow` requires `workflow_ref` and accepts
+  optional object `inputs`.
+- `content_sync.sync_content` and `health_check` accept no payload fields.
+
 ## Devstack
 
 The devstack installs StackStorm from

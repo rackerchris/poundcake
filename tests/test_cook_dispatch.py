@@ -545,9 +545,6 @@ async def test_dispatch_order_skips_when_recipe_is_missing_even_if_global_comms_
     async def _global_policy_configured(_db: object) -> bool:
         return True
 
-    monkeypatch.setattr(
-        orders_api, "_get_settings", lambda: SimpleNamespace(catch_all_recipe_name="")
-    )
     monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
     monkeypatch.setattr(orders_api, "global_policy_configured", _global_policy_configured)
     monkeypatch.setattr(
@@ -563,6 +560,57 @@ async def test_dispatch_order_skips_when_recipe_is_missing_even_if_global_comms_
 
     assert response.status == "skipped"
     assert response.reason == "No recipe for missing-recipe"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_order_without_exact_recipe_does_not_use_fallback_recipe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order = SimpleNamespace(
+        id=225,
+        req_id="req-no-exact-recipe",
+        processing_status="new",
+        alert_group_name="missing-recipe-with-catch-all",
+        remediation_outcome=None,
+        raw_data={},
+        clear_timeout_sec=30,
+        clear_deadline_at="deadline",
+        clear_timed_out_at="timed-out",
+        auto_close_eligible=True,
+        is_active=False,
+        updated_at=None,
+    )
+    db = _DispatchDb([[order], []])
+
+    @asynccontextmanager
+    async def _noop_write_transaction(_db: object):
+        yield
+
+    async def _unexpected_global_recipe(_db: object) -> object:
+        raise AssertionError("global policy recipe should not be loaded without a recipe")
+
+    def _unexpected_seed(**_kwargs: Any) -> list[object]:
+        raise AssertionError("dish ingredients should not be seeded without a recipe")
+
+    async def _global_policy_configured(_db: object) -> bool:
+        return True
+
+    monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
+    monkeypatch.setattr(orders_api, "global_policy_configured", _global_policy_configured)
+    monkeypatch.setattr(
+        orders_api, "get_global_policy_recipe_for_dispatch", _unexpected_global_recipe
+    )
+    monkeypatch.setattr(orders_api, "seed_dish_ingredients_for_phase", _unexpected_seed)
+
+    response = await orders_api._dispatch_order_once(
+        request=SimpleNamespace(state=SimpleNamespace(req_id="req-no-exact-recipe")),
+        order_id=225,
+        db=db,  # type: ignore[arg-type]
+    )
+
+    assert response.status == "skipped"
+    assert response.reason == "No recipe for missing-recipe-with-catch-all"
+    assert order.processing_status == "resolving"
 
 
 @pytest.mark.asyncio

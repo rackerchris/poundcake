@@ -40,3 +40,17 @@ that in-cluster service.
 - `health_check`
 - `sync_silences`
 - `inspect` operations for alert/group inspection and inhibition lookup
+
+## Payload contracts
+
+Operation-level `payload_schema` validation is authoritative. Invalid payloads
+are rejected before adapter execution.
+
+- `inspect.list_alerts`, `list_groups`, and `verify_firing` accept bounded
+  filter fields only.
+- `inspect.find_inhibited` requires `fingerprint`.
+- `inspect.find_inhibited_by_source` requires `source_ref`.
+- `sync_silences.create`, `ensure`, and `sync` require a non-empty `matchers`
+  list plus `name`, `starts_at`, and `ends_at`.
+- `sync_silences.expire` and `delete` require `source_ref`.
+- `health_check` accepts no payload fields.

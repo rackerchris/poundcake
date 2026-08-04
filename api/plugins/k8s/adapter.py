@@ -28,6 +28,7 @@ K8S_SERVICE_EXECS = {
     "resource_pressure_remediation",
     "service_probe",
 }
+SERVICE_PAYLOAD_OBJECT_ERROR = "service_payload must be an object when provided"
 PROMETHEUS_RULE_OPERATIONS = {"get", "list", "apply", "delete"}
 POD_ACTION_OPERATIONS = {"list", "get", "logs", "events", "delete"}
 DEPLOYMENT_ACTION_OPERATIONS = {"get", "scale", "rollout_restart", "rollout_status"}
@@ -195,11 +196,13 @@ class KubernetesExecutionAdapter(ExecutionAdapter):
         service_exec = (ctx.service_exec or "").strip().lower()
         if service_exec not in K8S_SERVICE_EXECS:
             return f"Unsupported k8s service_exec: {ctx.service_exec}"
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return SERVICE_PAYLOAD_OBJECT_ERROR
         if service_exec == "health_check":
             return None
 
         operation = _operation(ctx)
-        payload = ctx.service_payload if isinstance(ctx.service_payload, dict) else {}
+        payload = {} if ctx.service_payload is None else ctx.service_payload
         if service_exec == "prometheus_rule":
             return _validate_prometheus_rule(operation, payload)
         if service_exec == "pod_action":
@@ -259,8 +262,20 @@ class KubernetesExecutionAdapter(ExecutionAdapter):
     async def dispatch(self, ctx: ExecutionContext) -> ExecutionResult:
         service_exec = (ctx.service_exec or "").strip().lower()
         operation = _operation(ctx) if service_exec != "health_check" else service_exec
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            service_exec_id = _build_receipt(
+                service_exec=service_exec,
+                operation=operation,
+                status="errored",
+            )
+            return _payload_contract_error(
+                service_type=self.service_type,
+                service_exec_id=service_exec_id,
+                message=SERVICE_PAYLOAD_OBJECT_ERROR,
+            )
         try:
-            result = await self._execute(service_exec, operation, ctx.service_payload or {})
+            payload = {} if ctx.service_payload is None else ctx.service_payload
+            result = await self._execute(service_exec, operation, payload)
             status = "succeeded" if result.get("success") is not False else "failed"
             service_exec_id = _build_receipt(
                 service_exec=service_exec, operation=operation, status=status
@@ -352,6 +367,17 @@ class KubernetesExecutionAdapter(ExecutionAdapter):
 
     async def _execute(self, service_exec: str, operation: str, payload: JSONObject) -> JSONObject:
         helper = self._resolve_helper()
+        if service_exec == "prometheus_rule":
+            namespace = str(payload.get("namespace") or "").strip()
+            if namespace:
+                base_config = self._resolve_operator_config()
+                helper = self.with_operator_config(
+                    {
+                        "namespace": namespace,
+                        "capabilities_enabled": base_config.capabilities_enabled or {},
+                        "capability_overrides": base_config.capability_overrides or {},
+                    }
+                )._resolve_helper()
         if operation == "health_check":
             return await helper.health_check()
         if service_exec == "prometheus_rule":
@@ -665,6 +691,21 @@ def _status_from_receipt(service_exec_id: str) -> str:
 
 def _build_receipt(*, service_exec: str, operation: str, status: str) -> str:
     return f"k8s:{service_exec}:{operation}:{status}:{uuid4()}"
+
+
+def _payload_contract_error(
+    *, service_type: str, service_exec_id: str, message: str
+) -> ExecutionResult:
+    outcome: JSONObject = {"success": False, "status": "errored", "message": message}
+    return ExecutionResult(
+        service_type=service_type,
+        status="errored",
+        service_exec_id=service_exec_id,
+        service_exec_error=message,
+        result=outcome,
+        raw=outcome,
+        retryable=False,
+    )
 
 
 def _validate_prometheus_rule(operation: str, payload: JSONObject) -> str | None:

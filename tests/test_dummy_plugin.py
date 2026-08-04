@@ -221,16 +221,22 @@ def test_dummy_templates_are_strict_service_plugin_templates() -> None:
         if template["ingredient_purpose"] == "comms"
     )
     assert comms_template["service_exec"] == "communication"
-    assert comms_template["service_exec_parameters"] == {
-        "operation": "open",
-        "allowed_operations": ["open", "notify", "update", "close"],
-        "operation_metadata": {
-            "open": {"label": "Open", "description": "Create a communication thread."},
-            "notify": {"label": "Notify", "description": "Add a notification."},
-            "update": {"label": "Update", "description": "Update an existing thread."},
-            "close": {"label": "Close", "description": "Close an existing thread."},
-        },
+    parameters = comms_template["service_exec_parameters"]
+    assert parameters["operation"] == "open"
+    assert parameters["allowed_operations"] == ["open", "notify", "update", "close"]
+    expected_metadata = {
+        "open": ("Open", "Create a communication thread."),
+        "notify": ("Notify", "Add a notification."),
+        "update": ("Update", "Update an existing thread."),
+        "close": ("Close", "Close an existing thread."),
     }
+    assert set(parameters["operation_metadata"]) == set(expected_metadata)
+    for operation, (label, description) in expected_metadata.items():
+        metadata = parameters["operation_metadata"][operation]
+        assert metadata["label"] == label
+        assert metadata["description"] == description
+        assert metadata["payload_schema"]["additionalProperties"] is False
+        validate_payload_schema(metadata["payload_schema"])
     assert {recipe["name"] for recipe in DUMMY_RECIPE_TEMPLATES} >= {
         "dummy-positive-result",
         "dummy-negative-result",
@@ -439,16 +445,14 @@ def test_dummy_communication_override_keeps_template_allow_list() -> None:
         service_exec_parameters_override={"operation": "close"},
     )
 
-    assert build_step_parameters(recipe_ingredient) == {
-        "operation": "close",
-        "allowed_operations": ["open", "notify", "update", "close"],
-        "operation_metadata": {
-            "open": {"label": "Open", "description": "Create a communication thread."},
-            "notify": {"label": "Notify", "description": "Add a notification."},
-            "update": {"label": "Update", "description": "Update an existing thread."},
-            "close": {"label": "Close", "description": "Close an existing thread."},
-        },
-    }
+    resolved = build_step_parameters(recipe_ingredient)
+
+    assert resolved["operation"] == "close"
+    assert resolved["allowed_operations"] == ["open", "notify", "update", "close"]
+    assert (
+        resolved["operation_metadata"]
+        == template["service_exec_parameters"]["operation_metadata"]
+    )
 
 
 def test_service_operation_validator_rejects_disallowed_operation() -> None:
@@ -490,16 +494,12 @@ def test_dummy_communication_rejects_disallowed_recipe_ingredient_override() -> 
     )
     error = DummyExecutionAdapter().validate(ctx)
 
-    assert resolved_parameters == {
-        "operation": "delete",
-        "allowed_operations": ["open", "notify", "update", "close"],
-        "operation_metadata": {
-            "open": {"label": "Open", "description": "Create a communication thread."},
-            "notify": {"label": "Notify", "description": "Add a notification."},
-            "update": {"label": "Update", "description": "Update an existing thread."},
-            "close": {"label": "Close", "description": "Close an existing thread."},
-        },
-    }
+    assert resolved_parameters["operation"] == "delete"
+    assert resolved_parameters["allowed_operations"] == ["open", "notify", "update", "close"]
+    assert (
+        resolved_parameters["operation_metadata"]
+        == template["service_exec_parameters"]["operation_metadata"]
+    )
     assert error == "dummy communication operation must be one of: close, notify, open, update"
 
 

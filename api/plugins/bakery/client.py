@@ -228,6 +228,8 @@ class BakeryHealth(_BakeryTicketModel):
 
 
 class BakeryMonitorCredential(_BakeryTicketModel):
+    model_config = ConfigDict(extra="ignore")
+
     monitor_uuid: str
     monitor_id: str
     hmac_key_id: str

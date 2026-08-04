@@ -283,7 +283,6 @@ def _prometheus_capabilities() -> list[dict[str, object]]:
             "defaults": {
                 "service_payload": {
                     "alert_name": "{{ order.raw_data.alertname }}",
-                    "query": 'ALERTS{alertname="{{ order.raw_data.alertname }}"}',
                     "labels": "{{ order.labels }}",
                     "lookback_seconds": 3600,
                     "step_seconds": 60,
@@ -650,7 +649,7 @@ def test_daemonset_rollout_recipe_degrades_to_review_without_catalog_capability(
     assert action_step.service_payload["context"]["operator_review_required"] is True
 
 
-def test_generic_recipe_uses_rule_expression_for_prometheus_evidence() -> None:
+def test_generic_recipe_uses_alert_identity_for_prometheus_evidence() -> None:
     specs = remediation_step_specs(
         "openstack-api-down-critical",
         "alerts/openstack/control-plane.yaml",
@@ -664,7 +663,8 @@ def test_generic_recipe_uses_rule_expression_for_prometheus_evidence() -> None:
         if spec.role == "gather_prometheus_evidence"
     )
 
-    assert evidence_step.service_payload["query"] == 'sum(rate(http_requests_total[5m])) > 0'
+    assert "query" not in evidence_step.service_payload
+    assert evidence_step.service_payload["alert_name"] == "openstack-api-down-critical"
 
 
 def test_blackbox_recipe_uses_alertmanager_guard_capabilities() -> None:

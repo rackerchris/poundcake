@@ -77,6 +77,7 @@ class GitClient:
         self.retries = int(retries if retries is not None else settings.external_http_retries)
         self.work_dir = work_dir or Path(tempfile.gettempdir()) / "poundcake-git-plugin"
         self.repo_path: Path | None = None
+        self._credential_dir: Path | None = None
         self.allow_public_read: bool = False
 
     def with_credentials(self, payload: JSONObject | None) -> "GitClient":
@@ -384,6 +385,9 @@ class GitClient:
     def cleanup(self) -> None:
         if self.repo_path and self.repo_path.exists():
             shutil.rmtree(self.repo_path)
+        if self._credential_dir and self._credential_dir.exists():
+            shutil.rmtree(self._credential_dir)
+        self._credential_dir = None
 
     def _credentialed_repo_url(self, *, repo_url: str | None = None) -> str:
         url = (repo_url or self.repo_url).strip()
@@ -406,8 +410,12 @@ class GitClient:
         )
 
     def _credential_store_path(self) -> Path:
-        store_dir = self.work_dir / ".credentials"
-        store_dir.mkdir(parents=True, exist_ok=True)
+        if self._credential_dir is None:
+            self.work_dir.mkdir(parents=True, exist_ok=True)
+            self._credential_dir = Path(
+                tempfile.mkdtemp(prefix=".credentials-", dir=str(self.work_dir))
+            )
+        store_dir = self._credential_dir
         try:
             store_dir.chmod(0o700)
         except OSError:

@@ -102,11 +102,13 @@ gateway:
     # Existing listener section name on parent Gateway (used as HTTPRoute parentRefs.sectionName)
     name: ""  # Example: <gateway-listener-name>
 
-    # Optional default hostname used by both API/UI HTTPRoutes when gateway.hostnames is empty.
+    # Optional fallback hostname used by both API/UI HTTPRoutes when gateway.hostnames
+    # and per-route listener hostnames are empty.
     hostname: ""  # Example: poundcake.example.com
 
-  # HTTPRoute hostnames. Applied to both API and UI routes.
-  # If empty, listener.hostname is used.
+  # HTTPRoute hostnames. If set, applied to both API and UI routes.
+  # If empty, listener.hostname is used for both routes. If listener.hostname is
+  # also empty, each route uses gateway.listeners.<api|ui>.hostname.
   # - poundcake.example.com
   hostnames: []
 

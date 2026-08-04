@@ -32,6 +32,7 @@ MAX_INSPECT_LIMIT = 200
 ALERTMANAGER_CREDENTIAL_TYPE = "alertmanager_http_auth"
 ALERTMANAGER_SUPPRESSION_OPERATIONS = ("create", "update", "expire", "get")
 POUNDCAKE_COMMENT_PREFIX = "PoundCake suppression: "
+SERVICE_PAYLOAD_OBJECT_ERROR = "service_payload must be an object when provided"
 
 
 class AlertmanagerExecutionAdapter(ExecutionAdapter):
@@ -105,14 +106,16 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
         service_exec = (ctx.service_exec or "").strip().lower()
         if service_exec not in {"health_check", "inspect", "sync_silences", "suppression"}:
             return f"Unsupported alertmanager service_exec: {ctx.service_exec}"
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return SERVICE_PAYLOAD_OBJECT_ERROR
         if service_exec == "inspect":
             operation = _operation(ctx)
             if operation not in ALERTMANAGER_INSPECT_OPERATIONS:
                 return "alertmanager inspect operation must be one of: " + ", ".join(
                     ALERTMANAGER_INSPECT_OPERATIONS
-                )
+            )
             if operation == "find_inhibited_by_source":
-                fingerprint = str((ctx.service_payload or {}).get("fingerprint") or "").strip()
+                fingerprint = str(_payload(ctx).get("fingerprint") or "").strip()
                 if not fingerprint:
                     return (
                         "alertmanager find_inhibited_by_source requires service_payload.fingerprint"
@@ -123,7 +126,7 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
                 return "alertmanager suppression operation must be one of: " + ", ".join(
                     ALERTMANAGER_SUPPRESSION_OPERATIONS
                 )
-            payload = ctx.service_payload or {}
+            payload = _payload(ctx)
             if operation in {"create", "update"}:
                 if not isinstance(payload.get("matchers"), list) or not payload.get("matchers"):
                     return "alertmanager suppression create/update requires service_payload.matchers"
@@ -197,6 +200,11 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
     async def dispatch(self, ctx: ExecutionContext) -> ExecutionResult:
         service_exec = (ctx.service_exec or "").strip().lower()
         service_exec_id = f"alertmanager:{service_exec}:{uuid4()}"
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return _payload_contract_error(
+                service_exec_id=service_exec_id,
+                message=SERVICE_PAYLOAD_OBJECT_ERROR,
+            )
         adapter = await self._adapter_with_credentials()
         if service_exec == "health_check":
             health = await adapter._async_health_check()
@@ -480,7 +488,7 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
         ctx: ExecutionContext,
         service_exec_id: str,
     ) -> ExecutionResult:
-        payload = ctx.service_payload or {}
+        payload = _payload(ctx)
         response = await self._alertmanager_post(
             "/api/v2/silences",
             json=_silence_write_payload(payload),
@@ -515,7 +523,7 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
         ctx: ExecutionContext,
         service_exec_id: str,
     ) -> ExecutionResult:
-        payload = ctx.service_payload or {}
+        payload = _payload(ctx)
         response = await self._alertmanager_post(
             "/api/v2/silences",
             json=_silence_write_payload(payload, silence_id=str(payload.get("source_ref") or "")),
@@ -550,7 +558,7 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
         ctx: ExecutionContext,
         service_exec_id: str,
     ) -> ExecutionResult:
-        payload = ctx.service_payload or {}
+        payload = _payload(ctx)
         source_ref = str(payload.get("source_ref") or "").strip()
         silence = await self._fetch_silence(source_ref)
         updated = _silence_expire_payload(silence)
@@ -594,7 +602,7 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
         ctx: ExecutionContext,
         service_exec_id: str,
     ) -> ExecutionResult:
-        source_ref = str((ctx.service_payload or {}).get("source_ref") or "").strip()
+        source_ref = str(_payload(ctx).get("source_ref") or "").strip()
         silence = await self._fetch_silence(source_ref)
         normalized = self._normalize_silence(silence)
         outcome: JSONObject = {
@@ -619,7 +627,7 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
         *,
         operation: str,
     ) -> ExecutionResult:
-        payload = ctx.service_payload or {}
+        payload = _payload(ctx)
         source_fingerprint = str(payload.get("fingerprint") or "").strip()
         response = await self._alertmanager_get("/api/v2/alerts", params=_alert_query_params(ctx))
         if response.status_code >= 400:
@@ -663,7 +671,7 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
         ctx: ExecutionContext,
         service_exec_id: str,
     ) -> ExecutionResult:
-        payload = ctx.service_payload or {}
+        payload = _payload(ctx)
         source_fingerprint = _clean_template_value(payload.get("fingerprint"))
         response = await self._alertmanager_get(
             "/api/v2/alerts",
@@ -900,6 +908,23 @@ def _operation(ctx: ExecutionContext) -> str:
     return str(params.get("operation") or "list_alerts").strip().lower()
 
 
+def _payload(ctx: ExecutionContext) -> JSONObject:
+    return {} if ctx.service_payload is None else ctx.service_payload
+
+
+def _payload_contract_error(*, service_exec_id: str, message: str) -> ExecutionResult:
+    outcome: JSONObject = {"success": False, "status": "errored", "message": message}
+    return ExecutionResult(
+        service_type=AlertmanagerExecutionAdapter.service_type,
+        status="errored",
+        service_exec_id=service_exec_id,
+        service_exec_error=message,
+        result=outcome,
+        raw=outcome,
+        retryable=False,
+    )
+
+
 def _decode_comment(comment: str, *, fallback_name: str) -> tuple[str, str | None]:
     stripped = comment.strip()
     if not stripped:
@@ -1012,7 +1037,7 @@ def _alert_query_params(
     include_muted: bool = False,
     include_matchers: bool = True,
 ) -> list[tuple[str, object]]:
-    payload = ctx.service_payload or {}
+    payload = _payload(ctx)
     params: list[tuple[str, object]] = []
     receiver = str(payload.get("receiver") or "").strip()
     if receiver:
@@ -1045,7 +1070,7 @@ def _matchers(payload: JSONObject) -> list[str]:
 
 
 def _limit(ctx: ExecutionContext) -> int:
-    raw = (ctx.service_payload or {}).get("limit")
+    raw = _payload(ctx).get("limit")
     try:
         limit = int(raw or DEFAULT_INSPECT_LIMIT)
     except (TypeError, ValueError):

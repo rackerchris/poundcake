@@ -76,6 +76,7 @@ INTERNAL_HMAC_CREDENTIAL_TYPE = "internal_control_plane_hmac"
 STACKSTORM_CREDENTIAL_TYPE = "stackstorm_api_key"
 logger = get_logger(__name__)
 
+
 @asynccontextmanager
 async def _maybe_transaction(db: AsyncSession | None) -> AsyncIterator[None]:
     if db is None:
@@ -376,26 +377,38 @@ def _recipe_step_payload(
         raise PluginBootstrapError(f"Plugin recipe references unknown ingredient: {identity}")
 
     service_payload = step.get("service_payload")
+    if service_payload is not None and not isinstance(service_payload, dict):
+        raise PluginBootstrapError(
+            f"Plugin recipe step service_payload invalid for {identity}: "
+            "service_payload must be an object when provided"
+        )
     resolved_payload = dict(ingredient.service_payload_template or {})
-    if isinstance(service_payload, dict):
+    if service_payload:
         resolved_payload.update(service_payload)
     resolved_parameters = dict(ingredient.service_exec_parameters or {})
     parameter_overrides = step.get("service_exec_parameters_override")
-    if isinstance(parameter_overrides, dict):
+    if parameter_overrides is not None and not isinstance(parameter_overrides, dict):
+        raise PluginBootstrapError(
+            f"Plugin recipe step service_exec_parameters_override invalid for {identity}: "
+            "service_exec_parameters_override must be an object when provided"
+        )
+    if parameter_overrides:
         resolved_parameters.update(parameter_overrides)
+    service_payload_from_order = bool(step.get("service_payload_from_order"))
     try:
         validate_service_operation(resolved_parameters or None)
-        validate_service_payload_for_operation(
-            resolved_payload,
-            ingredient.payload_schema,
-            resolved_parameters or None,
-        )
+        if not service_payload_from_order:
+            validate_service_payload_for_operation(
+                resolved_payload,
+                ingredient.payload_schema,
+                resolved_parameters or None,
+            )
     except ServicePluginContractError as exc:
         raise PluginBootstrapError(
             f"Plugin recipe step service_payload invalid for {identity}: {exc}"
         ) from exc
 
-    return {
+    payload = {
         "ingredient_id": ingredient.id,
         "step_order": int(step.get("step_order") or 1),
         "on_success": step.get("on_success", "continue"),
@@ -409,6 +422,9 @@ def _recipe_step_payload(
         "run_phase": step.get("run_phase", "both"),
         "run_condition": step.get("run_condition", "always"),
     }
+    if service_payload_from_order:
+        payload["service_payload_from_order"] = True
+    return payload
 
 
 async def _register_plugin_recipes(

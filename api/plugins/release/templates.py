@@ -64,6 +64,7 @@ RELEASE_INGREDIENT_TEMPLATES[1]["service_exec_parameters"] = {
         "check_updates": {
             "label": "Check for updates",
             "description": "Query the OCI registry for newer Helm chart releases and create notification records if an update is available.",
+            "payload_schema": _schema({}),
         },
     },
 }

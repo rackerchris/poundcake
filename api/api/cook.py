@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -447,12 +448,12 @@ async def _advance_dish(
                     service_exec=str(item["service_exec"]),
                     service_payload=(
                         item.get("service_payload")
-                        if isinstance(item.get("service_payload"), dict)
+                        if item.get("service_payload") is not None
                         else {}
                     ),
                     service_exec_parameters=(
                         item.get("service_exec_parameters")
-                        if isinstance(item.get("service_exec_parameters"), dict)
+                        if item.get("service_exec_parameters") is not None
                         else {}
                     ),
                     retry_count=int(item.get("retry_count") or 0),
@@ -469,16 +470,24 @@ async def _advance_dish(
                 db=db,
                 orchestrator=orchestrator,
             )
-        except HTTPException as exc:
+        except (HTTPException, ValidationError) as exc:
             result = None
-            service_exec_status = "errored" if exc.status_code >= 500 else "failed"
-            service_exec_error = str(exc.detail)
+            if isinstance(exc, HTTPException):
+                service_exec_status = "errored" if exc.status_code >= 500 else "failed"
+                service_exec_error = str(exc.detail)
+                failure_reason = "expediter_dispatch_error"
+                failure_detail = str(exc.detail)
+            else:
+                service_exec_status = "failed"
+                service_exec_error = str(exc)
+                failure_reason = "execution_contract_error"
+                failure_detail = str(exc)
             service_exec_id = None
             actual_outcome = {
                 "success": False,
                 "status": service_exec_status,
-                "reason": "expediter_dispatch_error",
-                "detail": str(exc.detail),
+                "reason": failure_reason,
+                "detail": failure_detail,
             }
         else:
             service_exec_status = verdict_status(
@@ -744,6 +753,19 @@ async def _apply_terminal_runtime_outputs(db: AsyncSession, dish: Dish) -> None:
                     synced_at=row.service_exec_completed_time or utc_now_db(),
                 )
                 row.service_exec_actual_outcome = {**outcome, "suppression_sync": sync_result}
+        elif purpose == "suppression_lifecycle":
+            suppression = outcome.get("suppression") if isinstance(outcome, dict) else None
+            if isinstance(suppression, dict):
+                sync_result = await upsert_plugin_suppressions(
+                    db,
+                    service_type=row.service_type,
+                    suppressions=[dict(suppression)],
+                    synced_at=row.service_exec_completed_time or utc_now_db(),
+                )
+                row.service_exec_actual_outcome = {
+                    **outcome,
+                    "suppression_lifecycle_sync": sync_result,
+                }
 
 
 async def _apply_plugin_health_result(

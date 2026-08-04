@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from starlette.requests import Request
 
 from api.api.plugins import _empty_helper_metadata, _summary_from_row
@@ -644,9 +646,13 @@ class _PrometheusRuleHelper:
 class _PrometheusRuleAdapter(ExecutionAdapter):
     service_type = "k8s"
 
-    def __init__(self, namespace: str = "default") -> None:
+    def __init__(
+        self,
+        namespace: str = "default",
+        helper: _PrometheusRuleHelper | None = None,
+    ) -> None:
         self.namespace = namespace
-        self.helper = _PrometheusRuleHelper()
+        self.helper = helper or _PrometheusRuleHelper()
         self.helper.namespace = namespace
 
     def default_operator_config(self) -> dict[str, object]:
@@ -657,7 +663,8 @@ class _PrometheusRuleAdapter(ExecutionAdapter):
 
     def with_operator_config(self, config: dict[str, object] | None) -> "_PrometheusRuleAdapter":
         return _PrometheusRuleAdapter(
-            namespace=str((config or {}).get("namespace") or self.namespace)
+            namespace=str((config or {}).get("namespace") or self.namespace),
+            helper=self.helper,
         )
 
     def validate(self, ctx: ExecutionContext) -> str | None:
@@ -838,7 +845,9 @@ async def test_plugin_api_reads_one_prometheus_rule_crd(monkeypatch) -> None:
         fake_external_plugin_row_or_404,
     )
 
-    response = await get_kubernetes_prometheus_rule("demo-rules", namespace="monitoring", db=object())
+    response = await get_kubernetes_prometheus_rule(
+        "demo-rules", namespace="monitoring", db=object()
+    )
 
     assert response.name == "demo-rules"
     assert response.rule_count == 2
@@ -885,6 +894,25 @@ async def test_plugin_api_updates_one_prometheus_rule_entry(monkeypatch) -> None
         "api.api.plugins._external_plugin_row_or_404",
         fake_external_plugin_row_or_404,
     )
+    action_orders: list[dict[str, object]] = []
+
+    async def fake_run_operator_action_order(**kwargs: object) -> SimpleNamespace:
+        action_orders.append(dict(kwargs))
+        payload = kwargs["service_payload"]
+        assert isinstance(payload, dict)
+        await adapter.helper.update_rule_in_named_crd(
+            crd_name=str(payload["crd_name"]),
+            group_name=str(payload["group_name"]),
+            rule_name=str(payload["rule_name"]),
+            rule_data=payload["rule_data"],  # type: ignore[arg-type]
+            source_metadata=payload.get("source_metadata"),
+        )
+        return SimpleNamespace(status="succeeded", outcome={"success": True}, error=None)
+
+    monkeypatch.setattr(
+        "api.api.plugins.run_operator_action_order",
+        fake_run_operator_action_order,
+    )
     reloads: list[str] = []
 
     async def fake_reload(**kwargs: object) -> None:
@@ -917,6 +945,10 @@ async def test_plugin_api_updates_one_prometheus_rule_entry(monkeypatch) -> None
 
     assert response.rule_data["expr"] == "vector(2)"
     assert reloads == ["TEST-PROM-RELOAD"]
+    assert len(action_orders) == 1
+    assert action_orders[0]["recipe_name"] == "operator-action:k8s:prometheus-rule-apply"
+    assert action_orders[0]["service_type"] == "k8s"
+    assert action_orders[0]["service_exec"] == "prometheus_rule"
 
 
 @pytest.mark.asyncio
@@ -932,6 +964,25 @@ async def test_plugin_api_creates_one_prometheus_rule_entry_and_reloads(monkeypa
     monkeypatch.setattr(
         "api.api.plugins._external_plugin_row_or_404",
         fake_external_plugin_row_or_404,
+    )
+    action_orders: list[dict[str, object]] = []
+
+    async def fake_run_operator_action_order(**kwargs: object) -> SimpleNamespace:
+        action_orders.append(dict(kwargs))
+        payload = kwargs["service_payload"]
+        assert isinstance(payload, dict)
+        await adapter.helper.add_rule_to_named_crd(
+            crd_name=str(payload["crd_name"]),
+            group_name=str(payload["group_name"]),
+            rule_name=str(payload["rule_name"]),
+            rule_data=payload["rule_data"],  # type: ignore[arg-type]
+            source_metadata=payload.get("source_metadata"),
+        )
+        return SimpleNamespace(status="succeeded", outcome={"success": True}, error=None)
+
+    monkeypatch.setattr(
+        "api.api.plugins.run_operator_action_order",
+        fake_run_operator_action_order,
     )
     reloads: list[str] = []
 
@@ -966,6 +1017,10 @@ async def test_plugin_api_creates_one_prometheus_rule_entry_and_reloads(monkeypa
     assert response.rule_name == "NewAlert"
     assert response.rule_data["expr"] == "vector(3)"
     assert reloads == ["TEST-PROM-CREATE"]
+    assert len(action_orders) == 1
+    assert action_orders[0]["recipe_name"] == "operator-action:k8s:prometheus-rule-apply"
+    assert action_orders[0]["service_type"] == "k8s"
+    assert action_orders[0]["service_exec"] == "prometheus_rule"
 
 
 @pytest.mark.asyncio
@@ -1051,7 +1106,9 @@ class _ExportAdapter(_PrometheusRuleAdapter):
 
 
 @pytest.mark.asyncio
-async def test_plugin_api_exports_genestack_alert_updates_through_orchestrator(monkeypatch) -> None:
+async def test_plugin_api_exports_genestack_alert_updates_through_order_workflow(
+    monkeypatch,
+) -> None:
     row = _external_plugin_row("genestack_monitoring")
     adapter = _ExportAdapter()
 
@@ -1060,13 +1117,31 @@ async def test_plugin_api_exports_genestack_alert_updates_through_orchestrator(m
     ) -> tuple[object, object, object]:
         return row, object(), adapter
 
-    class _Orchestrator:
-        async def dispatch(self, ctx: ExecutionContext) -> ExecutionResult:
-            return await adapter.dispatch(ctx)
-
     monkeypatch.setattr(
         "api.api.plugins._external_plugin_row_or_404",
         fake_external_plugin_row_or_404,
+    )
+    action_orders: list[dict[str, object]] = []
+
+    async def fake_run_operator_action_order(**kwargs: object) -> SimpleNamespace:
+        action_orders.append(dict(kwargs))
+        return SimpleNamespace(
+            status="succeeded",
+            outcome={
+                "status": "succeeded",
+                "message": "Prepared Genestack alert update.",
+                "branch": "poundcake/demo",
+                "pull_request": {"number": 12, "url": "https://example.test/pr/12"},
+                "exported": {"files": 1, "rule_name": "DemoAlert"},
+                "skipped": {"missing_source_metadata": 0},
+                "warnings": [],
+            },
+            error=None,
+        )
+
+    monkeypatch.setattr(
+        "api.api.plugins.run_operator_action_order",
+        fake_run_operator_action_order,
     )
 
     response = await export_genestack_alert_updates(
@@ -1078,12 +1153,18 @@ async def test_plugin_api_exports_genestack_alert_updates_through_orchestrator(m
         ),
         request=type("Request", (), {"state": type("State", (), {"req_id": "req-1"})()})(),
         db=object(),
-        orchestrator=_Orchestrator(),  # type: ignore[arg-type]
+        orchestrator=object(),  # type: ignore[arg-type]
         _context=object(),
     )
 
     assert response.branch == "poundcake/demo"
     assert response.pull_request is not None
+    assert len(action_orders) == 1
+    assert action_orders[0]["recipe_name"] == (
+        "operator-action:genestack-monitoring:export-alert-updates"
+    )
+    assert action_orders[0]["service_type"] == "genestack_monitoring"
+    assert action_orders[0]["service_exec"] == "repo_sync"
 
 
 @pytest.mark.asyncio

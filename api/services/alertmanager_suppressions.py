@@ -8,9 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from api.models.models import AlertSuppression, ServicePlugin
-from api.plugins.types import ExecutionContext
+from api.models.models import AlertSuppression
 from api.schemas.schemas import SuppressionCreate, SuppressionUpdate
+from api.services.operator_action_orders import run_operator_action_order
 from api.services.plugin_orchestrator import ExecutionOrchestrator
 from api.services.suppression_sync import upsert_plugin_suppressions
 from api.types import JSONObject
@@ -39,30 +39,25 @@ async def create_alertmanager_suppression(
     if not payload.matchers:
         raise SuppressionLifecycleError("matchers are required", status_code=400)
 
-    result = await orchestrator.dispatch(
-        ExecutionContext.model_validate(
-            {
-                "service_type": "alertmanager",
-                "service_exec": "suppression",
-                "service_payload": {
-                    "name": payload.name,
-                    "reason": payload.reason,
-                    "starts_at": payload.starts_at.isoformat(),
-                    "ends_at": payload.ends_at.isoformat(),
-                    "created_by": payload.created_by,
-                    "summary_ticket_enabled": payload.summary_ticket_enabled,
-                    "matchers": [matcher.model_dump() for matcher in payload.matchers],
-                },
-                "service_exec_parameters": {"operation": "create"},
-                "retry_count": 0,
-                "retry_delay": 0,
-                "service_exec_timeout": 60,
-                "context": await _execution_context_for_service(db=db, service_type="alertmanager"),
-                "req_id": req_id,
-            }
-        )
+    result = await run_operator_action_order(
+        db=db,
+        orchestrator=orchestrator,
+        req_id=req_id,
+        recipe_name="operator-action:alertmanager:create-suppression",
+        service_type="alertmanager",
+        service_exec="suppression",
+        task_key_template="alertmanager-create-suppression",
+        service_payload={
+            "name": payload.name,
+            "reason": payload.reason,
+            "starts_at": payload.starts_at.isoformat(),
+            "ends_at": payload.ends_at.isoformat(),
+            "created_by": payload.created_by,
+            "summary_ticket_enabled": payload.summary_ticket_enabled,
+            "matchers": [matcher.model_dump() for matcher in payload.matchers],
+        },
     )
-    suppression = _normalized_suppression_from_result(result.result)
+    suppression = _normalized_suppression_from_result(result.outcome)
     suppression["summary_ticket_enabled"] = payload.summary_ticket_enabled
     await upsert_plugin_suppressions(
         db,
@@ -103,39 +98,36 @@ async def update_alertmanager_suppression(
     if not matcher_payloads:
         raise SuppressionLifecycleError("matchers are required", status_code=400)
 
-    result = await orchestrator.dispatch(
-        ExecutionContext.model_validate(
-            {
-                "service_type": "alertmanager",
-                "service_exec": "suppression",
-                "service_payload": {
-                    "source_ref": source_ref,
-                    "name": payload.name or suppression.name,
-                    "reason": payload.reason if payload.reason is not None else suppression.reason,
-                    "starts_at": (
-                        payload.starts_at.isoformat() if payload.starts_at else suppression.starts_at.isoformat()
-                    ),
-                    "ends_at": (
-                        payload.ends_at.isoformat() if payload.ends_at else suppression.ends_at.isoformat()
-                    ),
-                    "created_by": suppression.created_by,
-                    "summary_ticket_enabled": (
-                        payload.summary_ticket_enabled
-                        if payload.summary_ticket_enabled is not None
-                        else suppression.summary_ticket_enabled
-                    ),
-                    "matchers": matcher_payloads,
-                },
-                "service_exec_parameters": {"operation": "update"},
-                "retry_count": 0,
-                "retry_delay": 0,
-                "service_exec_timeout": 60,
-                "context": await _execution_context_for_service(db=db, service_type="alertmanager"),
-                "req_id": req_id,
-            }
-        )
+    result = await run_operator_action_order(
+        db=db,
+        orchestrator=orchestrator,
+        req_id=req_id,
+        recipe_name="operator-action:alertmanager:update-suppression",
+        service_type="alertmanager",
+        service_exec="suppression",
+        task_key_template="alertmanager-update-suppression",
+        service_payload={
+            "source_ref": source_ref,
+            "name": payload.name or suppression.name,
+            "reason": payload.reason if payload.reason is not None else suppression.reason,
+            "starts_at": (
+                payload.starts_at.isoformat()
+                if payload.starts_at
+                else suppression.starts_at.isoformat()
+            ),
+            "ends_at": (
+                payload.ends_at.isoformat() if payload.ends_at else suppression.ends_at.isoformat()
+            ),
+            "created_by": suppression.created_by,
+            "summary_ticket_enabled": (
+                payload.summary_ticket_enabled
+                if payload.summary_ticket_enabled is not None
+                else suppression.summary_ticket_enabled
+            ),
+            "matchers": matcher_payloads,
+        },
     )
-    normalized = _normalized_suppression_from_result(result.result)
+    normalized = _normalized_suppression_from_result(result.outcome)
     normalized["summary_ticket_enabled"] = (
         payload.summary_ticket_enabled
         if payload.summary_ticket_enabled is not None
@@ -149,7 +141,9 @@ async def update_alertmanager_suppression(
     await db.commit()
     refreshed = await _suppression_by_source_ref(db, source_ref)
     if refreshed is None:
-        raise SuppressionLifecycleError("Updated suppression could not be reloaded", status_code=500)
+        raise SuppressionLifecycleError(
+            "Updated suppression could not be reloaded", status_code=500
+        )
     return refreshed
 
 
@@ -168,22 +162,17 @@ async def expire_alertmanager_suppression(
             "Only Alertmanager-backed suppressions can be canceled",
             status_code=400,
         )
-    result = await orchestrator.dispatch(
-        ExecutionContext.model_validate(
-            {
-                "service_type": "alertmanager",
-                "service_exec": "suppression",
-                "service_payload": {"source_ref": source_ref},
-                "service_exec_parameters": {"operation": "expire"},
-                "retry_count": 0,
-                "retry_delay": 0,
-                "service_exec_timeout": 60,
-                "context": await _execution_context_for_service(db=db, service_type="alertmanager"),
-                "req_id": req_id,
-            }
-        )
+    result = await run_operator_action_order(
+        db=db,
+        orchestrator=orchestrator,
+        req_id=req_id,
+        recipe_name="operator-action:alertmanager:expire-suppression",
+        service_type="alertmanager",
+        service_exec="suppression",
+        task_key_template="alertmanager-expire-suppression",
+        service_payload={"source_ref": source_ref},
     )
-    normalized = _normalized_suppression_from_result(result.result)
+    normalized = _normalized_suppression_from_result(result.outcome)
     normalized["summary_ticket_enabled"] = suppression.summary_ticket_enabled
     await upsert_plugin_suppressions(
         db,
@@ -193,13 +182,17 @@ async def expire_alertmanager_suppression(
     await db.commit()
     refreshed = await _suppression_by_source_ref(db, source_ref)
     if refreshed is None:
-        raise SuppressionLifecycleError("Canceled suppression could not be reloaded", status_code=500)
+        raise SuppressionLifecycleError(
+            "Canceled suppression could not be reloaded", status_code=500
+        )
     return refreshed
 
 
 def _normalized_suppression_from_result(result: object) -> JSONObject:
     if not isinstance(result, dict):
-        raise SuppressionLifecycleError("Alertmanager suppression returned no payload", status_code=502)
+        raise SuppressionLifecycleError(
+            "Alertmanager suppression returned no payload", status_code=502
+        )
     if not bool(result.get("success")):
         raise SuppressionLifecycleError(
             str(result.get("message") or "Alertmanager suppression request failed"),
@@ -218,18 +211,6 @@ def _normalized_suppression_from_result(result: object) -> JSONObject:
             status_code=502,
         )
     return dict(suppression)
-
-
-async def _execution_context_for_service(
-    *,
-    db: AsyncSession,
-    service_type: str,
-) -> dict[str, object]:
-    result = await db.execute(
-        select(ServicePlugin.plugin_config).where(ServicePlugin.service_type == service_type.strip().lower())
-    )
-    config = result.scalar_one_or_none()
-    return {"operator_config": dict(config)} if isinstance(config, dict) else {}
 
 
 async def _suppression_by_source_ref(

@@ -45,9 +45,26 @@ points PoundCake at that in-cluster service.
 - Helper capabilities: `alert_rules.parse`, `alert_rules.index`, and
   `alert_rules.render`
 
-`alert_evidence` evaluates a supplied alert expression as both an instant query
-and a recent range query, returning the current result, trend result, labels,
-lookback, and step metadata for downstream alert recipes.
+`alert_evidence` builds a bounded `ALERTS{alertname=..., ...}` selector from
+the alert name and labels, then runs instant and recent range queries for that
+selector. It rejects raw PromQL in `service_payload.query` so downstream alert
+recipes cannot widen the evidence scope.
+
+## Payload contracts
+
+Operation-level `payload_schema` validation is authoritative. Invalid payloads
+are rejected before adapter execution.
+
+- `alert_evidence` requires `alert_name`, accepts optional `labels`,
+  `lookback_seconds`, and `step_seconds`, and rejects raw `query`.
+- `list_label_values` requires `label_name` and accepts optional `metric`.
+- `list_labels` accepts optional `metric`.
+- `list_rules`, `list_rule_groups`, and `list_metrics` accept no payload
+  fields.
+- `health_check`, `reload_config`, and `watchdog` accept no payload fields.
+
+The adapter keeps raw-query rejection as defense in depth, but the public
+contract is the operation schema.
 
 ## Dependency note
 

@@ -43,6 +43,16 @@ plugin credential:
 
 - `health_check`
 - `content_sync` with operation `sync_content`
+- `repo_sync` with operation `export_alert_updates`
+
+## Payload contracts
+
+Operation-level `payload_schema` validation is authoritative. Invalid payloads
+are rejected before adapter execution.
+
+- `content_sync.sync_content` and `health_check` accept no payload fields.
+- `repo_sync.export_alert_updates` requires `crd_name`, `group_name`, and
+  `rule_name`, and accepts optional `namespace`.
 
 ## Dependency note
 

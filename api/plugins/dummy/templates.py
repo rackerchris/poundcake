@@ -5,6 +5,21 @@ from __future__ import annotations
 from api.plugins.contract import health_check_operation_parameters
 from api.types import JSONObject
 
+
+DUMMY_COMMUNICATION_PAYLOAD_SCHEMA: JSONObject = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "message": {"type": "string"},
+        "source": {"type": "string"},
+        "context": {"type": "object"},
+    },
+    "required": ["title", "description", "message", "source", "context"],
+    "additionalProperties": False,
+}
+
+
 DUMMY_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
     {
         "service_type": "dummy",
@@ -194,27 +209,32 @@ DUMMY_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
         "service_exec": "communication",
         "destination_target": "dummy",
         "task_key_template": "dummy-comms",
-        "payload_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "description": {"type": "string"},
-                "message": {"type": "string"},
-                "source": {"type": "string"},
-                "context": {"type": "object"},
-            },
-            "required": ["title", "description", "message", "source", "context"],
-            "additionalProperties": True,
-        },
+        "payload_schema": DUMMY_COMMUNICATION_PAYLOAD_SCHEMA,
         "service_payload_template": {},
         "service_exec_parameters": {
             "operation": "open",
             "allowed_operations": ["open", "notify", "update", "close"],
             "operation_metadata": {
-                "open": {"label": "Open", "description": "Create a communication thread."},
-                "notify": {"label": "Notify", "description": "Add a notification."},
-                "update": {"label": "Update", "description": "Update an existing thread."},
-                "close": {"label": "Close", "description": "Close an existing thread."},
+                "open": {
+                    "label": "Open",
+                    "description": "Create a communication thread.",
+                    "payload_schema": DUMMY_COMMUNICATION_PAYLOAD_SCHEMA,
+                },
+                "notify": {
+                    "label": "Notify",
+                    "description": "Add a notification.",
+                    "payload_schema": DUMMY_COMMUNICATION_PAYLOAD_SCHEMA,
+                },
+                "update": {
+                    "label": "Update",
+                    "description": "Update an existing thread.",
+                    "payload_schema": DUMMY_COMMUNICATION_PAYLOAD_SCHEMA,
+                },
+                "close": {
+                    "label": "Close",
+                    "description": "Close an existing thread.",
+                    "payload_schema": DUMMY_COMMUNICATION_PAYLOAD_SCHEMA,
+                },
             },
         },
         "default_expected_secs": 1,

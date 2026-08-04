@@ -47,6 +47,8 @@ from api.plugins.types import (
 logger = get_logger(__name__)
 
 TICKET_CAPABLE_TARGETS = {"rackspace_core"}
+TICKET_ID_CONTEXT_KEYS = ("ticket_id", "bakery_ticket_id", "bakery_comms_id", "communication_id")
+SERVICE_PAYLOAD_OBJECT_ERROR = "service_payload must be an object when provided"
 CANONICAL_TO_BAKERY_ACTION = {
     "open": "create",
     "notify": "comment",
@@ -69,11 +71,12 @@ def _is_ticket_capable_target(value: str | None) -> bool:
 
 
 def _execution_target(ctx: ExecutionContext) -> str:
+    payload = {} if ctx.service_payload is None else ctx.service_payload
     target = (
         str(
             ctx.context.get("destination_target")
-            or (ctx.service_payload or {}).get("destination_target")
-            or (ctx.service_payload or {}).get("provider_type")
+            or payload.get("destination_target")
+            or payload.get("provider_type")
             or ""
         )
         .strip()
@@ -82,6 +85,45 @@ def _execution_target(ctx: ExecutionContext) -> str:
     if target:
         return target
     return str(ctx.service_exec or "").strip().lower()
+
+
+def _ticket_id_from_mapping(mapping: Any) -> str:
+    if not isinstance(mapping, dict):
+        return ""
+    for key in TICKET_ID_CONTEXT_KEYS:
+        value = mapping.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, int):
+            return str(value)
+    return ""
+
+
+def _ticket_id_from_context_tree(mapping: Any) -> str:
+    if not isinstance(mapping, dict):
+        return ""
+    direct = _ticket_id_from_mapping(mapping)
+    if direct:
+        return direct
+    for key in ("context", "execution_context", "context_updates"):
+        nested = _ticket_id_from_context_tree(mapping.get(key))
+        if nested:
+            return nested
+    dish = mapping.get("dish")
+    if isinstance(dish, dict):
+        return _ticket_id_from_context_tree(dish.get("context_updates"))
+    return ""
+
+
+def _payload_ticket_id(payload: JSONObject, ctx: ExecutionContext) -> str:
+    return (
+        _ticket_id_from_mapping(payload)
+        or _ticket_id_from_context_tree(payload.get("context"))
+        or _ticket_id_from_mapping(ctx.context)
+        or _ticket_id_from_context_tree(ctx.context.get("execution_context"))
+        or _ticket_id_from_context_tree(ctx.context.get("context_updates"))
+        or _ticket_id_from_context_tree(ctx.context.get("dish"))
+    )
 
 
 def _payload_with_dish_evidence(payload: JSONObject, ctx: ExecutionContext) -> JSONObject:
@@ -126,6 +168,10 @@ def _validate_bakery_payload(
                 return "Bakery create requires payload.title"
             if not isinstance(payload.get("description"), str) or not payload.get("description"):
                 return "Bakery create requires payload.description"
+            if not isinstance(payload.get("source"), str) or not payload.get("source"):
+                return "Bakery create requires payload.source"
+            if not isinstance(payload.get("context"), dict):
+                return "Bakery create requires payload.context"
         elif not any(
             isinstance(payload.get(key), str) and str(payload.get(key)).strip()
             for key in ("message", "comment", "description", "title")
@@ -161,6 +207,19 @@ def _safe_error_message(exc: Exception) -> str:
     for marker in ("Authorization", "HMAC", "hmac_secret", "signature", "encrypted_payload"):
         message = message.replace(marker, "redacted")
     return message[:500]
+
+
+def _payload_contract_error(*, service_type: str, service_exec_id: str, message: str) -> ExecutionResult:
+    outcome: JSONObject = {"success": False, "status": "errored", "message": message}
+    return ExecutionResult(
+        service_type=service_type,
+        status="errored",
+        service_exec_id=service_exec_id,
+        service_exec_error=message,
+        result=outcome,
+        raw=outcome,
+        retryable=False,
+    )
 
 
 def _bool_setting(value: Any) -> bool:
@@ -353,6 +412,8 @@ class BakeryExecutionAdapter(ExecutionAdapter):
         token = self._activate_config()
         try:
             service_exec = (ctx.service_exec or "").strip().lower()
+            if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+                return SERVICE_PAYLOAD_OBJECT_ERROR
             if service_exec == "health_check":
                 return validate_transport_config()
             if service_exec == "incident_reconcile":
@@ -364,21 +425,15 @@ class BakeryExecutionAdapter(ExecutionAdapter):
             config_error = validate_transport_config()
             if config_error:
                 return config_error
-            payload = ctx.service_payload if isinstance(ctx.service_payload, dict) else {}
+            payload = {} if ctx.service_payload is None else ctx.service_payload
             parameters = (
                 ctx.service_exec_parameters if isinstance(ctx.service_exec_parameters, dict) else {}
             )
-            ticket_id = str(
-                payload.get("ticket_id")
-                or ctx.context.get("ticket_id")
-                or ctx.context.get("bakery_comms_id")
-                or ""
-            ).strip()
             return _validate_bakery_payload(
                 service_exec=_execution_target(ctx),
                 payload=payload,
                 service_exec_parameters=parameters,
-                ticket_id=ticket_id or None,
+                ticket_id=_payload_ticket_id(payload, ctx) or None,
             )
         finally:
             reset_bakery_client_config(token)
@@ -780,6 +835,13 @@ class BakeryExecutionAdapter(ExecutionAdapter):
             reset_bakery_client_config(token)
 
     async def _dispatch_with_config(self, ctx: ExecutionContext) -> ExecutionResult:
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            operation = (ctx.service_exec or "unknown").strip().lower() or "unknown"
+            return _payload_contract_error(
+                service_type=self.service_type,
+                service_exec_id=f"bakery:{operation}:{uuid4()}",
+                message=SERVICE_PAYLOAD_OBJECT_ERROR,
+            )
         if (ctx.service_exec or "").strip().lower() == "health_check":
             return await self._execute_health_check(ctx)
         if (ctx.service_exec or "").strip().lower() == "incident_reconcile":
@@ -787,7 +849,7 @@ class BakeryExecutionAdapter(ExecutionAdapter):
         if (ctx.service_exec or "").strip().lower() == "collect":
             return await self._dispatch_collect(ctx)
         payload = _payload_with_dish_evidence(
-            ctx.service_payload if isinstance(ctx.service_payload, dict) else {},
+            {} if ctx.service_payload is None else ctx.service_payload,
             ctx,
         )
         target = _execution_target(ctx)
@@ -805,12 +867,7 @@ class BakeryExecutionAdapter(ExecutionAdapter):
             action=operation or target,
         )
 
-        ticket_id = str(
-            payload.get("ticket_id")
-            or ctx.context.get("ticket_id")
-            or ctx.context.get("bakery_comms_id")
-            or ""
-        ).strip()
+        ticket_id = _payload_ticket_id(payload, ctx)
 
         try:
             accepted: BakeryTicketAccepted

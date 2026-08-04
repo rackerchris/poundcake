@@ -132,6 +132,9 @@ asyncio_mode = "auto"
 markers = [
     "integration: marks tests as integration tests (require running server and database)",
 ]
+filterwarnings = [
+    "ignore:'asyncio\\.iscoroutinefunction' is deprecated and slated for removal in Python 3\\.16; use inspect\\.iscoroutinefunction\\(\\) instead:DeprecationWarning:slowapi\\.extension",
+]
 # Skip integration tests by default in CI
 addopts = "-v --strict-markers"
 

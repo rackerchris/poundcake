@@ -9,7 +9,7 @@ from api.types import AuthRole
 
 
 class RouteSurface(StrEnum):
-    """Payload-sensitivity classes for guarded GET routes."""
+    """Payload-sensitivity classes for guarded API routes."""
 
     REPORTING_STATUS = "reporting_status"
     CONFIGURATION_EDITOR = "configuration_editor"
@@ -19,7 +19,7 @@ class RouteSurface(StrEnum):
 
 @dataclass(frozen=True)
 class RouteSurfaceEntry:
-    """One explicitly classified GET route."""
+    """One explicitly classified guarded route."""
 
     method: str
     path: str
@@ -107,8 +107,18 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
         "GET", "/api/v1/activity/suppressed", RouteSurface.ADMIN_OBSERVABILITY, "reader"
     ),
     RouteSurfaceEntry("GET", "/api/v1/recipes/", RouteSurface.CONFIGURATION_EDITOR, "operator"),
+    RouteSurfaceEntry("POST", "/api/v1/recipes/", RouteSurface.CONFIGURATION_EDITOR, "operator"),
     RouteSurfaceEntry(
         "GET", "/api/v1/recipes/{recipe_id}", RouteSurface.CONFIGURATION_EDITOR, "operator"
+    ),
+    RouteSurfaceEntry(
+        "PUT", "/api/v1/recipes/{recipe_id}", RouteSurface.CONFIGURATION_EDITOR, "operator"
+    ),
+    RouteSurfaceEntry(
+        "PATCH", "/api/v1/recipes/{recipe_id}", RouteSurface.CONFIGURATION_EDITOR, "operator"
+    ),
+    RouteSurfaceEntry(
+        "DELETE", "/api/v1/recipes/{recipe_id}", RouteSurface.CONFIGURATION_EDITOR, "operator"
     ),
     RouteSurfaceEntry(
         "GET",
@@ -130,7 +140,28 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
     ),
     RouteSurfaceEntry("GET", "/api/v1/scheduled-tasks", RouteSurface.CONFIGURATION_EDITOR, "admin"),
     RouteSurfaceEntry(
+        "POST", "/api/v1/scheduled-tasks", RouteSurface.CONFIGURATION_EDITOR, "admin"
+    ),
+    RouteSurfaceEntry(
         "GET", "/api/v1/scheduled-tasks/{task_id}", RouteSurface.CONFIGURATION_EDITOR, "admin"
+    ),
+    RouteSurfaceEntry(
+        "PATCH",
+        "/api/v1/scheduled-tasks/{task_id}",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "operator",
+    ),
+    RouteSurfaceEntry(
+        "DELETE",
+        "/api/v1/scheduled-tasks/{task_id}",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "admin",
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/scheduled-tasks/{task_id}/run-now",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "operator",
     ),
     RouteSurfaceEntry(
         "GET", "/api/v1/observability/activity", RouteSurface.CONFIGURATION_EDITOR, "reader"
@@ -140,6 +171,9 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
     ),
     RouteSurfaceEntry(
         "GET", "/api/v1/communications/policy", RouteSurface.CONFIGURATION_EDITOR, "reader"
+    ),
+    RouteSurfaceEntry(
+        "PUT", "/api/v1/communications/policy", RouteSurface.CONFIGURATION_EDITOR, "admin"
     ),
     RouteSurfaceEntry("GET", "/api/v1/plugins", RouteSurface.CONFIGURATION_EDITOR, "reader"),
     RouteSurfaceEntry(
@@ -176,6 +210,12 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
         "operator",
     ),
     RouteSurfaceEntry(
+        "POST",
+        "/api/v1/plugins/prometheus/reload",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "operator",
+    ),
+    RouteSurfaceEntry(
         "GET", "/api/v1/plugins/{service_type}", RouteSurface.CONFIGURATION_EDITOR, "reader"
     ),
     RouteSurfaceEntry(
@@ -185,14 +225,50 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
         "operator",
     ),
     RouteSurfaceEntry(
+        "PUT",
+        "/api/v1/plugins/{service_type}/configuration",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "operator",
+    ),
+    RouteSurfaceEntry(
+        "PATCH", "/api/v1/plugins/{service_type}", RouteSurface.CONFIGURATION_EDITOR, "operator"
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/plugins/{service_type}/test-connection",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "operator",
+    ),
+    RouteSurfaceEntry(
+        "PUT",
+        "/api/v1/plugins/{service_type}/credentials",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "admin",
+    ),
+    RouteSurfaceEntry(
         "GET", "/api/v1/plugins/{service_type}/health", RouteSurface.CONFIGURATION_EDITOR, "reader"
     ),
     RouteSurfaceEntry("GET", "/api/v1/suppressions", RouteSurface.CONFIGURATION_EDITOR, "reader"),
+    RouteSurfaceEntry(
+        "POST", "/api/v1/suppressions", RouteSurface.CONFIGURATION_EDITOR, "operator"
+    ),
     RouteSurfaceEntry(
         "GET",
         "/api/v1/suppressions/{suppression_id}",
         RouteSurface.CONFIGURATION_EDITOR,
         "reader",
+    ),
+    RouteSurfaceEntry(
+        "PATCH",
+        "/api/v1/suppressions/{suppression_id}",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "operator",
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/suppressions/{suppression_id}/cancel",
+        RouteSurface.CONFIGURATION_EDITOR,
+        "operator",
     ),
     RouteSurfaceEntry(
         "GET",
@@ -213,8 +289,46 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
         "admin",
     ),
     RouteSurfaceEntry("GET", "/api/v1/orders", RouteSurface.INTERNAL_RUNTIME, "service"),
+    RouteSurfaceEntry("POST", "/api/v1/orders", RouteSurface.INTERNAL_RUNTIME, "service"),
     RouteSurfaceEntry("GET", "/api/v1/orders/{order_id}", RouteSurface.INTERNAL_RUNTIME, "service"),
+    RouteSurfaceEntry("PUT", "/api/v1/orders/{order_id}", RouteSurface.INTERNAL_RUNTIME, "service"),
     RouteSurfaceEntry("GET", "/api/v1/dishes", RouteSurface.INTERNAL_RUNTIME, "service"),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/dish-ingredients/{dish_ingredient_id}/poll-claim",
+        RouteSurface.INTERNAL_RUNTIME,
+        "service",
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/dish-ingredients/{dish_ingredient_id}/poll-release",
+        RouteSurface.INTERNAL_RUNTIME,
+        "service",
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/dish-ingredients/{dish_ingredient_id}/reconcile",
+        RouteSurface.INTERNAL_RUNTIME,
+        "service",
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/dish-ingredients/{dish_ingredient_id}/execution-claim",
+        RouteSurface.INTERNAL_RUNTIME,
+        "service",
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/dish-ingredients/{dish_ingredient_id}/execution-release",
+        RouteSurface.INTERNAL_RUNTIME,
+        "service",
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/dish-ingredients/{dish_ingredient_id}/execution-reconcile",
+        RouteSurface.INTERNAL_RUNTIME,
+        "service",
+    ),
     RouteSurfaceEntry(
         "GET", "/api/v1/scheduled-tasks/due", RouteSurface.INTERNAL_RUNTIME, "service"
     ),
@@ -245,6 +359,9 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
         RouteSurface.INTERNAL_RUNTIME,
         "service",
     ),
+    RouteSurfaceEntry(
+        "POST", "/api/v1/ui/operator-actions", RouteSurface.CONFIGURATION_EDITOR, "operator"
+    ),
 )
 
 
@@ -260,7 +377,14 @@ def route_surface_keys(surface: RouteSurface | None = None) -> set[tuple[str, st
     return {entry.key for entry in route_surface_entries(surface)}
 
 
-def is_guarded_get_route(route: tuple[str, str]) -> bool:
-    """Return True when a GET route needs explicit surface classification."""
+def is_guarded_route(route: tuple[str, str]) -> bool:
+    """Return True when a guarded route needs explicit surface classification."""
     method, path = route
-    return method == "GET" and path.startswith(GUARDED_ROUTE_PREFIXES)
+    return method in {"GET", "POST", "PUT", "PATCH", "DELETE"} and path.startswith(
+        GUARDED_ROUTE_PREFIXES
+    )
+
+
+def is_guarded_get_route(route: tuple[str, str]) -> bool:
+    """Return True when a guarded route needs explicit surface classification."""
+    return is_guarded_route(route)

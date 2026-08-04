@@ -166,6 +166,11 @@ def _ingredient_metadata(ingredient: DishIngredient) -> dict[str, Any]:
     return {}
 
 
+def _stored_payload_metadata(ingredient: DishIngredient) -> dict[str, Any]:
+    payload = ingredient.service_payload
+    return payload if isinstance(payload, dict) else {}
+
+
 def _set_ingredient_metadata(ingredient: DishIngredient, metadata: dict[str, Any]) -> None:
     outcome = (
         dict(ingredient.service_exec_actual_outcome)
@@ -296,7 +301,7 @@ def _extract_route_metadata(
         for item in items:
             if not _matching_ingredient(item, dest_type, dest_target):
                 continue
-            payload = item.service_payload if isinstance(item.service_payload, dict) else {}
+            payload = _stored_payload_metadata(item)
             context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
             provider_config = context.get("provider_config")
             if isinstance(provider_config, dict) and provider_config:

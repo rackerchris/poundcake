@@ -52,6 +52,11 @@ ALERTMANAGER_INSPECT_PAYLOAD_SCHEMA: JSONObject = {
     "additionalProperties": False,
 }
 
+ALERTMANAGER_FIND_INHIBITED_PAYLOAD_SCHEMA: JSONObject = {
+    **ALERTMANAGER_INSPECT_PAYLOAD_SCHEMA,
+    "required": ["fingerprint"],
+}
+
 ALERTMANAGER_SUPPRESSION_PAYLOAD_SCHEMA: JSONObject = {
     "type": "object",
     "properties": {
@@ -81,6 +86,48 @@ ALERTMANAGER_SUPPRESSION_PAYLOAD_SCHEMA: JSONObject = {
     },
     "additionalProperties": False,
 }
+
+_SUPPRESSION_CREATE_PROPS: JSONObject = {
+    **ALERTMANAGER_SUPPRESSION_PAYLOAD_SCHEMA["properties"],
+    "matchers": {
+        **ALERTMANAGER_SUPPRESSION_PAYLOAD_SCHEMA["properties"]["matchers"],
+        "minItems": 1,
+    },
+}
+
+ALERTMANAGER_SUPPRESSION_CREATE_PAYLOAD_SCHEMA: JSONObject = {
+    **ALERTMANAGER_SUPPRESSION_PAYLOAD_SCHEMA,
+    "properties": _SUPPRESSION_CREATE_PROPS,
+    "required": ["matchers", "name", "starts_at", "ends_at"],
+}
+
+ALERTMANAGER_SUPPRESSION_UPDATE_PAYLOAD_SCHEMA: JSONObject = {
+    **ALERTMANAGER_SUPPRESSION_PAYLOAD_SCHEMA,
+    "properties": _SUPPRESSION_CREATE_PROPS,
+    "required": ["source_ref", "matchers", "name", "starts_at", "ends_at"],
+}
+
+ALERTMANAGER_SUPPRESSION_SOURCE_REF_PAYLOAD_SCHEMA: JSONObject = {
+    "type": "object",
+    "properties": {
+        "source_ref": {"type": "string", "minLength": 1},
+    },
+    "required": ["source_ref"],
+    "additionalProperties": False,
+}
+
+ALERTMANAGER_INSPECT_OPERATION_METADATA["list_alerts"][
+    "payload_schema"
+] = ALERTMANAGER_INSPECT_PAYLOAD_SCHEMA
+ALERTMANAGER_INSPECT_OPERATION_METADATA["list_groups"][
+    "payload_schema"
+] = ALERTMANAGER_INSPECT_PAYLOAD_SCHEMA
+ALERTMANAGER_INSPECT_OPERATION_METADATA["verify_firing"][
+    "payload_schema"
+] = ALERTMANAGER_INSPECT_PAYLOAD_SCHEMA
+ALERTMANAGER_INSPECT_OPERATION_METADATA["find_inhibited_by_source"][
+    "payload_schema"
+] = ALERTMANAGER_FIND_INHIBITED_PAYLOAD_SCHEMA
 
 ALERTMANAGER_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
     {
@@ -182,6 +229,7 @@ ALERTMANAGER_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
                 "create": {
                     "label": "Create suppression",
                     "description": "Create an Alertmanager silence through PoundCake.",
+                    "payload_schema": ALERTMANAGER_SUPPRESSION_CREATE_PAYLOAD_SCHEMA,
                 }
             },
         },
@@ -208,6 +256,34 @@ ALERTMANAGER_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
                 "expire": {
                     "label": "Expire suppression",
                     "description": "Expire an existing Alertmanager silence through PoundCake.",
+                    "payload_schema": ALERTMANAGER_SUPPRESSION_SOURCE_REF_PAYLOAD_SCHEMA,
+                }
+            },
+        },
+        "default_expected_secs": 10,
+        "default_timeout": 60,
+        "service_exec_expected_outcome_default": {"success": True},
+        "ingredient_purpose": "suppression_lifecycle",
+        "is_blocking": True,
+        "retry_count": 0,
+        "retry_delay": 0,
+        "on_failure": "stop",
+    },
+    {
+        "service_type": "alertmanager",
+        "service_exec": "suppression",
+        "destination_target": "alertmanager",
+        "task_key_template": "alertmanager-update-suppression",
+        "payload_schema": ALERTMANAGER_SUPPRESSION_PAYLOAD_SCHEMA,
+        "service_payload_template": {},
+        "service_exec_parameters": {
+            "operation": "update",
+            "allowed_operations": ["update"],
+            "operation_metadata": {
+                "update": {
+                    "label": "Update suppression",
+                    "description": "Update an existing Alertmanager silence through PoundCake.",
+                    "payload_schema": ALERTMANAGER_SUPPRESSION_UPDATE_PAYLOAD_SCHEMA,
                 }
             },
         },
@@ -262,6 +338,81 @@ ALERTMANAGER_RECIPE_TEMPLATES: tuple[JSONObject, ...] = (
                 "parallel_group": 0,
                 "depth": 0,
                 "service_payload": {},
+                "service_exec_expected_secs": 10,
+                "service_exec_timeout": 60,
+                "service_exec_expected_outcome": {"success": True},
+                "run_phase": "firing",
+                "run_condition": "always",
+            }
+        ],
+    },
+    {
+        "name": "operator-action:alertmanager:create-suppression",
+        "description": "Operator-requested Alertmanager suppression creation.",
+        "enabled": True,
+        "recipe_ingredients": [
+            {
+                "service_type": "alertmanager",
+                "service_exec": "suppression",
+                "destination_target": "alertmanager",
+                "task_key_template": "alertmanager-create-suppression",
+                "step_order": 1,
+                "service_payload": {},
+                "service_payload_from_order": True,
+                "service_exec_parameters_override": {
+                    "operation": "create",
+                    "allowed_operations": ["create"],
+                },
+                "service_exec_expected_secs": 10,
+                "service_exec_timeout": 60,
+                "service_exec_expected_outcome": {"success": True},
+                "run_phase": "firing",
+                "run_condition": "always",
+            }
+        ],
+    },
+    {
+        "name": "operator-action:alertmanager:update-suppression",
+        "description": "Operator-requested Alertmanager suppression update.",
+        "enabled": True,
+        "recipe_ingredients": [
+            {
+                "service_type": "alertmanager",
+                "service_exec": "suppression",
+                "destination_target": "alertmanager",
+                "task_key_template": "alertmanager-update-suppression",
+                "step_order": 1,
+                "service_payload": {},
+                "service_payload_from_order": True,
+                "service_exec_parameters_override": {
+                    "operation": "update",
+                    "allowed_operations": ["update"],
+                },
+                "service_exec_expected_secs": 10,
+                "service_exec_timeout": 60,
+                "service_exec_expected_outcome": {"success": True},
+                "run_phase": "firing",
+                "run_condition": "always",
+            }
+        ],
+    },
+    {
+        "name": "operator-action:alertmanager:expire-suppression",
+        "description": "Operator-requested Alertmanager suppression expiration.",
+        "enabled": True,
+        "recipe_ingredients": [
+            {
+                "service_type": "alertmanager",
+                "service_exec": "suppression",
+                "destination_target": "alertmanager",
+                "task_key_template": "alertmanager-expire-suppression",
+                "step_order": 1,
+                "service_payload": {},
+                "service_payload_from_order": True,
+                "service_exec_parameters_override": {
+                    "operation": "expire",
+                    "allowed_operations": ["expire"],
+                },
                 "service_exec_expected_secs": 10,
                 "service_exec_timeout": 60,
                 "service_exec_expected_outcome": {"success": True},

@@ -16,6 +16,7 @@ def _schema(properties: JSONObject, required: list[str] | None = None) -> JSONOb
 
 
 _PROMETHEUS_RULE_PROPS: JSONObject = {
+    "namespace": {"type": "string", "minLength": 1},
     "rule_name": {"type": "string", "minLength": 1},
     "group_name": {"type": "string", "minLength": 1},
     "crd_name": {"type": "string", "minLength": 1},
@@ -134,6 +135,7 @@ _TRIAGE_LOGS_EVENTS_SCHEMA: JSONObject = {
         {"required": ["pod_name"]},
         {"required": ["label_selector"]},
     ],
+    "dependentRequired": {"name": ["kind"]},
 }
 
 
@@ -160,19 +162,41 @@ K8S_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
         "service_exec": "prometheus_rule",
         "destination_target": "kubernetes",
         "task_key_template": "k8s-prometheus-rule",
-        "payload_schema": _schema(
-            _PROMETHEUS_RULE_PROPS,
-            required=["rule_name", "group_name", "crd_name"],
-        ),
+        "payload_schema": _schema(_PROMETHEUS_RULE_PROPS),
         "service_payload_template": {},
         "service_exec_parameters": {
             "operation": "get",
             "allowed_operations": ["get", "list", "apply", "delete"],
             "operation_metadata": {
-                "get": {"label": "Get", "description": "Read one PrometheusRule CRD."},
-                "list": {"label": "List", "description": "List PrometheusRule CRDs."},
-                "apply": {"label": "Apply", "description": "Create or update an alert rule."},
-                "delete": {"label": "Delete", "description": "Delete an alert rule."},
+                "get": {
+                    "label": "Get",
+                    "description": "Read one PrometheusRule CRD.",
+                    "payload_schema": _schema(
+                        _PROMETHEUS_RULE_PROPS,
+                        required=["rule_name", "group_name", "crd_name"],
+                    ),
+                },
+                "list": {
+                    "label": "List",
+                    "description": "List PrometheusRule CRDs.",
+                    "payload_schema": _schema({}),
+                },
+                "apply": {
+                    "label": "Apply",
+                    "description": "Create or update an alert rule.",
+                    "payload_schema": _schema(
+                        _PROMETHEUS_RULE_PROPS,
+                        required=["rule_name", "group_name", "crd_name", "rule_data"],
+                    ),
+                },
+                "delete": {
+                    "label": "Delete",
+                    "description": "Delete an alert rule.",
+                    "payload_schema": _schema(
+                        _PROMETHEUS_RULE_PROPS,
+                        required=["rule_name", "group_name", "crd_name"],
+                    ),
+                },
             },
         },
         "default_expected_secs": 5,
@@ -488,9 +512,9 @@ K8S_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
                     )
                     | {
                         "anyOf": [
-                            {"required": ["persistentvolumeclaim"]},
                             {"required": ["persistentvolume"]},
-                            {"required": ["name"]},
+                            {"required": ["namespace", "persistentvolumeclaim"]},
+                            {"required": ["namespace", "name"]},
                         ]
                     },
                 },
@@ -685,9 +709,11 @@ K8S_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
                         {
                             "namespace": _FAILED_JOB_CLEANUP_PROPS["namespace"],
                             "job_name": _FAILED_JOB_CLEANUP_PROPS["job_name"],
+                            "name": _FAILED_JOB_CLEANUP_PROPS["name"],
                         },
-                        required=["namespace", "job_name"],
-                    ),
+                        required=["namespace"],
+                    )
+                    | {"anyOf": [{"required": ["job_name"]}, {"required": ["name"]}]},
                 }
             },
         },
@@ -720,10 +746,12 @@ K8S_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
                             "deployment_name": _RESOURCE_PRESSURE_REMEDIATION_PROPS[
                                 "deployment_name"
                             ],
+                            "name": _RESOURCE_PRESSURE_REMEDIATION_PROPS["name"],
                             "replicas": _RESOURCE_PRESSURE_REMEDIATION_PROPS["replicas"],
                         },
-                        required=["namespace", "deployment_name", "replicas"],
-                    ),
+                        required=["namespace", "replicas"],
+                    )
+                    | {"anyOf": [{"required": ["deployment_name"]}, {"required": ["name"]}]},
                 },
                 "patch_hpa_bounds": {
                     "label": "Patch HPA bounds",
@@ -732,15 +760,21 @@ K8S_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
                         {
                             "namespace": _RESOURCE_PRESSURE_REMEDIATION_PROPS["namespace"],
                             "hpa_name": _RESOURCE_PRESSURE_REMEDIATION_PROPS["hpa_name"],
+                            "name": _RESOURCE_PRESSURE_REMEDIATION_PROPS["name"],
                             "min_replicas": _RESOURCE_PRESSURE_REMEDIATION_PROPS["min_replicas"],
                             "max_replicas": _RESOURCE_PRESSURE_REMEDIATION_PROPS["max_replicas"],
                         },
-                        required=["namespace", "hpa_name"],
+                        required=["namespace"],
                     )
                     | {
-                        "anyOf": [
-                            {"required": ["min_replicas"]},
-                            {"required": ["max_replicas"]},
+                        "allOf": [
+                            {"anyOf": [{"required": ["hpa_name"]}, {"required": ["name"]}]},
+                            {
+                                "anyOf": [
+                                    {"required": ["min_replicas"]},
+                                    {"required": ["max_replicas"]},
+                                ]
+                            },
                         ]
                     },
                 },
@@ -773,10 +807,12 @@ K8S_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
                         {
                             "namespace": _SERVICE_PROBE_PROPS["namespace"],
                             "service": _SERVICE_PROBE_PROPS["service"],
+                            "name": _SERVICE_PROBE_PROPS["name"],
                             "timeout_seconds": _SERVICE_PROBE_PROPS["timeout_seconds"],
                         },
-                        required=["namespace", "service"],
-                    ),
+                        required=["namespace"],
+                    )
+                    | {"anyOf": [{"required": ["service"]}, {"required": ["name"]}]},
                 },
                 "tcp": {
                     "label": "TCP probe",
@@ -785,11 +821,13 @@ K8S_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
                         {
                             "namespace": _SERVICE_PROBE_PROPS["namespace"],
                             "service": _SERVICE_PROBE_PROPS["service"],
+                            "name": _SERVICE_PROBE_PROPS["name"],
                             "port": _SERVICE_PROBE_PROPS["port"],
                             "timeout_seconds": _SERVICE_PROBE_PROPS["timeout_seconds"],
                         },
-                        required=["namespace", "service", "port"],
-                    ),
+                        required=["namespace", "port"],
+                    )
+                    | {"anyOf": [{"required": ["service"]}, {"required": ["name"]}]},
                 },
                 "http": {
                     "label": "HTTP probe",
@@ -798,14 +836,16 @@ K8S_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
                         {
                             "namespace": _SERVICE_PROBE_PROPS["namespace"],
                             "service": _SERVICE_PROBE_PROPS["service"],
+                            "name": _SERVICE_PROBE_PROPS["name"],
                             "port": _SERVICE_PROBE_PROPS["port"],
                             "scheme": _SERVICE_PROBE_PROPS["scheme"],
                             "path": _SERVICE_PROBE_PROPS["path"],
                             "timeout_seconds": _SERVICE_PROBE_PROPS["timeout_seconds"],
                             "expected_status_codes": _SERVICE_PROBE_PROPS["expected_status_codes"],
                         },
-                        required=["namespace", "service", "port"],
-                    ),
+                        required=["namespace", "port"],
+                    )
+                    | {"anyOf": [{"required": ["service"]}, {"required": ["name"]}]},
                 },
             },
         },
@@ -836,6 +876,41 @@ K8S_RECIPE_TEMPLATES: tuple[JSONObject, ...] = (
                 "service_payload": {},
                 "service_exec_expected_secs": 5,
                 "service_exec_timeout": 30,
+                "service_exec_expected_outcome": {"success": True},
+                "run_phase": "firing",
+                "run_condition": "always",
+            }
+        ],
+    },
+    {
+        "name": "operator-action:k8s:prometheus-rule-apply",
+        "description": "Operator-requested PrometheusRule rule create/update.",
+        "enabled": True,
+        "recipe_ingredients": [
+            {
+                "service_type": "k8s",
+                "service_exec": "prometheus_rule",
+                "destination_target": "kubernetes",
+                "task_key_template": "k8s-prometheus-rule",
+                "step_order": 1,
+                "service_payload": {},
+                "service_payload_from_order": True,
+                "service_exec_parameters_override": {
+                    "operation": "apply",
+                    "allowed_operations": ["apply"],
+                    "operation_metadata": {
+                        "apply": {
+                            "label": "Apply",
+                            "description": "Create or update an alert rule.",
+                            "payload_schema": _schema(
+                                _PROMETHEUS_RULE_PROPS,
+                                required=["rule_name", "group_name", "crd_name", "rule_data"],
+                            ),
+                        },
+                    },
+                },
+                "service_exec_expected_secs": 5,
+                "service_exec_timeout": 60,
                 "service_exec_expected_outcome": {"success": True},
                 "run_phase": "firing",
                 "run_condition": "always",

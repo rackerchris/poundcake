@@ -34,7 +34,7 @@ from api.schemas.schemas import (
 from api.services.auth_service import _service_allowed_path, request_role_requirement
 from api.services.route_surface_contract import (
     RouteSurface,
-    is_guarded_get_route,
+    is_guarded_route,
     route_surface_entries,
     route_surface_keys,
 )
@@ -195,10 +195,42 @@ def _model_contains_allowed_status_schema(model: Any) -> bool:
     return False
 
 
-def test_guarded_get_routes_are_explicitly_classified() -> None:
+def test_guarded_routes_are_explicitly_classified() -> None:
     routes = _route_keys()
-    guarded_gets = {route for route in routes if is_guarded_get_route(route)}
-    assert guarded_gets <= route_surface_keys()
+    guarded_routes = {route for route in routes if is_guarded_route(route)}
+    assert guarded_routes <= route_surface_keys()
+
+
+def test_provider_execution_dispatch_stays_inside_expediter_boundary() -> None:
+    allowed_dispatch_files = {
+        Path("api/api/expediter.py"),
+        Path("api/services/plugin_orchestrator.py"),
+    }
+    allowed_orchestrator_instantiation_files = {
+        Path("api/services/plugin_orchestrator.py"),
+    }
+    violations: list[str] = []
+    for path in sorted(Path("api").rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "dispatch"
+                and path not in allowed_dispatch_files
+            ):
+                violations.append(f"{path}:{node.lineno} calls dispatch()")
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "ExecutionOrchestrator"
+                and path not in allowed_orchestrator_instantiation_files
+            ):
+                violations.append(f"{path}:{node.lineno} instantiates ExecutionOrchestrator")
+
+    assert violations == []
 
 
 def test_route_surface_inventory_references_registered_routes() -> None:
@@ -785,3 +817,19 @@ def test_service_plugin_contract_columns_are_db_enforced() -> None:
     assert "ck_service_plugins_health_check_state" in plugin_constraints
     assert "ck_service_plugins_plugin_type" in plugin_constraints
     assert "ck_service_plugins_query_limit_positive" in plugin_constraints
+
+
+def test_all_declared_ingredient_purposes_are_schema_supported() -> None:
+    from typing import get_args
+
+    from api.plugins.catalog import get_enabled_plugins
+    from api.types import ExecutionPurpose
+
+    supported = set(get_args(ExecutionPurpose))
+    declared = {
+        str(template["ingredient_purpose"])
+        for plugin in get_enabled_plugins()
+        for template in plugin.ingredient_templates
+    }
+
+    assert declared.issubset(supported)

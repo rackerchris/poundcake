@@ -18,6 +18,9 @@ def _route_label(provider: str) -> str:
     return f"Bakery {provider.replace('_', ' ').title()}"
 
 
+TICKET_ID_CONTEXT_KEYS = ("ticket_id", "bakery_ticket_id", "bakery_comms_id", "communication_id")
+
+
 BAKERY_HEALTH_INGREDIENT: JSONObject = {
     "service_type": "bakery",
     "service_exec": "health_check",
@@ -41,7 +44,39 @@ BAKERY_HEALTH_INGREDIENT: JSONObject = {
 }
 
 
-def _comms_schema() -> JSONObject:
+def _ticket_context_schema(*, require_ticket_id: bool = False) -> JSONObject:
+    schema: JSONObject = {
+        "type": "object",
+        "properties": {
+            **{key: {"type": "string", "minLength": 1} for key in TICKET_ID_CONTEXT_KEYS},
+            "source": {"type": "string", "minLength": 1},
+            "route_label": {"type": "string", "minLength": 1},
+            "destination_target": {"type": "string"},
+            "provider_config": {"type": "object"},
+            "semantic_text": {"type": "object"},
+            "poundcake_policy": {"type": "object"},
+            "execution_target": {"type": "string"},
+            "provider_type": {"type": "string"},
+            "alert_name": {"type": "string", "minLength": 1},
+            "alert_group_name": {"type": "string", "minLength": 1},
+            "labels": {"type": "object"},
+            "annotations": {"type": "object"},
+            "order_id": {"type": "integer", "minimum": 1},
+            "req_id": {"type": "string", "minLength": 1},
+            "source_path": {"type": "string", "minLength": 1},
+            "operator_review_required": {"type": "boolean"},
+            "evidence": {"type": "array"},
+            "execution_context": {"type": "object"},
+            "dish": {"type": "object"},
+        },
+        "additionalProperties": False,
+    }
+    if require_ticket_id:
+        schema["anyOf"] = [{"required": [key]} for key in TICKET_ID_CONTEXT_KEYS]
+    return schema
+
+
+def _comms_schema(*, required: list[str] | None = None) -> JSONObject:
     return {
         "type": "object",
         "properties": {
@@ -51,35 +86,98 @@ def _comms_schema() -> JSONObject:
             "comment": {"type": "string", "minLength": 1},
             "severity": {"type": "string"},
             "category": {"type": "string"},
-            "source": {"type": "string"},
+            "source": {"type": "string", "minLength": 1},
             "state": {"type": "string"},
             "resolution_code": {"type": "string"},
             "resolution_notes": {"type": "string"},
             "visibility": {"type": "string"},
-            "ticket_id": {"type": "string"},
-            "context": {"type": "object"},
+            "ticket_id": {"type": "string", "minLength": 1},
+            "context": _ticket_context_schema(),
         },
-        "required": ["source", "context"],
-        "additionalProperties": True,
+        "required": ["source", "context"] if required is None else required,
+        "additionalProperties": False,
     }
 
 
+def _collect_schema() -> JSONObject:
+    return {
+        "type": "object",
+        "properties": {
+            "order_id": {"type": "integer", "minimum": 1},
+            "req_id": {"type": "string", "minLength": 1},
+            "bakery_ticket_id": {"type": "string", "minLength": 1},
+            "namespace": {"type": "string", "minLength": 1},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+        },
+        "additionalProperties": False,
+    }
+
+
+def _ticket_mutation_schema() -> JSONObject:
+    schema = _comms_schema(required=[])
+    schema["anyOf"] = [
+        {"required": ["ticket_id"]},
+        {
+            "required": ["context"],
+            "properties": {
+                "context": _ticket_context_schema(require_ticket_id=True),
+            },
+        },
+        {
+            "required": ["context"],
+            "properties": {
+                "context": {
+                    **_ticket_context_schema(require_ticket_id=False),
+                    "required": ["poundcake_policy"],
+                },
+            },
+        },
+    ]
+    return schema
+
+
 def _comms_template(provider: str) -> JSONObject:
+    ticket_create_schema = _comms_schema(
+        required=["title", "description", "source", "context"]
+    )
+    ticket_mutation_schema = _ticket_mutation_schema()
+    ticket_create_payload = {
+        "title": "PoundCake communication",
+        "description": "PoundCake opened a Bakery communication.",
+        "source": "poundcake",
+        "context": {},
+    }
     return {
         "service_type": "bakery",
         "service_exec": "communication",
         "destination_target": provider,
         "task_key_template": "bakery-comms",
-        "payload_schema": _comms_schema(),
-        "service_payload_template": {},
+        "payload_schema": _comms_schema(required=[]),
+        "service_payload_template": ticket_create_payload,
         "service_exec_parameters": {
             "operation": "open",
             "allowed_operations": ["open", "notify", "update", "close"],
             "operation_metadata": {
-                "open": {"label": "Open", "description": "Create a ticket or thread."},
-                "notify": {"label": "Notify", "description": "Add a comment or notification."},
-                "update": {"label": "Update", "description": "Update an existing ticket."},
-                "close": {"label": "Close", "description": "Close an existing ticket."},
+                "open": {
+                    "label": "Open",
+                    "description": "Create a ticket or thread.",
+                    "payload_schema": ticket_create_schema,
+                },
+                "notify": {
+                    "label": "Notify",
+                    "description": "Add a comment or notification.",
+                    "payload_schema": ticket_mutation_schema,
+                },
+                "update": {
+                    "label": "Update",
+                    "description": "Update an existing ticket.",
+                    "payload_schema": ticket_mutation_schema,
+                },
+                "close": {
+                    "label": "Close",
+                    "description": "Close an existing ticket.",
+                    "payload_schema": ticket_mutation_schema,
+                },
             },
         },
         "default_expected_secs": 5,
@@ -94,18 +192,19 @@ def _comms_template(provider: str) -> JSONObject:
 
 
 def _incident_reconcile_ingredient() -> JSONObject:
+    reconcile_schema: JSONObject = {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "minimum": 1},
+        },
+        "additionalProperties": False,
+    }
     return {
         "service_type": "bakery",
         "service_exec": "incident_reconcile",
         "destination_target": "bakery",
         "task_key_template": "bakery-incident-reconcile",
-        "payload_schema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "minimum": 1},
-            },
-            "additionalProperties": False,
-        },
+        "payload_schema": reconcile_schema,
         "service_payload_template": {},
         "service_exec_parameters": {
             "operation": "reconcile",
@@ -114,6 +213,7 @@ def _incident_reconcile_ingredient() -> JSONObject:
                 "reconcile": {
                     "label": "Reconcile",
                     "description": "Reconcile active orders against Prometheus alerts and Bakery ticket state.",
+                    "payload_schema": reconcile_schema,
                 },
             },
         },
@@ -129,22 +229,13 @@ def _incident_reconcile_ingredient() -> JSONObject:
 
 
 def _collect_ingredient() -> JSONObject:
+    collect_schema = _collect_schema()
     return {
         "service_type": "bakery",
         "service_exec": "collect",
         "destination_target": "bakery",
         "task_key_template": "bakery-collect",
-        "payload_schema": {
-            "type": "object",
-            "properties": {
-                "order_id": {"type": "integer", "minimum": 1},
-                "req_id": {"type": "string"},
-                "bakery_ticket_id": {"type": "string"},
-                "namespace": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 200},
-            },
-            "additionalProperties": False,
-        },
+        "payload_schema": collect_schema,
         "service_payload_template": {},
         "service_exec_parameters": {
             "operation": "monitor_diagnostics",
@@ -153,14 +244,17 @@ def _collect_ingredient() -> JSONObject:
                 "monitor_diagnostics": {
                     "label": "Monitor Diagnostics",
                     "description": "Return plugin health, configuration, and credential status.",
+                    "payload_schema": collect_schema,
                 },
                 "cluster_inventory": {
                     "label": "Cluster Inventory",
                     "description": "Collect Kubernetes cluster topology and workload inventory.",
+                    "payload_schema": collect_schema,
                 },
                 "ticket_context": {
                     "label": "Ticket Context",
                     "description": "Query orders, dishes, and ingredients by order_id, req_id, or bakery_ticket_id.",
+                    "payload_schema": collect_schema,
                 },
             },
         },

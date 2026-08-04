@@ -32,7 +32,7 @@ Dish planning is not a plugin extension point. Cook owns phase selection, run-co
 - **Plugin adapter**: PoundCake-side shim code called by Expediter. It translates canonical PoundCake execution requests into provider-native API/client calls and normalizes provider responses back into `ExecutionResult`.
 - **Ingredient**: An immutable plugin-provided capability template registered in `ingredients`.
 - **Recipe ingredient**: A mutable recipe step that uses an ingredient with recipe-specific payload, operation, expected outcome, timing, phase, and run-condition overrides.
-- **Operation/capability**: A selectable action within an ingredient, carried through `service_exec_parameters.operation` and advertised with `allowed_operations` plus `operation_metadata`. An operation may advertise a `payload_schema` that narrows the ingredient-wide payload schema for that selected operation.
+- **Operation/capability**: A selectable action within an ingredient, carried through `service_exec_parameters.operation` and advertised with `allowed_operations` plus `operation_metadata`. Every advertised operation must declare a `payload_schema` that narrows or confirms the ingredient-wide payload schema for that selected operation.
 - **Composable plugin capability**: A provider-advertised mapping from one immutable ingredient plus one advertised operation to higher-level matching metadata and bounded defaults that recipe builders may consume.
 - **Expediter**: The only runtime gateway that calls plugin adapter workload methods for dispatch, status, and cancellation.
 
@@ -275,16 +275,17 @@ such as `id`, `is_active`, `deleted`, `deleted_at`, `created_at`, or
 database identity fields in `recipe_ingredients`; recipe steps refer to
 ingredient templates by service identity.
 
-Recipes reference ingredients through mutable `recipe_ingredients`. A recipe step can override payload, execution parameters, expected runtime, timeout, expected outcome, run phase, and run condition. PoundCake validates filled `service_payload` values against the ingredient `payload_schema`.
+Recipes reference ingredients through mutable `recipe_ingredients`. A recipe step can override payload, execution parameters, expected runtime, timeout, expected outcome, run phase, and run condition. PoundCake validates filled `service_payload` values against the ingredient `payload_schema` and the selected operation `payload_schema`.
 
 Capability templates are provider-owned metadata layered on top of immutable ingredients. They may advertise matcher metadata, safety class, bounded defaults, and operator-configurable enablement, but they do not bypass the ingredient contract. Recipes may tune values inside the declared payload and operation schema; they must not widen schemas, invent new operations, or redefine provider-owned safety semantics.
 
-When an operation advertises `operation_metadata[operation].payload_schema`,
-PoundCake validates the filled `service_payload` against both schemas: first the
-ingredient-wide schema, then the selected operation schema. The nested schema is
-plugin-owned capability metadata, not a recipe override. Recipe authors choose
-operation and payload values; they cannot redefine which fields an operation
-accepts.
+Every value in `allowed_operations` must have matching
+`operation_metadata[operation].payload_schema`. PoundCake validates the filled
+`service_payload` against both schemas: first the ingredient-wide schema, then
+the selected operation schema. A contract violation fails closed before adapter
+execution. The nested schema is plugin-owned capability metadata, not a recipe
+override. Recipe authors choose operation and payload values; they cannot
+redefine which fields an operation accepts.
 
 Running an order creates `dish_ingredients`. These runtime rows hold dispatch proof and reconciliation state:
 

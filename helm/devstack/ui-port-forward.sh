@@ -14,6 +14,8 @@ PROMETHEUS_SERVICE_PORT="${PROMETHEUS_SERVICE_PORT:-9090}"
 ALERTMANAGER_SERVICE_NAME="${ALERTMANAGER_SERVICE_NAME:-kube-prometheus-stack-alertmanager}"
 ALERTMANAGER_LOCAL_PORT="${ALERTMANAGER_LOCAL_PORT:-9093}"
 ALERTMANAGER_SERVICE_PORT="${ALERTMANAGER_SERVICE_PORT:-9093}"
+ENABLE_PROMETHEUS_PORT_FORWARD="${ENABLE_PROMETHEUS_PORT_FORWARD:-true}"
+ENABLE_ALERTMANAGER_PORT_FORWARD="${ENABLE_ALERTMANAGER_PORT_FORWARD:-true}"
 STATE_DIR="${STATE_DIR:-/tmp/poundcake-helm-devstack}"
 PID_FILE="${PID_FILE:-$STATE_DIR/ui-port-forward.pid}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/ui-port-forward.log}"
@@ -290,14 +292,22 @@ start_one_forward() {
 
 start_forward() {
     start_one_forward "ui" "$POUNDCAKE_NAMESPACE" "$SERVICE_NAME" "$LOCAL_PORT" "$SERVICE_PORT"
-    start_one_forward "prometheus" "$MONITORING_NAMESPACE" "$PROMETHEUS_SERVICE_NAME" "$PROMETHEUS_LOCAL_PORT" "$PROMETHEUS_SERVICE_PORT"
-    start_one_forward "alertmanager" "$MONITORING_NAMESPACE" "$ALERTMANAGER_SERVICE_NAME" "$ALERTMANAGER_LOCAL_PORT" "$ALERTMANAGER_SERVICE_PORT"
+    if [ "$ENABLE_PROMETHEUS_PORT_FORWARD" = "true" ]; then
+        start_one_forward "prometheus" "$MONITORING_NAMESPACE" "$PROMETHEUS_SERVICE_NAME" "$PROMETHEUS_LOCAL_PORT" "$PROMETHEUS_SERVICE_PORT"
+    fi
+    if [ "$ENABLE_ALERTMANAGER_PORT_FORWARD" = "true" ]; then
+        start_one_forward "alertmanager" "$MONITORING_NAMESPACE" "$ALERTMANAGER_SERVICE_NAME" "$ALERTMANAGER_LOCAL_PORT" "$ALERTMANAGER_SERVICE_PORT"
+    fi
 }
 
 verify_forward() {
     verify_one_forward "ui" "$LOCAL_PORT"
-    verify_one_forward "prometheus" "$PROMETHEUS_LOCAL_PORT"
-    verify_one_forward "alertmanager" "$ALERTMANAGER_LOCAL_PORT"
+    if [ "$ENABLE_PROMETHEUS_PORT_FORWARD" = "true" ]; then
+        verify_one_forward "prometheus" "$PROMETHEUS_LOCAL_PORT"
+    fi
+    if [ "$ENABLE_ALERTMANAGER_PORT_FORWARD" = "true" ]; then
+        verify_one_forward "alertmanager" "$ALERTMANAGER_LOCAL_PORT"
+    fi
 }
 
 stop_one_forward() {
@@ -360,8 +370,12 @@ status_one_forward() {
 
 status_forward() {
     status_one_forward "ui" "$LOCAL_PORT"
-    status_one_forward "prometheus" "$PROMETHEUS_LOCAL_PORT"
-    status_one_forward "alertmanager" "$ALERTMANAGER_LOCAL_PORT"
+    if [ "$ENABLE_PROMETHEUS_PORT_FORWARD" = "true" ]; then
+        status_one_forward "prometheus" "$PROMETHEUS_LOCAL_PORT"
+    fi
+    if [ "$ENABLE_ALERTMANAGER_PORT_FORWARD" = "true" ]; then
+        status_one_forward "alertmanager" "$ALERTMANAGER_LOCAL_PORT"
+    fi
 }
 
 show_logs() {
@@ -400,6 +414,8 @@ Environment overrides:
   ALERTMANAGER_SERVICE_NAME=$ALERTMANAGER_SERVICE_NAME
   ALERTMANAGER_LOCAL_PORT=$ALERTMANAGER_LOCAL_PORT
   ALERTMANAGER_SERVICE_PORT=$ALERTMANAGER_SERVICE_PORT
+  ENABLE_PROMETHEUS_PORT_FORWARD=$ENABLE_PROMETHEUS_PORT_FORWARD
+  ENABLE_ALERTMANAGER_PORT_FORWARD=$ENABLE_ALERTMANAGER_PORT_FORWARD
   STATE_DIR=$STATE_DIR
   VERIFY_TIMEOUT_SEC=$VERIFY_TIMEOUT_SEC
 EOF

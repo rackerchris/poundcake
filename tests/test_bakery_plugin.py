@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from copy import deepcopy
 
 import pytest
 
@@ -18,11 +19,23 @@ from api.plugins.bakery.templates import (
 )
 from api.plugins.bakery.capabilities import load_bakery_capability_templates
 from api.plugins.catalog import get_enabled_plugins
-from api.plugins.contract import validate_payload_schema
+from api.plugins.contract import (
+    ServicePluginContractError,
+    validate_payload_schema,
+    validate_service_payload_for_operation,
+)
 from api.services.credentials import decrypt_payload, encrypt_payload
 from api.plugins.manifest import validate_service_plugin
 from api.plugins.types import ExecutionContext
 from shared.hmac import build_hmac_signing_payload, hmac_sha256_hex
+
+
+def _bakery_template(service_exec: str) -> dict[str, object]:
+    return next(
+        template
+        for template in ingredient_templates()
+        if template["service_exec"] == service_exec
+    )
 
 
 def test_bakery_manifest_validates(monkeypatch) -> None:
@@ -99,6 +112,62 @@ def test_bakery_templates_are_valid_service_plugin_templates() -> None:
         validate_payload_schema(template["payload_schema"])
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"description": "Open a ticket", "source": "poundcake", "context": {}},
+        {"title": "Open a ticket", "source": "poundcake", "context": {}},
+        {"title": "Open a ticket", "description": "Open a ticket", "context": {}},
+        {"title": "Open a ticket", "description": "Open a ticket", "source": "poundcake"},
+    ],
+)
+def test_bakery_open_contract_rejects_missing_ticket_create_fields(
+    payload: dict[str, object],
+) -> None:
+    template = _bakery_template("communication")
+    parameters = deepcopy(template["service_exec_parameters"])
+    parameters["operation"] = "open"
+
+    with pytest.raises(ServicePluginContractError):
+        validate_service_payload_for_operation(
+            payload,
+            template["payload_schema"],
+            parameters,
+        )
+
+
+@pytest.mark.parametrize("operation", ["notify", "update", "close"])
+def test_bakery_ticket_mutation_contract_rejects_missing_ticket_id(operation: str) -> None:
+    template = _bakery_template("communication")
+    parameters = deepcopy(template["service_exec_parameters"])
+    parameters["operation"] = operation
+
+    with pytest.raises(ServicePluginContractError):
+        validate_service_payload_for_operation(
+            {"comment": "Ticket update"},
+            template["payload_schema"],
+            parameters,
+        )
+
+
+@pytest.mark.parametrize(
+    "ticket_id_key",
+    ["ticket_id", "bakery_ticket_id", "bakery_comms_id", "communication_id"],
+)
+def test_bakery_ticket_mutation_contract_accepts_supported_ticket_context_keys(
+    ticket_id_key: str,
+) -> None:
+    template = _bakery_template("communication")
+    parameters = deepcopy(template["service_exec_parameters"])
+    parameters["operation"] = "notify"
+
+    validate_service_payload_for_operation(
+        {"context": {ticket_id_key: "TICKET-1"}},
+        template["payload_schema"],
+        parameters,
+    )
+
+
 def test_bakery_capability_templates_match_communication_ingredient() -> None:
     capability = load_bakery_capability_templates()[0]
 
@@ -106,6 +175,7 @@ def test_bakery_capability_templates_match_communication_ingredient() -> None:
     assert capability["ingredient_ref"]["service_exec"] == "communication"
     assert capability["operation"] == "open"
     assert capability["mode"] == "communication"
+    assert capability["required_inputs"] == ["title", "description", "source", "context"]
 
 
 def test_bakery_payload_aggregates_dish_evidence_context() -> None:
@@ -269,6 +339,57 @@ def test_bakery_adapter_validates_monitor_hmac_payload() -> None:
         )
         == "Bakery credential requires monitor_uuid, monitor_id, hmac_key_id, and hmac_secret"
     )
+
+
+def test_bakery_adapter_rejects_non_object_service_payload() -> None:
+    adapter = BakeryExecutionAdapter()
+    ctx = ExecutionContext.model_construct(
+        service_type="bakery",
+        service_exec="communication",
+        req_id="unit-test",
+        service_payload=["not", "an", "object"],
+        service_exec_parameters={"operation": "open"},
+        context={},
+    )
+
+    assert adapter.validate(ctx) == "service_payload must be an object when provided"
+
+
+def test_bakery_adapter_requires_ticket_create_payload_contract(monkeypatch) -> None:
+    monkeypatch.setattr("api.plugins.bakery.adapter.validate_transport_config", lambda: None)
+    adapter = BakeryExecutionAdapter()
+    ctx = ExecutionContext(
+        service_type="bakery",
+        service_exec="communication",
+        req_id="unit-test",
+        service_payload={
+            "title": "Open ticket",
+            "description": "Open ticket for failed remediation.",
+            "source": "poundcake",
+        },
+        service_exec_parameters={"operation": "open"},
+        context={"destination_target": "rackspace_core"},
+    )
+
+    assert adapter.validate(ctx) == "Bakery create requires payload.context"
+
+
+def test_bakery_adapter_resolves_ticket_id_from_supported_context_keys(monkeypatch) -> None:
+    monkeypatch.setattr("api.plugins.bakery.adapter.validate_transport_config", lambda: None)
+    adapter = BakeryExecutionAdapter()
+    ctx = ExecutionContext(
+        service_type="bakery",
+        service_exec="communication",
+        req_id="unit-test",
+        service_payload={"comment": "Ticket update"},
+        service_exec_parameters={"operation": "notify"},
+        context={
+            "destination_target": "rackspace_core",
+            "dish": {"context_updates": {"bakery_ticket_id": "TICKET-1"}},
+        },
+    )
+
+    assert adapter.validate(ctx) is None
 
 
 def test_plugin_credentials_encrypt_without_plaintext(monkeypatch) -> None:

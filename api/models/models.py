@@ -152,7 +152,7 @@ class Ingredient(Base):
         CheckConstraint("service_type <> ''", name="ck_ingredients_service_type_present"),
         CheckConstraint("service_exec <> ''", name="ck_ingredients_service_exec_present"),
         CheckConstraint(
-            "ingredient_purpose in ('remediation','comms','utility','plugin_health','suppression_sync','suppression_lifecycle')",
+            "ingredient_purpose in ('remediation','comms','utility','plugin_health','suppression_sync','suppression_lifecycle','monitoring','scheduled_reconciliation','collection')",
             name="ck_ingredients_ingredient_purpose",
         ),
         CheckConstraint(

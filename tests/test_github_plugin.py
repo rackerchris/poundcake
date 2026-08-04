@@ -5,16 +5,30 @@ from __future__ import annotations
 import base64
 import io
 import zipfile
+from copy import deepcopy
 
 import httpx
 import pytest
 
+from api.plugins.contract import (
+    ServicePluginContractError,
+    validate_service_payload_for_operation,
+)
 from api.core.config import get_settings
 from api.plugins.github.adapter import GitHubExecutionAdapter
 from api.plugins.github.client import GitHubClient, GitHubClientError, parse_github_repo
 from api.plugins.github.plugin import get_plugin
+from api.plugins.github.templates import GITHUB_INGREDIENT_TEMPLATES
 from api.plugins.manifest import validate_service_plugin
 from api.plugins.types import ExecutionContext
+
+
+def _github_template(service_exec: str) -> dict[str, object]:
+    return next(
+        template
+        for template in GITHUB_INGREDIENT_TEMPLATES
+        if template["service_exec"] == service_exec
+    )
 
 
 def _response(status_code: int, payload: object) -> httpx.Response:
@@ -43,6 +57,44 @@ def test_github_plugin_manifest_is_community_tier() -> None:
     assert plugin.service_type == "github"
     assert plugin.plugin_tier == "community"
     assert plugin.plugin_log_key is None
+
+
+@pytest.mark.parametrize(
+    ("service_exec", "operation", "payload"),
+    [
+        ("repo_read", "read_file", {}),
+        ("repo_read", "read_file", {"path": ""}),
+        ("repo_write", "commit_files", {"files": {"README.md": "contents"}}),
+        ("repo_write", "commit_files", {"branch": "codex/test"}),
+        ("repo_write", "create_pull_request", {"branch": "codex/test"}),
+        ("repo_write", "create_pull_request", {"title": "Test PR"}),
+        (
+            "repo_write",
+            "commit_and_pr",
+            {"branch": "codex/test", "files": {"README.md": "contents"}},
+        ),
+        (
+            "repo_write",
+            "commit_and_pr",
+            {"branch": "codex/test", "title": "Test PR"},
+        ),
+    ],
+)
+def test_github_operation_payload_contract_rejects_missing_required_fields(
+    service_exec: str,
+    operation: str,
+    payload: dict[str, object],
+) -> None:
+    template = _github_template(service_exec)
+    parameters = deepcopy(template["service_exec_parameters"])
+    parameters["operation"] = operation
+
+    with pytest.raises(ServicePluginContractError):
+        validate_service_payload_for_operation(
+            payload,
+            template["payload_schema"],
+            parameters,
+        )
 
 
 def test_parse_github_repo_accepts_owner_repo_and_urls() -> None:
@@ -219,6 +271,20 @@ def test_github_adapter_rejects_auth_over_insecure_remote_transport() -> None:
     )
 
     assert error == "GitHub authentication requires HTTPS or an in-cluster service URL"
+
+
+def test_github_adapter_rejects_non_object_service_payload() -> None:
+    adapter = GitHubExecutionAdapter(helper=GitHubClient(default_repo="example/repo"))
+    ctx = ExecutionContext.model_construct(
+        service_type="github",
+        service_exec="repo_read",
+        req_id="unit-test",
+        service_payload=["not", "an", "object"],
+        service_exec_parameters={"operation": "read_file"},
+        context={},
+    )
+
+    assert adapter.validate(ctx) == "service_payload must be an object when provided"
 
 
 class _FakeGitHubHelper:

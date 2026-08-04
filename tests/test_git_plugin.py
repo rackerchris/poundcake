@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
+from api.plugins.contract import (
+    ServicePluginContractError,
+    validate_service_payload_for_operation,
+)
 from api.plugins.git.adapter import GitExecutionAdapter
 from api.plugins.git.client import GitClient, GitClientError
 from api.plugins.git.plugin import get_plugin
+from api.plugins.git.templates import GIT_INGREDIENT_TEMPLATES
 from api.plugins.manifest import validate_service_plugin
 from api.plugins.types import ExecutionContext
+
+
+def _git_template(service_exec: str) -> dict[str, object]:
+    return next(
+        template
+        for template in GIT_INGREDIENT_TEMPLATES
+        if template["service_exec"] == service_exec
+    )
 
 
 def test_git_plugin_manifest_is_external_and_valid() -> None:
@@ -17,6 +32,44 @@ def test_git_plugin_manifest_is_external_and_valid() -> None:
     assert plugin.service_type == "git"
     assert plugin.plugin_tier == "community"
     assert "repo.write" in plugin.helper_capabilities
+
+
+@pytest.mark.parametrize(
+    ("service_exec", "operation", "payload"),
+    [
+        ("repo_read", "read_file", {}),
+        ("repo_read", "read_file", {"path": ""}),
+        ("repo_write", "commit_files", {"files": {"README.md": "contents"}}),
+        ("repo_write", "commit_files", {"branch": "codex/test"}),
+        ("repo_write", "create_pull_request", {"branch": "codex/test"}),
+        ("repo_write", "create_pull_request", {"title": "Test PR"}),
+        (
+            "repo_write",
+            "commit_and_pr",
+            {"branch": "codex/test", "files": {"README.md": "contents"}},
+        ),
+        (
+            "repo_write",
+            "commit_and_pr",
+            {"branch": "codex/test", "title": "Test PR"},
+        ),
+    ],
+)
+def test_git_operation_payload_contract_rejects_missing_required_fields(
+    service_exec: str,
+    operation: str,
+    payload: dict[str, object],
+) -> None:
+    template = _git_template(service_exec)
+    parameters = deepcopy(template["service_exec_parameters"])
+    parameters["operation"] = operation
+
+    with pytest.raises(ServicePluginContractError):
+        validate_service_payload_for_operation(
+            payload,
+            template["payload_schema"],
+            parameters,
+        )
 
 
 def test_git_adapter_declares_optional_repository_credentials() -> None:
@@ -50,6 +103,20 @@ def test_git_adapter_validates_write_contract() -> None:
     )
 
     assert error == "git commit operations require service_payload.branch"
+
+
+def test_git_adapter_rejects_non_object_service_payload() -> None:
+    adapter = GitExecutionAdapter(helper=GitClient(repo_url="https://example.test/repo.git"))
+    ctx = ExecutionContext.model_construct(
+        service_type="git",
+        service_exec="repo_read",
+        req_id="unit-test",
+        service_payload=["not", "an", "object"],
+        service_exec_parameters={"operation": "read_file"},
+        context={},
+    )
+
+    assert adapter.validate(ctx) == "service_payload must be an object when provided"
 
 
 class _FakeGitHelper:

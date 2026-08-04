@@ -1,7 +1,7 @@
 # Example Helm overrides for PoundCake.
-# Start by setting real FQDNs for Envoy Gateway listeners/routes.
-# Copy this file to /etc/genestack/helm-configs/poundcake/poundcake-helm-overrides.yaml
-# (or another location consumed via -f/--values), then adjust values for your environment.
+# Start by setting real FQDNs for Gateway API HTTPRoutes.
+# Copy this file to /opt/genestack/base-helm-configs/poundcake/poundcake-helm-overrides.yaml
+# (or another location consumed via -f/--values), then adjust values for the cluster.
 
 poundcake:
   enabled: true
@@ -20,28 +20,36 @@ uiImage:
 
 gateway:
   enabled: true
-  className: envoyproxy
-  name: poundcake-gateway
+  gatewayName: poundcake-gateway
+  gatewayNamespace: ""
+  listener:
+    name: ""
+    hostname: ""
+  hostnames: []
   listeners:
     api:
       enabled: true
       hostname: api.example.yourdomain.com
       port: 80
+      protocol: HTTP
       pathPrefix: /
     ui:
       enabled: true
       hostname: ui.example.yourdomain.com
       port: 80
+      protocol: HTTP
       pathPrefix: /
 
 # Configure Bakery only in a cluster override. The bootstrap HMAC secret must
-# use the key names configured below; the startup hook imports it into
-# PoundCake credential-manager and then registers the monitor remotely.
+# use the key names configured below; the startup hook imports it into PoundCake
+# credential-manager and then registers the monitor remotely.
 bakery:
   client:
     enabled: false
     baseUrl: "https://bakery.example.yourdomain.com"
+    pluginId: "poundcake/bakery-plugin"
     monitor:
+      id: poundcake/bakery-plugin
       environmentLabel: production
       region: region1
       clusterName: cluster.example.yourdomain.com
@@ -50,5 +58,7 @@ bakery:
     auth:
       existingSecret: bakery-monitor-bootstrap
       secretKeys:
+        monitorId: monitor_id
+        monitorUuid: monitor_uuid
         keyId: hmac_key_id
         secret: hmac_secret

@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from copy import deepcopy
+
 import pytest
 
-from api.plugins.contract import validate_payload_schema
+from api.plugins.contract import (
+    ServicePluginContractError,
+    validate_payload_schema,
+    validate_service_payload_for_operation,
+)
 from api.plugins.prometheus.adapter import PrometheusExecutionAdapter
 from api.plugins.prometheus.helper import PrometheusAlertRuleHelper
 from api.plugins.prometheus.plugin import get_plugin
@@ -74,15 +81,22 @@ class _FakePrometheusClient:
         self,
         *,
         alert_name: str,
-        query: str,
         labels: dict[str, object] | None = None,
         lookback_seconds: int = 3600,
         step_seconds: int = 60,
     ) -> dict[str, object]:
+        evidence_labels = labels or {}
+        matchers = [f"alertname={json.dumps(alert_name)}"]
+        matchers.extend(
+            f"{name}={json.dumps(str(value))}"
+            for name, value in sorted(evidence_labels.items())
+            if name != "alertname" and value is not None
+        )
+        query = f"ALERTS{{{','.join(matchers)}}}"
         return {
             "alert_name": alert_name,
             "query": query,
-            "labels": labels or {},
+            "labels": evidence_labels,
             "current": await self.query(query),
             "trend": await self.range_query(query),
             "lookback_seconds": lookback_seconds,
@@ -91,6 +105,14 @@ class _FakePrometheusClient:
 
     async def reload_config(self) -> dict[str, object]:
         return {"status": "success", "message": "Prometheus configuration reloaded"}
+
+
+def _prometheus_template(service_exec: str) -> dict[str, object]:
+    return next(
+        template
+        for template in PROMETHEUS_INGREDIENT_TEMPLATES
+        if template["service_exec"] == service_exec
+    )
 
 
 def _ctx(service_exec: str, payload: dict[str, object] | None = None) -> ExecutionContext:
@@ -111,7 +133,7 @@ def _ctx(service_exec: str, payload: dict[str, object] | None = None) -> Executi
         service_type="prometheus",
         service_exec=service_exec,
         req_id="unit-test",
-        service_payload=payload or {},
+        service_payload={} if payload is None else payload,
         service_exec_parameters=parameters,
     )
 
@@ -163,7 +185,8 @@ def test_prometheus_templates_are_valid_service_plugin_templates() -> None:
         "list_label_values",
     ]
     assert {recipe["name"] for recipe in PROMETHEUS_RECIPE_TEMPLATES} == {
-        "plugin-health-check:prometheus"
+        "plugin-health-check:prometheus",
+        "operator-action:prometheus:reload-config",
     }
     assert {task["task_key"] for task in PROMETHEUS_SCHEDULED_TASKS} == {
         "plugin-health-check:prometheus",
@@ -172,6 +195,68 @@ def test_prometheus_templates_are_valid_service_plugin_templates() -> None:
     for template in PROMETHEUS_INGREDIENT_TEMPLATES:
         assert template["service_type"] == "prometheus"
         validate_payload_schema(template["payload_schema"])
+
+
+@pytest.mark.parametrize(
+    ("operation", "payload"),
+    [
+        ("alert_evidence", {}),
+        ("alert_evidence", {"alert_name": "DemoAlert", "query": "up"}),
+        ("list_label_values", {}),
+        ("list_rules", {"query": "up"}),
+        ("list_rule_groups", {"query": "up"}),
+        ("list_metrics", {"metric": "up"}),
+        ("list_labels", {"query": "up"}),
+    ],
+)
+def test_prometheus_operation_payload_contract_rejects_missing_or_unsupported_fields(
+    operation: str,
+    payload: dict[str, object],
+) -> None:
+    template = _prometheus_template("inspect")
+    parameters = deepcopy(template["service_exec_parameters"])
+    parameters["operation"] = operation
+
+    with pytest.raises(ServicePluginContractError):
+        validate_service_payload_for_operation(
+            payload,
+            template["payload_schema"],
+            parameters,
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "payload"),
+    [
+        (
+            "alert_evidence",
+            {
+                "alert_name": "DemoAlert",
+                "labels": {"instance": "api-1"},
+                "lookback_seconds": 300,
+                "step_seconds": 30,
+            },
+        ),
+        ("list_label_values", {"label_name": "job", "metric": "up"}),
+        ("list_rules", {}),
+        ("list_rule_groups", {}),
+        ("list_metrics", {}),
+        ("list_labels", {"metric": "up"}),
+    ],
+)
+def test_prometheus_operation_payload_contract_accepts_supported_fields(
+    operation: str,
+    payload: dict[str, object],
+) -> None:
+    template = _prometheus_template("inspect")
+    parameters = deepcopy(template["service_exec_parameters"])
+    parameters["operation"] = operation
+
+    validate_service_payload_for_operation(
+        payload,
+        template["payload_schema"],
+        parameters,
+    )
 
 
 def test_prometheus_helper_extracts_and_indexes_alert_rules() -> None:
@@ -242,6 +327,32 @@ def test_prometheus_adapter_validates_alert_evidence_payload() -> None:
 
     assert evidence_error == "prometheus alert_evidence requires service_payload.alert_name"
 
+    query_error = adapter.validate(
+        ExecutionContext(
+            service_type="prometheus",
+            service_exec="inspect",
+            req_id="unit-test",
+            service_payload={"alert_name": "DemoAlert", "query": "up"},
+            service_exec_parameters={"operation": "alert_evidence"},
+        )
+    )
+
+    assert query_error == "prometheus alert_evidence does not accept service_payload.query"
+
+
+def test_prometheus_adapter_rejects_non_object_service_payload() -> None:
+    adapter = PrometheusExecutionAdapter(client=_FakePrometheusClient())  # type: ignore[arg-type]
+    ctx = ExecutionContext.model_construct(
+        service_type="prometheus",
+        service_exec="inspect",
+        req_id="unit-test",
+        service_payload=["not", "an", "object"],
+        service_exec_parameters={"operation": "list_rules"},
+        context={},
+    )
+
+    assert adapter.validate(ctx) == "service_payload must be an object when provided"
+
 
 def test_prometheus_adapter_rejects_auth_over_insecure_remote_transport() -> None:
     client = _FakePrometheusClient()
@@ -275,6 +386,7 @@ async def test_prometheus_adapter_maps_client_result_to_execution_result() -> No
 @pytest.mark.asyncio
 async def test_prometheus_adapter_collects_alert_evidence() -> None:
     adapter = PrometheusExecutionAdapter(client=_FakePrometheusClient())  # type: ignore[arg-type]
+    expected_query = 'ALERTS{alertname="DemoAlert",job="demo"}'
 
     result = await adapter.dispatch(
         ExecutionContext(
@@ -283,7 +395,6 @@ async def test_prometheus_adapter_collects_alert_evidence() -> None:
             req_id="unit-test",
             service_payload={
                 "alert_name": "DemoAlert",
-                "query": "up == 0",
                 "labels": {"job": "demo"},
                 "lookback_seconds": 600,
                 "step_seconds": 30,
@@ -298,14 +409,14 @@ async def test_prometheus_adapter_collects_alert_evidence() -> None:
         "status": "succeeded",
         "evidence": {
             "alert_name": "DemoAlert",
-            "query": "up == 0",
+            "query": expected_query,
             "labels": {"job": "demo"},
             "current": {
                 "success": True,
                 "status": "succeeded",
                 "data": {
                     "resultType": "vector",
-                    "result": [{"query": "up == 0", "time": None}],
+                    "result": [{"query": expected_query, "time": None}],
                 },
             },
             "trend": {
@@ -313,7 +424,14 @@ async def test_prometheus_adapter_collects_alert_evidence() -> None:
                 "status": "succeeded",
                 "data": {
                     "resultType": "matrix",
-                    "result": [{"query": "up == 0", "start": None, "end": None, "step": None}],
+                    "result": [
+                        {
+                            "query": expected_query,
+                            "start": None,
+                            "end": None,
+                            "step": None,
+                        }
+                    ],
                 },
             },
             "lookback_seconds": 600,

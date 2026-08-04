@@ -22,6 +22,33 @@ _REPO_PROPS: JSONObject = {
     "base_branch": {"type": "string", "minLength": 1},
 }
 
+_READ_PROPS: JSONObject = {
+    **_REPO_PROPS,
+    "path": {"type": "string", "minLength": 1},
+    "recursive": {"type": "boolean"},
+}
+_WRITE_PROPS: JSONObject = {
+    **_REPO_PROPS,
+    "branch": {"type": "string", "minLength": 1},
+    "files": {
+        "type": "object",
+        "additionalProperties": {"type": ["string", "null"]},
+        "minProperties": 1,
+    },
+    "message": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "body": {"type": "string"},
+    "commit_message": {"type": "string", "minLength": 1},
+    "push": {"type": "boolean"},
+}
+_READ_FILE_SCHEMA = _schema(_READ_PROPS, required=["path"])
+_LIST_FILES_SCHEMA = _schema(
+    {**_REPO_PROPS, "path": {"type": "string"}, "recursive": {"type": "boolean"}}
+)
+_COMMIT_FILES_SCHEMA = _schema(_WRITE_PROPS, required=["branch", "files"])
+_CREATE_PULL_REQUEST_SCHEMA = _schema(_WRITE_PROPS, required=["branch", "title"])
+_COMMIT_AND_PR_SCHEMA = _schema(_WRITE_PROPS, required=["branch", "files", "title"])
+
 
 GIT_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
     {
@@ -54,10 +81,15 @@ GIT_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
             "operation": "read_file",
             "allowed_operations": ["read_file", "list_files"],
             "operation_metadata": {
-                "read_file": {"label": "Read file", "description": "Read one repository file."},
+                "read_file": {
+                    "label": "Read file",
+                    "description": "Read one repository file.",
+                    "payload_schema": _READ_FILE_SCHEMA,
+                },
                 "list_files": {
                     "label": "List files",
                     "description": "List files under a repository path.",
+                    "payload_schema": _LIST_FILES_SCHEMA,
                 },
             },
         },
@@ -96,14 +128,20 @@ GIT_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
             "operation": "commit_files",
             "allowed_operations": ["commit_files", "create_pull_request", "commit_and_pr"],
             "operation_metadata": {
-                "commit_files": {"label": "Commit files", "description": "Commit Git changes."},
+                "commit_files": {
+                    "label": "Commit files",
+                    "description": "Commit Git changes.",
+                    "payload_schema": _COMMIT_FILES_SCHEMA,
+                },
                 "create_pull_request": {
                     "label": "Create pull request",
                     "description": "Open a pull request for an existing branch.",
+                    "payload_schema": _CREATE_PULL_REQUEST_SCHEMA,
                 },
                 "commit_and_pr": {
                     "label": "Commit and PR",
                     "description": "Commit Git changes and open a pull request.",
+                    "payload_schema": _COMMIT_AND_PR_SCHEMA,
                 },
             },
         },

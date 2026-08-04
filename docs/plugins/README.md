@@ -30,6 +30,13 @@ composition.
 - `recipe_templates[].recipe_ingredients` are mutable composition and may be
   replaced as recipes evolve. They must reference ingredients by template
   identity, not by database IDs such as `ingredient_id`.
+- Every advertised operation must have
+  `operation_metadata[operation].payload_schema`. PoundCake treats operation
+  schemas as authoritative, validates them before adapter dispatch, and fails
+  closed on contract violations.
+- `service_payload` must be an object when provided. Non-object values are
+  rejected with `service_payload must be an object when provided`; adapters keep
+  the same guard as defense in depth.
 
 The canonical adapter contract, roles/responsibilities table, and conversion
 notes live in [SERVICE_PLUGIN_CONTRACT.md](../SERVICE_PLUGIN_CONTRACT.md).

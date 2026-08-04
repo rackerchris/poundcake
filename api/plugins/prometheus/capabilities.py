@@ -21,12 +21,11 @@ def load_prometheus_capability_templates() -> tuple[JSONObject, ...]:
             "trigger_match": {
                 "phase": "evidence",
             },
-            "required_inputs": ["alert_name", "query", "labels"],
+            "required_inputs": ["alert_name", "labels"],
             "optional_inputs": ["lookback_seconds", "step_seconds"],
             "defaults": {
                 "service_payload": {
                     "alert_name": "{{ order.raw_data.alertname }}",
-                    "query": 'ALERTS{alertname="{{ order.raw_data.alertname }}"}',
                     "labels": "{{ order.labels }}",
                     "lookback_seconds": 3600,
                     "step_seconds": 60,

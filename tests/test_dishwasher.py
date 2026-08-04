@@ -102,6 +102,16 @@ def test_recipe_contract_hash_matches_equivalent_existing_recipe() -> None:
     assert dishwasher._recipe_contracts_match(payload, _existing_recipe()) is True
 
 
+def test_recipe_payload_preserves_runtime_payload_marker_without_contract_drift() -> None:
+    template = _recipe_template(service_payload={})
+    template["recipe_ingredients"][0]["service_payload_from_order"] = True
+
+    payload = dishwasher._recipe_payload(template, {_dishwasher_identity(): 101})
+
+    assert payload["recipe_ingredients"][0]["service_payload_from_order"] is True
+    assert dishwasher._recipe_contracts_match(payload, _existing_recipe(service_payload={}))
+
+
 def test_sync_plugin_recipes_skips_unchanged_recipe(monkeypatch) -> None:
     calls: list[str] = []
 

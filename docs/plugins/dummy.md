@@ -39,6 +39,15 @@ timestamp for `sleep_10`; it mutates no state and performs no writes.
 - Provides reference ingredients and recipes used by local development and
   contract tests.
 
+## Payload contracts
+
+Operation-level `payload_schema` validation is authoritative. Invalid payloads
+are rejected before adapter execution. Dummy communication operations
+`open`, `notify`, `update`, and `close` accept the reference communication
+payload shape only: required string `title`, `description`, `message`, and
+`source` fields plus required object `context`. Additional payload fields are
+rejected.
+
 ## Validation
 
 Run the plugin and contract test suites after changing the dummy plugin:

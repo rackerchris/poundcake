@@ -41,6 +41,7 @@ POUNDCAKE_TERMINAL_TO_STACKSTORM_STATUS = {
     "timeout": "timeout",
     "canceled": "canceled",
 }
+SERVICE_PAYLOAD_OBJECT_ERROR = "service_payload must be an object when provided"
 
 
 def _map_stackstorm_status(raw_status: str) -> CanonicalExecutionStatus:
@@ -182,10 +183,10 @@ class StackStormExecutionAdapter(ExecutionAdapter):
         service_exec = (ctx.service_exec or "").strip().lower()
         if service_exec not in STACKSTORM_SERVICE_EXECS:
             return f"Unsupported stackstorm service_exec: {ctx.service_exec}"
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return SERVICE_PAYLOAD_OBJECT_ERROR
         if service_exec == "health_check":
             return None
-        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
-            return "service_payload must be an object when provided"
         operation = _operation(ctx)
         if service_exec == "action_execution" and operation not in STACKSTORM_ACTION_OPERATIONS:
             return "stackstorm action_execution operation must be: execute_action"
@@ -195,7 +196,7 @@ class StackStormExecutionAdapter(ExecutionAdapter):
             return "stackstorm content_sync operation must be: sync_content"
         if service_exec == "content_sync":
             return None
-        payload = ctx.service_payload or {}
+        payload = {} if ctx.service_payload is None else ctx.service_payload
         if service_exec == "action_execution" and not str(payload.get("action_ref") or "").strip():
             return "stackstorm execute_action requires service_payload.action_ref"
         if (
@@ -240,6 +241,12 @@ class StackStormExecutionAdapter(ExecutionAdapter):
 
     async def dispatch(self, ctx: ExecutionContext) -> ExecutionResult:
         service_exec = (ctx.service_exec or "").strip().lower()
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return _payload_contract_error(
+                service_type=self.service_type,
+                service_exec_id=f"stackstorm:{service_exec}:{uuid4()}",
+                message=SERVICE_PAYLOAD_OBJECT_ERROR,
+            )
         operator_config = self._get_operator_config(ctx)
         credential_payload = self._credential_payload or {}
         manager = self._manager
@@ -280,7 +287,7 @@ class StackStormExecutionAdapter(ExecutionAdapter):
             )
 
         try:
-            payload = ctx.service_payload if isinstance(ctx.service_payload, dict) else {}
+            payload = {} if ctx.service_payload is None else ctx.service_payload
             if service_exec == "workflow_execution":
                 action_ref = str(payload.get("workflow_ref") or "").strip()
                 parameters = (
@@ -397,3 +404,18 @@ class StackStormExecutionAdapter(ExecutionAdapter):
 def _operation(ctx: ExecutionContext) -> str:
     params = ctx.service_exec_parameters if isinstance(ctx.service_exec_parameters, dict) else {}
     return str(params.get("operation") or "").strip().lower()
+
+
+def _payload_contract_error(
+    *, service_type: str, service_exec_id: str, message: str
+) -> ExecutionResult:
+    outcome: JSONObject = {"success": False, "status": "errored", "message": message}
+    return ExecutionResult(
+        service_type=service_type,
+        status="errored",
+        service_exec_id=service_exec_id,
+        service_exec_error=message,
+        result=outcome,
+        raw=outcome,
+        retryable=False,
+    )

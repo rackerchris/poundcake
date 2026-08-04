@@ -25,6 +25,7 @@ from api.plugins.genestack_monitoring.remediation_profiles import (
     MANAGED_REMEDIATION_MARKER,
     remediation_step_specs,
 )
+from api.plugins.contract import ServicePluginContractError
 from api.services.alert_rule_repo import (
     AlertRuleSource,
     load_alert_rule_sources_from_annotations,
@@ -195,6 +196,10 @@ async def sync_genestack_monitoring_content_prepare(
 
         recipe_steps: list[RecipeStepPayload] = []
         for idx, spec in enumerate(specs, start=1):
+            if spec.service_payload is not None and not isinstance(spec.service_payload, dict):
+                raise ServicePluginContractError(
+                    "service_payload must be an object when provided"
+                )
             marker = {
                 "managed_by": MANAGED_REMEDIATION_MARKER,
                 "managed_role": str(spec.role),
@@ -207,7 +212,7 @@ async def sync_genestack_monitoring_content_prepare(
                     service_exec=spec.service_exec,
                     task_key_template=spec.task_key_template,
                     step_order=idx * 10,
-                    service_payload=spec.service_payload or {},
+                    service_payload={} if spec.service_payload is None else spec.service_payload,
                     service_exec_parameters_override=params,
                     expected_secs=spec.expected_secs,
                     timeout=spec.timeout,

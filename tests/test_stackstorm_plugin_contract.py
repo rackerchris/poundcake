@@ -57,14 +57,14 @@ def test_poundcake_terminal_statuses_map_to_stackstorm_terminal_states() -> None
 def _ctx(
     *,
     service_exec: str = "action_execution",
-    payload: dict[str, object] | None = None,
+    payload: dict[str, object] | list[object] | None = None,
     operation: str = "execute_action",
 ) -> ExecutionContext:
     return ExecutionContext(
         service_type="stackstorm",
         service_exec=service_exec,
         req_id="unit-test",
-        service_payload=payload or {},
+        service_payload={} if payload is None else payload,
         service_exec_parameters={
             "operation": operation,
             "allowed_operations": ["execute_action"],
@@ -153,6 +153,15 @@ def test_stackstorm_adapter_declares_required_api_key_credential() -> None:
             "usage": "StackStorm API key or auth token for action execution.",
         }
     ]
+
+
+def test_stackstorm_adapter_rejects_non_object_service_payload() -> None:
+    adapter = StackStormExecutionAdapter(manager=_FakeStackStormManager())  # type: ignore[arg-type]
+    ctx = _ctx(payload={}).model_copy(update={"service_payload": ["not", "an", "object"]})
+
+    assert (
+        adapter.validate(ctx) == "service_payload must be an object when provided"
+    )
 
 
 @pytest.mark.asyncio

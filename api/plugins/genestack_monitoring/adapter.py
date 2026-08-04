@@ -9,7 +9,6 @@ from uuid import uuid4
 from api.plugins.base import ExecutionAdapter
 from api.plugins.catalog import (
     build_enabled_plugin_capability_catalog,
-    build_enabled_plugin_registry,
 )
 from api.plugins.genestack_monitoring.content_sync import (
     export_genestack_alert_updates_prepare,
@@ -29,14 +28,14 @@ from api.plugins.genestack_monitoring.templates import (
 from api.plugins.types import ExecutionContext, ExecutionResult, PluginHealthResult
 from api.services.credential_manager import read_adapter_credential_with_policy
 from api.services.plugin_bootstrap import PluginBootstrapError
-from api.services.plugin_orchestrator import ExecutionOrchestrator
 from api.services.plugin_operations import (
     get_ingredient,
     list_recipe_management_states,
     list_service_plugin_configs,
     upsert_recipes,
 )
-from api.services.prometheus_reload import reload_prometheus_rules
+
+SERVICE_PAYLOAD_OBJECT_ERROR = "service_payload must be an object when provided"
 
 
 class GenestackMonitoringExecutionAdapter(ExecutionAdapter):
@@ -56,6 +55,8 @@ class GenestackMonitoringExecutionAdapter(ExecutionAdapter):
         service_exec = (ctx.service_exec or "").strip().lower()
         if service_exec not in self.service_execs:
             return f"Unsupported genestack_monitoring service_exec: {service_exec}"
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return SERVICE_PAYLOAD_OBJECT_ERROR
         if service_exec == "content_sync":
             operation = _operation(ctx)
             if operation != GENESTACK_MONITORING_CONTENT_SYNC_OPERATION:
@@ -63,10 +64,8 @@ class GenestackMonitoringExecutionAdapter(ExecutionAdapter):
         if service_exec == "repo_sync":
             operation = _operation(ctx)
             if operation != GENESTACK_MONITORING_ALERT_EXPORT_OPERATION:
-                return (
-                    "genestack_monitoring repo_sync operation must be: export_alert_updates"
-                )
-            payload = ctx.service_payload if isinstance(ctx.service_payload, dict) else {}
+                return "genestack_monitoring repo_sync operation must be: export_alert_updates"
+            payload = {} if ctx.service_payload is None else ctx.service_payload
             for key in ("crd_name", "group_name", "rule_name"):
                 if not str(payload.get(key) or "").strip():
                     return f"genestack_monitoring repo_sync requires service_payload.{key}"
@@ -130,6 +129,12 @@ class GenestackMonitoringExecutionAdapter(ExecutionAdapter):
     async def dispatch(self, ctx: ExecutionContext) -> ExecutionResult:
         service_exec = (ctx.service_exec or "").strip().lower()
         service_exec_id = f"genestack_monitoring:{service_exec}:{uuid4()}"
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return _payload_contract_error(
+                service_type=self.service_type,
+                service_exec_id=service_exec_id,
+                message=SERVICE_PAYLOAD_OBJECT_ERROR,
+            )
 
         if service_exec == "content_sync":
             try:
@@ -184,16 +189,6 @@ class GenestackMonitoringExecutionAdapter(ExecutionAdapter):
                     recipes=prepared.recipes,
                 )
                 stats_payload = asdict(stats)
-                prometheus_reload = await reload_prometheus_rules(
-                    orchestrator=ExecutionOrchestrator(build_enabled_plugin_registry()),
-                    req_id=ctx.req_id,
-                    operator_config=plugin_configs.get("prometheus"),
-                )
-                if prometheus_reload.status != "succeeded":
-                    raise PluginBootstrapError(
-                        prometheus_reload.service_exec_error
-                        or "Prometheus rule reload failed after content sync"
-                    )
 
                 return ExecutionResult(
                     service_type=self.service_type,
@@ -219,7 +214,7 @@ class GenestackMonitoringExecutionAdapter(ExecutionAdapter):
                         ),
                         "recipe_outcomes": prepared.recipe_outcomes,
                         "processed": prepared.processed,
-                        "prometheus_reload_status": prometheus_reload.status,
+                        "prometheus_reload_required": True,
                     },
                     raw={
                         "success": True,
@@ -240,7 +235,7 @@ class GenestackMonitoringExecutionAdapter(ExecutionAdapter):
                         ),
                         "recipe_outcomes": prepared.recipe_outcomes,
                         "processed": prepared.processed,
-                        "prometheus_reload_status": prometheus_reload.status,
+                        "prometheus_reload_required": True,
                     },
                     retryable=False,
                 )
@@ -281,7 +276,7 @@ class GenestackMonitoringExecutionAdapter(ExecutionAdapter):
                     retryable=False,
                 )
         if service_exec == "repo_sync":
-            payload = ctx.service_payload if isinstance(ctx.service_payload, dict) else {}
+            payload = {} if ctx.service_payload is None else ctx.service_payload
             try:
                 helpers = await _hydrate_helper_credentials(self._helper_factory())
                 prepared = await export_genestack_alert_updates_prepare(
@@ -295,9 +290,7 @@ class GenestackMonitoringExecutionAdapter(ExecutionAdapter):
                     helpers,
                     operation="genestack_monitoring alert export",
                 )
-                commit_message = (
-                    f"Update Genestack alert {prepared.selected_rule} from PoundCake"
-                )
+                commit_message = f"Update Genestack alert {prepared.selected_rule} from PoundCake"
                 pr_title = f"Update Genestack alert {prepared.selected_rule}"
                 pr_body = (
                     "This pull request was created by PoundCake after a live "
@@ -497,6 +490,7 @@ async def _apply_recipe_publication_validation(
         "recipe_outcomes": adjusted_outcomes,
     }
 
+
 async def _hydrate_helper_credentials(helpers: Mapping[str, object]) -> Mapping[str, object]:
     hydrated = dict(helpers)
     github = require_github_credential_helper(hydrated)
@@ -522,6 +516,21 @@ def _operation(ctx: ExecutionContext) -> str:
         ctx.service_exec_parameters if isinstance(ctx.service_exec_parameters, dict) else {}
     )
     return str(parameters.get("operation") or "").strip().lower()
+
+
+def _payload_contract_error(
+    *, service_type: str, service_exec_id: str, message: str
+) -> ExecutionResult:
+    outcome = {"success": False, "status": "errored", "message": message}
+    return ExecutionResult(
+        service_type=service_type,
+        status="errored",
+        service_exec_id=service_exec_id,
+        service_exec_error=message,
+        result=outcome,
+        raw=outcome,
+        retryable=False,
+    )
 
 
 def _service_exec_from_receipt(service_exec_id: str) -> str:

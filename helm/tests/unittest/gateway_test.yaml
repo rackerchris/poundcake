@@ -30,6 +30,10 @@ tests:
           value: poundcake-gateway
         documentIndex: 0
       - equal:
+          path: spec.hostnames[0]
+          value: api.poundcake.local
+        documentIndex: 0
+      - equal:
           path: spec.rules[0].backendRefs[0].name
           value: poundcake-api
         documentIndex: 0
@@ -56,6 +60,10 @@ tests:
       - equal:
           path: spec.parentRefs[0].sectionName
           value: ui
+        documentIndex: 1
+      - equal:
+          path: spec.hostnames[0]
+          value: ui.poundcake.local
         documentIndex: 1
       - equal:
           path: spec.rules[0].backendRefs[0].name

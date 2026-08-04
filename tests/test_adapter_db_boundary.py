@@ -154,8 +154,7 @@ async def test_genestack_dispatch_routes_db_writes_through_plugin_operations(
     ) -> ContentSyncPrepareResult:
         assert capabilities is not None
         assert any(
-            item.get("capability_id") == "dummy.communication.open.default"
-            for item in capabilities
+            item.get("capability_id") == "dummy.communication.open.default" for item in capabilities
         )
         return prepared
 
@@ -200,22 +199,6 @@ async def test_genestack_dispatch_routes_db_writes_through_plugin_operations(
         "api.plugins.genestack_monitoring.adapter.get_ingredient",
         fake_get_ingredient,
     )
-    reload_calls: list[dict[str, object]] = []
-
-    async def fake_reload_prometheus_rules(**kwargs: object):
-        reload_calls.append(dict(kwargs))
-
-        class _Result:
-            status = "succeeded"
-            service_exec_error = None
-
-        return _Result()
-
-    monkeypatch.setattr(
-        "api.plugins.genestack_monitoring.adapter.reload_prometheus_rules",
-        fake_reload_prometheus_rules,
-    )
-
     adapter = GenestackMonitoringExecutionAdapter(
         helper_factory=lambda: {
             "github": _FakeGenestackGitHubHelper(),
@@ -239,10 +222,7 @@ async def test_genestack_dispatch_routes_db_writes_through_plugin_operations(
     assert result.result["created"] == 1
     assert result.result["crds_applied"] == 1
     assert result.result["recipes_published"] == 1
-    assert len(reload_calls) == 1
-    assert reload_calls[0]["req_id"] == "unit-test"
-    assert reload_calls[0]["operator_config"] is None
-    assert reload_calls[0]["orchestrator"] is not None
+    assert result.result["prometheus_reload_required"] is True
 
 
 def test_stackstorm_devstack_helper_uses_service_layer_boundaries() -> None:
@@ -296,8 +276,7 @@ async def test_genestack_dispatch_hydrates_github_helper_with_credential_policy(
         captured["github_helper"] = helpers["github"]
         assert capabilities is not None
         assert any(
-            item.get("capability_id") == "dummy.communication.open.default"
-            for item in capabilities
+            item.get("capability_id") == "dummy.communication.open.default" for item in capabilities
         )
         return prepared
 
@@ -348,18 +327,6 @@ async def test_genestack_dispatch_hydrates_github_helper_with_credential_policy(
         "api.plugins.genestack_monitoring.adapter.read_adapter_credential_with_policy",
         fake_read_credential_with_policy,
     )
-    async def fake_reload_prometheus_rules(**_kwargs: object):
-        class _Result:
-            status = "succeeded"
-            service_exec_error = None
-
-        return _Result()
-
-    monkeypatch.setattr(
-        "api.plugins.genestack_monitoring.adapter.reload_prometheus_rules",
-        fake_reload_prometheus_rules,
-    )
-
     adapter = GenestackMonitoringExecutionAdapter(
         helper_factory=lambda: {
             "github": GitHubClient(default_repo="rackerchris/genestack-monitoring"),
@@ -479,18 +446,6 @@ async def test_genestack_dispatch_reports_missing_ingredient_honestly(
         "api.plugins.genestack_monitoring.adapter.get_ingredient",
         fake_get_ingredient,
     )
-    async def fake_reload_prometheus_rules(**_kwargs: object):
-        class _Result:
-            status = "succeeded"
-            service_exec_error = None
-
-        return _Result()
-
-    monkeypatch.setattr(
-        "api.plugins.genestack_monitoring.adapter.reload_prometheus_rules",
-        fake_reload_prometheus_rules,
-    )
-
     adapter = GenestackMonitoringExecutionAdapter(
         helper_factory=lambda: {
             "github": _FakeGenestackGitHubHelper(),
@@ -802,11 +757,11 @@ groups:
     recipe = result.recipes[0]
     assert recipe.name == "blackbox-service-down-critical"
     assert recipe.steps[-1].service_type == "bakery"
-    action_step = next(
-        step for step in recipe.steps if step.service_exec == "workflow_execution"
-    )
+    action_step = next(step for step in recipe.steps if step.service_exec == "workflow_execution")
     assert action_step.service_type == "stackstorm"
-    assert action_step.service_payload["workflow_ref"] == "poundcake.blackbox_service_down_remediation"
+    assert (
+        action_step.service_payload["workflow_ref"] == "poundcake.blackbox_service_down_remediation"
+    )
 
 
 @pytest.mark.asyncio

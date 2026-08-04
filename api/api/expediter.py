@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,8 +61,10 @@ async def expediter_dispatch_from_cook(
         )
         raise HTTPException(status_code=400, detail=validation_error)
 
-    service_payload = dict(payload.service_payload or {})
-    service_exec_parameters = dict(payload.service_exec_parameters or {})
+    service_payload = {} if payload.service_payload is None else payload.service_payload
+    service_exec_parameters = (
+        {} if payload.service_exec_parameters is None else payload.service_exec_parameters
+    )
     context = dict(payload.context or {})
     operator_config = await _plugin_operator_config(db=db, service_type=payload.service_type)
     if operator_config:
@@ -175,21 +178,59 @@ async def execute_service_execution(
     context.update(dish_context.get("context_updates") or {})
     if operator_config:
         context["operator_config"] = operator_config
-    ctx = ExecutionContext.model_validate(
-        {
-            "service_type": row.service_type,
-            "service_exec": row.service_exec,
-            "service_payload": row.service_payload if isinstance(row.service_payload, dict) else {},
-            "service_exec_parameters": (
-                row.service_exec_parameters if isinstance(row.service_exec_parameters, dict) else {}
-            ),
-            "retry_count": row.retry_count or 0,
-            "retry_delay": row.retry_delay or 0,
-            "service_exec_timeout": row.service_exec_timeout or 300,
-            "context": context,
-            "req_id": request.state.req_id,
-        }
-    )
+    try:
+        ctx = ExecutionContext.model_validate(
+            {
+                "service_type": row.service_type,
+                "service_exec": row.service_exec,
+                "service_payload": (
+                    {} if row.service_payload is None else row.service_payload
+                ),
+                "service_exec_parameters": (
+                    {}
+                    if row.service_exec_parameters is None
+                    else row.service_exec_parameters
+                ),
+                "retry_count": row.retry_count or 0,
+                "retry_delay": row.retry_delay or 0,
+                "service_exec_timeout": row.service_exec_timeout or 300,
+                "context": context,
+                "req_id": request.state.req_id,
+            }
+        )
+    except ValidationError as exc:
+        message = str(exc)
+        logger.warning(
+            "Expediter execution context validation failed",
+            extra={
+                "req_id": request.state.req_id,
+                "dish_ingredient_id": row.id,
+                "service_type": row.service_type,
+                "service_exec": row.service_exec,
+            },
+        )
+        return ExecutionEnvelopeResponse.model_validate(
+            {
+                "service_exec_id": row.service_exec_id,
+                "service_type": row.service_type,
+                "status": "errored",
+                "service_exec_error": message,
+                "service_exec_actual_outcome": {
+                    "success": False,
+                    "status": "errored",
+                    "reason": "execution_contract_error",
+                    "message": message,
+                    "dispatch_attempted": False,
+                },
+                "raw": {
+                    "success": False,
+                    "status": "errored",
+                    "reason": "execution_contract_error",
+                    "message": message,
+                    "dispatch_attempted": False,
+                },
+            }
+        )
     result = await orchestrator.dispatch(ctx)
     if not result.service_exec_id:
         result.service_exec_id = row.service_exec_id

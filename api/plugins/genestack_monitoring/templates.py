@@ -5,6 +5,28 @@ from __future__ import annotations
 from api.plugins.contract import health_check_operation_parameters
 from api.types import JSONObject
 
+
+def _schema(properties: JSONObject, required: list[str] | None = None) -> JSONObject:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required or [],
+        "additionalProperties": False,
+    }
+
+
+_EMPTY_SCHEMA = _schema({})
+_ALERT_EXPORT_PAYLOAD_SCHEMA = _schema(
+    {
+        "namespace": {"type": "string", "minLength": 1},
+        "crd_name": {"type": "string", "minLength": 1},
+        "group_name": {"type": "string", "minLength": 1},
+        "rule_name": {"type": "string", "minLength": 1},
+    },
+    required=["crd_name", "group_name", "rule_name"],
+)
+
+
 GENESTACK_MONITORING_CONTENT_SYNC_OPERATION = "sync_content"
 GENESTACK_MONITORING_ALERT_EXPORT_OPERATION = "export_alert_updates"
 GENESTACK_MONITORING_CONTENT_SYNC_PARAMETERS: JSONObject = {
@@ -14,6 +36,7 @@ GENESTACK_MONITORING_CONTENT_SYNC_PARAMETERS: JSONObject = {
         GENESTACK_MONITORING_CONTENT_SYNC_OPERATION: {
             "label": "Sync content",
             "description": "Refresh PoundCake recipes from the Genestack Monitoring alert catalog.",
+            "payload_schema": _EMPTY_SCHEMA,
         },
     },
 }
@@ -26,6 +49,7 @@ GENESTACK_MONITORING_ALERT_EXPORT_PARAMETERS: JSONObject = {
             "description": (
                 "Render the current Genestack-managed PrometheusRule update and create a GitHub PR."
             ),
+            "payload_schema": _ALERT_EXPORT_PAYLOAD_SCHEMA,
         },
     },
 }
@@ -36,11 +60,7 @@ GENESTACK_MONITORING_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
         "service_exec": "health_check",
         "destination_target": "genestack-monitoring",
         "task_key_template": "genestack-monitoring-health-check",
-        "payload_schema": {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        },
+        "payload_schema": _EMPTY_SCHEMA,
         "service_payload_template": {},
         "service_exec_parameters": health_check_operation_parameters(),
         "default_expected_secs": 5,
@@ -57,11 +77,7 @@ GENESTACK_MONITORING_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
         "service_exec": "content_sync",
         "destination_target": "genestack-monitoring",
         "task_key_template": "genestack-monitoring-content-sync",
-        "payload_schema": {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        },
+        "payload_schema": _EMPTY_SCHEMA,
         "service_payload_template": {},
         "service_exec_parameters": GENESTACK_MONITORING_CONTENT_SYNC_PARAMETERS,
         "default_expected_secs": 30,
@@ -78,17 +94,7 @@ GENESTACK_MONITORING_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
         "service_exec": "repo_sync",
         "destination_target": "genestack-monitoring",
         "task_key_template": "genestack-monitoring-alert-export",
-        "payload_schema": {
-            "type": "object",
-            "properties": {
-                "namespace": {"type": "string"},
-                "crd_name": {"type": "string"},
-                "group_name": {"type": "string"},
-                "rule_name": {"type": "string"},
-            },
-            "required": ["crd_name", "group_name", "rule_name"],
-            "additionalProperties": False,
-        },
+        "payload_schema": _ALERT_EXPORT_PAYLOAD_SCHEMA,
         "service_payload_template": {},
         "service_exec_parameters": GENESTACK_MONITORING_ALERT_EXPORT_PARAMETERS,
         "default_expected_secs": 30,
@@ -140,6 +146,31 @@ GENESTACK_MONITORING_RECIPE_TEMPLATES: tuple[JSONObject, ...] = (
                 "depth": 0,
                 "service_payload": {},
                 "service_exec_parameters_override": GENESTACK_MONITORING_CONTENT_SYNC_PARAMETERS,
+                "service_exec_expected_secs": 30,
+                "service_exec_timeout": 180,
+                "service_exec_expected_outcome": {"success": True},
+                "run_phase": "firing",
+                "run_condition": "always",
+            }
+        ],
+    },
+    {
+        "name": "operator-action:genestack-monitoring:export-alert-updates",
+        "description": "Operator-requested Genestack Monitoring alert export.",
+        "enabled": True,
+        "recipe_ingredients": [
+            {
+                "service_type": "genestack_monitoring",
+                "service_exec": "repo_sync",
+                "destination_target": "genestack-monitoring",
+                "task_key_template": "genestack-monitoring-alert-export",
+                "step_order": 1,
+                "on_success": "continue",
+                "parallel_group": 0,
+                "depth": 0,
+                "service_payload": {},
+                "service_payload_from_order": True,
+                "service_exec_parameters_override": GENESTACK_MONITORING_ALERT_EXPORT_PARAMETERS,
                 "service_exec_expected_secs": 30,
                 "service_exec_timeout": 180,
                 "service_exec_expected_outcome": {"success": True},

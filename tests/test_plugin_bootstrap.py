@@ -42,6 +42,36 @@ def _ingredient() -> Ingredient:
     )
 
 
+def _operation_ingredient() -> Ingredient:
+    ingredient = _ingredient()
+    ingredient.service_exec = "operation_result"
+    ingredient.task_key_template = "dummy-operation-result"
+    ingredient.service_payload_template = {}
+    ingredient.payload_schema = {
+        "type": "object",
+        "properties": {
+            "message": {"type": "string", "minLength": 1},
+            "target": {"type": "string", "minLength": 1},
+        },
+        "additionalProperties": False,
+    }
+    ingredient.service_exec_parameters = {
+        "operation": "run",
+        "allowed_operations": ["run"],
+        "operation_metadata": {
+            "run": {
+                "payload_schema": {
+                    "type": "object",
+                    "properties": {"target": {"type": "string", "minLength": 1}},
+                    "required": ["target"],
+                    "additionalProperties": False,
+                }
+            }
+        },
+    }
+    return ingredient
+
+
 def test_recipe_step_payload_validates_filled_service_payload() -> None:
     ingredient = _ingredient()
     payload = plugin_bootstrap._recipe_step_payload(
@@ -71,6 +101,71 @@ def test_recipe_step_payload_rejects_invalid_filled_service_payload() -> None:
             },
             {("dummy", "positive_result", "dummy", "dummy-positive-result"): ingredient},
         )
+
+
+def test_recipe_step_payload_rejects_non_object_service_payload() -> None:
+    ingredient = _ingredient()
+    with pytest.raises(
+        plugin_bootstrap.PluginBootstrapError,
+        match="service_payload must be an object",
+    ):
+        plugin_bootstrap._recipe_step_payload(
+            {
+                "service_type": "dummy",
+                "service_exec": "positive_result",
+                "destination_target": "dummy",
+                "task_key_template": "dummy-positive-result",
+                "service_payload": ["not", "object"],
+            },
+            {("dummy", "positive_result", "dummy", "dummy-positive-result"): ingredient},
+        )
+
+
+def test_recipe_step_payload_uses_operation_payload_schema() -> None:
+    ingredient = _operation_ingredient()
+    identity = ("dummy", "operation_result", "dummy", "dummy-operation-result")
+    base_step = {
+        "service_type": "dummy",
+        "service_exec": "operation_result",
+        "destination_target": "dummy",
+        "task_key_template": "dummy-operation-result",
+    }
+
+    with pytest.raises(plugin_bootstrap.PluginBootstrapError, match="target"):
+        plugin_bootstrap._recipe_step_payload(
+            {**base_step, "service_payload": {"message": "top-level-only"}},
+            {identity: ingredient},
+        )
+
+    payload = plugin_bootstrap._recipe_step_payload(
+        {**base_step, "service_payload": {"target": "api"}},
+        {identity: ingredient},
+    )
+
+    assert payload["service_payload"] == {"target": "api"}
+
+
+def test_recipe_step_payload_can_defer_service_payload_to_order_runtime() -> None:
+    ingredient = _operation_ingredient()
+    identity = ("dummy", "operation_result", "dummy", "dummy-operation-result")
+    payload = plugin_bootstrap._recipe_step_payload(
+        {
+            "service_type": "dummy",
+            "service_exec": "operation_result",
+            "destination_target": "dummy",
+            "task_key_template": "dummy-operation-result",
+            "service_payload": {},
+            "service_payload_from_order": True,
+            "service_exec_parameters_override": {
+                "operation": "run",
+                "allowed_operations": ["run"],
+            },
+        },
+        {identity: ingredient},
+    )
+
+    assert payload["service_payload"] == {}
+    assert payload["service_payload_from_order"] is True
 
 
 def test_active_template_drift_is_detectable() -> None:
@@ -192,6 +287,26 @@ def test_scheduled_service_execution_rejects_invalid_payload() -> None:
         plugin_bootstrap._validate_scheduled_service_execution(
             payload,
             {("dummy", "positive_result", "dummy", "dummy-positive-result"): ingredient},
+        )
+
+
+def test_scheduled_service_execution_uses_operation_payload_schema() -> None:
+    ingredient = _operation_ingredient()
+    payload = plugin_bootstrap.ScheduledTaskCreate.model_validate(
+        {
+            "task_key": "dummy-scheduled-operation-result",
+            "task_type": "service_execution",
+            "service_type": "dummy",
+            "service_exec": "operation_result",
+            "task_payload": {"message": "top-level-only"},
+            "task_parameters": ingredient.service_exec_parameters,
+        }
+    )
+
+    with pytest.raises(plugin_bootstrap.PluginBootstrapError, match="target"):
+        plugin_bootstrap._validate_scheduled_service_execution(
+            payload,
+            {("dummy", "operation_result", "dummy", "dummy-operation-result"): ingredient},
         )
 
 

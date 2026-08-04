@@ -21,6 +21,11 @@ def health_check_operation_parameters() -> JSONObject:
             HEALTH_CHECK_OPERATION: {
                 "label": "Health check",
                 "description": "Check plugin readiness and remote service health.",
+                "payload_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
             },
         },
     }

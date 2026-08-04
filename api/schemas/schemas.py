@@ -696,7 +696,7 @@ class RecipeIngredientBase(BaseModel):
 
 
 class RecipeIngredientCreate(RecipeIngredientBase):
-    pass
+    service_payload_from_order: bool = False
 
 
 class RecipeIngredientResponse(RecipeIngredientBase):

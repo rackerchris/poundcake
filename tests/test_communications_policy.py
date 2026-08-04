@@ -6,7 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from api.plugins.contract import ServicePluginContractError, validate_service_payload
+from api.plugins.contract import (
+    ServicePluginContractError,
+    validate_service_payload,
+    validate_service_payload_for_operation,
+)
 from api.plugins.dummy.templates import DUMMY_INGREDIENT_TEMPLATES
 from api.schemas.schemas import CommunicationPolicyUpdate
 from api.services.capability_resolution import ResolvedCapabilityIngredient
@@ -461,6 +465,70 @@ def test_dummy_comms_template_rejects_invalid_filled_payload() -> None:
         validate_service_payload(
             {"message": "missing title and description"}, template["payload_schema"]
         )
+
+
+def test_bakery_comms_template_accepts_managed_policy_context() -> None:
+    from api.plugins.bakery.templates import ingredient_templates
+
+    template = next(
+        item
+        for item in ingredient_templates()
+        if item["service_exec"] == "communication"
+    )
+    parameters = dict(template["service_exec_parameters"])
+    parameters["operation"] = "open"
+    validate_service_payload_for_operation(
+        {
+            "title": "Alert requires attention",
+            "description": "PoundCake opened a communication.",
+            "source": "poundcake",
+            "context": {
+                "source": "poundcake",
+                "route_label": "Bakery Rackspace Core",
+                "destination_target": "rackspace_core",
+                "provider_config": {"assignment_group": "Cloud"},
+                "semantic_text": {"headline": "Alert requires attention"},
+                "poundcake_policy": {"route_id": "bakery-rackspace-core-1"},
+            },
+        },
+        template["payload_schema"],
+        parameters,
+    )
+
+
+def test_bakery_comms_template_accepts_planned_alert_context() -> None:
+    from api.plugins.bakery.templates import ingredient_templates
+
+    template = next(
+        item
+        for item in ingredient_templates()
+        if item["service_exec"] == "communication"
+    )
+    parameters = dict(template["service_exec_parameters"])
+    parameters["operation"] = "open"
+    validate_service_payload_for_operation(
+        {
+            "title": "PoundCake alert update: kube-pod-crash-looping-critical",
+            "description": "PoundCake completed the managed critical-alert recipe.",
+            "message": "PoundCake completed alert validation, evidence gathering, and action routing.",
+            "source": "genestack_monitoring",
+            "severity": "critical",
+            "category": "alert_remediation",
+            "state": "updated",
+            "context": {
+                "alert_name": "kube-pod-crash-looping-critical",
+                "alert_group_name": "kube-pod-crash-looping-critical",
+                "labels": {"severity": "critical", "namespace": "poundcake"},
+                "annotations": {"summary": "Pod is crash looping"},
+                "order_id": 75,
+                "req_id": "E2E-PROM-RULE-RELOAD-123",
+                "source_path": "alerts/kubernetes/pods.yaml",
+                "operator_review_required": True,
+            },
+        },
+        template["payload_schema"],
+        parameters,
+    )
 
 
 @pytest.mark.asyncio

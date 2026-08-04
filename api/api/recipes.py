@@ -51,7 +51,7 @@ from api.services.recipe_ingredient_cleanup import delete_recipe_ingredients_saf
 from api.plugins.contract import (
     ServicePluginContractError,
     validate_service_operation,
-    validate_service_payload,
+    validate_service_payload_for_operation,
 )
 
 router = APIRouter()
@@ -171,9 +171,11 @@ def _validate_non_communication_ingredients(ingredients_by_id: dict[int, Ingredi
         )
 
 
-def _resolved_service_payload(ingredient: Ingredient, spec: JSONObject) -> JSONObject:
+def _resolved_service_payload(ingredient: Ingredient, spec: JSONObject) -> Any:
     base = dict(getattr(ingredient, "service_payload_template", None) or {})
     form_payload = spec.get("service_payload")
+    if form_payload is not None and not isinstance(form_payload, dict):
+        return form_payload
     if isinstance(form_payload, dict):
         base.update(form_payload)
     return base
@@ -193,6 +195,8 @@ def _validate_service_payloads(
     ingredients_by_id: dict[int, Ingredient], *, step_specs: list[JSONObject]
 ) -> None:
     for spec in step_specs:
+        if bool(spec.get("service_payload_from_order")):
+            continue
         ingredient = ingredients_by_id.get(int(spec["ingredient_id"]))
         if ingredient is None:
             continue
@@ -200,7 +204,11 @@ def _validate_service_payloads(
         if schema is None:
             continue
         try:
-            validate_service_payload(_resolved_service_payload(ingredient, spec), schema)
+            validate_service_payload_for_operation(
+                _resolved_service_payload(ingredient, spec),
+                schema,
+                _resolved_service_exec_parameters(ingredient, spec),
+            )
         except ServicePluginContractError as exc:
             raise HTTPException(
                 status_code=422,
@@ -382,6 +390,7 @@ def _step_specs_from_payload(step_items: list[JSONObject]) -> list[JSONObject]:
             "service_exec_expected_outcome": item.get("service_exec_expected_outcome"),
             "run_phase": item.get("run_phase", "both"),
             "run_condition": item.get("run_condition", "always"),
+            "service_payload_from_order": item.get("service_payload_from_order", False),
         }
         for item in step_items
     ]

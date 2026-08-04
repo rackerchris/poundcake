@@ -45,6 +45,7 @@ STACKSTORM_CONTENT_OPERATION_METADATA: JSONObject = {
     "sync_content": {
         "label": "Sync content",
         "description": "Sync PoundCake-owned StackStorm action metadata.",
+        "payload_schema": _schema({}),
     },
 }
 

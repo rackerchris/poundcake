@@ -21,14 +21,14 @@ from api.plugins.types import ExecutionContext
 def _ctx(
     service_exec: str,
     *,
-    service_payload: dict | None = None,
+    service_payload: dict | list[object] | None = None,
     service_exec_parameters: dict | None = None,
 ) -> ExecutionContext:
     return ExecutionContext(
         service_type="alertmanager",
         service_exec=service_exec,
         req_id="unit-test",
-        service_payload=service_payload or {},
+        service_payload={} if service_payload is None else service_payload,
         service_exec_parameters=service_exec_parameters,
     )
 
@@ -77,6 +77,9 @@ def test_alertmanager_templates_are_valid_service_plugin_templates() -> None:
     assert {recipe["name"] for recipe in ALERTMANAGER_RECIPE_TEMPLATES} == {
         "plugin-health-check:alertmanager",
         "alertmanager-sync-silences",
+        "operator-action:alertmanager:create-suppression",
+        "operator-action:alertmanager:update-suppression",
+        "operator-action:alertmanager:expire-suppression",
     }
     assert {task["task_key"] for task in ALERTMANAGER_SCHEDULED_TASKS} == {
         "plugin-health-check:alertmanager",
@@ -95,33 +98,22 @@ def test_alertmanager_templates_are_valid_service_plugin_templates() -> None:
     assert inspect_template["ingredient_purpose"] == "utility"
     assert inspect_template["is_blocking"] is False
     assert inspect_template["on_failure"] == "continue"
-    assert inspect_template["service_exec_parameters"] == {
-        "operation": "list_alerts",
-        "allowed_operations": [
-            "list_alerts",
-            "list_groups",
-            "find_inhibited_by_source",
-            "verify_firing",
-        ],
-        "operation_metadata": {
-            "list_alerts": {
-                "label": "List alerts",
-                "description": "Read active, silenced, and inhibited alerts from Alertmanager.",
-            },
-            "list_groups": {
-                "label": "List alert groups",
-                "description": "Read grouped alerts and route mute evidence from Alertmanager.",
-            },
-            "find_inhibited_by_source": {
-                "label": "Find alerts inhibited by source",
-                "description": "Find Alertmanager alerts inhibited by the current source alert fingerprint.",
-            },
-            "verify_firing": {
-                "label": "Verify alert is firing",
-                "description": "Read Alertmanager alerts and verify the source alert is still active.",
-            },
-        },
-    }
+    inspect_params = inspect_template["service_exec_parameters"]
+    assert inspect_params["operation"] == "list_alerts"
+    assert inspect_params["allowed_operations"] == [
+        "list_alerts",
+        "list_groups",
+        "find_inhibited_by_source",
+        "verify_firing",
+    ]
+    for operation in inspect_params["allowed_operations"]:
+        operation_schema = inspect_params["operation_metadata"][operation]["payload_schema"]
+        assert operation_schema["type"] == "object"
+        assert operation_schema["additionalProperties"] is False
+        validate_payload_schema(operation_schema)
+    assert inspect_params["operation_metadata"]["find_inhibited_by_source"]["payload_schema"][
+        "required"
+    ] == ["fingerprint"]
     guard_template = next(
         template
         for template in ALERTMANAGER_INGREDIENT_TEMPLATES
@@ -139,6 +131,20 @@ def test_alertmanager_adapter_requires_url() -> None:
         adapter.validate(_ctx("health_check"))
         == "POUNDCAKE_ALERTMANAGER_URL is required for alertmanager plugin"
     )
+
+
+def test_alertmanager_adapter_rejects_non_object_service_payload() -> None:
+    adapter = AlertmanagerExecutionAdapter(transport=_transport())
+    ctx = ExecutionContext.model_construct(
+        service_type="alertmanager",
+        service_exec="inspect",
+        req_id="unit-test",
+        service_payload=["not", "an", "object"],
+        service_exec_parameters={"operation": "list_alerts"},
+        context={},
+    )
+
+    assert adapter.validate(ctx) == "service_payload must be an object when provided"
 
 
 def test_alertmanager_adapter_validates_inspect_operations() -> None:

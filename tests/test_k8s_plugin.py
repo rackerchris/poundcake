@@ -582,14 +582,14 @@ class _FakeClientFactory:
 
 def _ctx(
     operation: str,
-    payload: dict[str, object] | None = None,
+    payload: dict[str, object] | list[object] | None = None,
     service_exec: str = "prometheus_rule",
 ) -> ExecutionContext:
     return ExecutionContext(
         service_type="k8s",
         service_exec=service_exec,
         req_id="unit-test",
-        service_payload=payload or {},
+        service_payload={} if payload is None else payload,
         service_exec_parameters={
             "operation": operation,
             "allowed_operations": {
@@ -667,6 +667,17 @@ def test_k8s_adapter_declares_optional_kubeconfig_credential() -> None:
             ),
         }
     ]
+
+
+def test_k8s_adapter_rejects_non_object_service_payload() -> None:
+    adapter = KubernetesExecutionAdapter(helper=_FakeKubernetesHelper())  # type: ignore[arg-type]
+    ctx = _ctx("list", {}, service_exec="pod_action").model_copy(
+        update={"service_payload": ["not", "an", "object"]}
+    )
+
+    assert (
+        adapter.validate(ctx) == "service_payload must be an object when provided"
+    )
 
 
 def test_k8s_templates_are_valid_service_plugin_templates() -> None:
@@ -772,7 +783,10 @@ def test_k8s_templates_are_valid_service_plugin_templates() -> None:
         "tcp",
         "http",
     ]
-    assert {recipe["name"] for recipe in K8S_RECIPE_TEMPLATES} == {"plugin-health-check:k8s"}
+    assert {recipe["name"] for recipe in K8S_RECIPE_TEMPLATES} == {
+        "plugin-health-check:k8s",
+        "operator-action:k8s:prometheus-rule-apply",
+    }
     assert {task["task_key"] for task in K8S_SCHEDULED_TASKS} == {"plugin-health-check:k8s"}
     for template in K8S_INGREDIENT_TEMPLATES:
         assert template["service_type"] == "k8s"

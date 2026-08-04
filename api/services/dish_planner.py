@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.models.models import DishIngredient, Ingredient, Order, Recipe, RecipeIngredient
 from api.plugins.contract import (
+    ServicePluginContractError,
     validate_service_operation,
     validate_service_payload_for_operation,
 )
@@ -172,10 +173,39 @@ def _hydrate_value(value: Any, context: JSONObject) -> Any:
 def build_step_payload(ri: RecipeIngredient, *, order: Order | None = None) -> JSONObject | None:
     base = dict((ri.ingredient.service_payload_template if ri.ingredient else None) or {})
     overrides = getattr(ri, "service_payload", None)
+    if overrides is not None and not isinstance(overrides, dict):
+        raise ServicePluginContractError("service_payload must be an object when provided")
     if overrides:
         base.update(overrides)
     base = _hydrate_value(base, _order_hydration_context(order))
+    runtime_override = _runtime_payload_override(ri, order)
+    if runtime_override:
+        base.update(runtime_override)
     return base or None
+
+
+def _runtime_payload_override(
+    ri: RecipeIngredient,
+    order: Order | None,
+) -> JSONObject | None:
+    if order is None or ri.ingredient is None:
+        return None
+    raw_data = order.raw_data if isinstance(order.raw_data, dict) else {}
+    if not bool(raw_data.get("operator_action")):
+        return None
+    service_payload = raw_data.get("service_payload")
+    if not isinstance(service_payload, dict):
+        return None
+    service_type = str(raw_data.get("service_type") or "").strip().lower()
+    service_exec = str(raw_data.get("service_exec") or "").strip().lower()
+    task_key = str(raw_data.get("task_key_template") or "").strip()
+    if service_type != str(ri.ingredient.service_type or "").strip().lower():
+        return None
+    if service_exec != str(ri.ingredient.service_exec or "").strip().lower():
+        return None
+    if task_key and task_key != str(ri.ingredient.task_key_template or "").strip():
+        return None
+    return dict(service_payload)
 
 
 def resolved_expected_run_secs(ri: RecipeIngredient) -> int | None:
@@ -293,8 +323,9 @@ def seed_dish_ingredients_for_phase(
         if ri.ingredient is not None:
             service_exec_parameters = build_step_parameters(ri)
             validate_service_operation(service_exec_parameters)
+            payload_to_validate = {} if service_payload is None else service_payload
             validate_service_payload_for_operation(
-                service_payload or {},
+                payload_to_validate,
                 ri.ingredient.payload_schema,
                 service_exec_parameters,
             )

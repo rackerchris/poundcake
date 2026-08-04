@@ -14,6 +14,18 @@
 {{- $gatewaySectionName := default "" .Values.gateway.listener.name }}
 {{- $apiRequestTimeout := default "" .Values.gateway.listeners.api.requestTimeout }}
 {{- $apiBackendRequestTimeout := default "" .Values.gateway.listeners.api.backendRequestTimeout }}
+{{- $apiRouteHostnames := $routeHostnames }}
+{{- if and (eq (len $apiRouteHostnames) 0) $listenerHostname }}
+{{- $apiRouteHostnames = list $listenerHostname }}
+{{- else if and (eq (len $apiRouteHostnames) 0) $apiHostname }}
+{{- $apiRouteHostnames = list $apiHostname }}
+{{- end }}
+{{- $uiRouteHostnames := $routeHostnames }}
+{{- if and (eq (len $uiRouteHostnames) 0) $listenerHostname }}
+{{- $uiRouteHostnames = list $listenerHostname }}
+{{- else if and (eq (len $uiRouteHostnames) 0) $uiHostname }}
+{{- $uiRouteHostnames = list $uiHostname }}
+{{- end }}
 {{- if $apiEnabled }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -32,14 +44,11 @@ spec:
       namespace: {{ $parentGatewayNamespace }}
       {{- end }}
       sectionName: {{ default "api" $gatewaySectionName }}
-  {{- if gt (len $routeHostnames) 0 }}
+  {{- if gt (len $apiRouteHostnames) 0 }}
   hostnames:
-    {{- range $hostname := $routeHostnames }}
+    {{- range $hostname := $apiRouteHostnames }}
     - {{ $hostname | quote }}
     {{- end }}
-  {{- else if $listenerHostname }}
-  hostnames:
-    - {{ $listenerHostname | quote }}
   {{- end }}
   rules:
     - matches:
@@ -78,14 +87,11 @@ spec:
       namespace: {{ $parentGatewayNamespace }}
       {{- end }}
       sectionName: {{ default (ternary "api" "ui" $sharedListener) $gatewaySectionName }}
-  {{- if gt (len $routeHostnames) 0 }}
+  {{- if gt (len $uiRouteHostnames) 0 }}
   hostnames:
-    {{- range $hostname := $routeHostnames }}
+    {{- range $hostname := $uiRouteHostnames }}
     - {{ $hostname | quote }}
     {{- end }}
-  {{- else if $listenerHostname }}
-  hostnames:
-    - {{ $listenerHostname | quote }}
   {{- end }}
   rules:
     - matches:

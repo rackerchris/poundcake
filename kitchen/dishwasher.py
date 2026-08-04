@@ -88,22 +88,23 @@ def _recipe_payload(
             raise ValueError(
                 f"Recipe {recipe.get('name')} references unregistered ingredient {identity}"
             )
-        steps.append(
-            {
-                "ingredient_id": ingredient_id,
-                "step_order": step.get("step_order", 1),
-                "on_success": step.get("on_success", "continue"),
-                "parallel_group": step.get("parallel_group", 0),
-                "depth": step.get("depth", 0),
-                "service_payload": step.get("service_payload"),
-                "service_exec_parameters_override": step.get("service_exec_parameters_override"),
-                "service_exec_expected_secs": step.get("service_exec_expected_secs"),
-                "service_exec_timeout": step.get("service_exec_timeout"),
-                "service_exec_expected_outcome": step.get("service_exec_expected_outcome"),
-                "run_phase": step.get("run_phase", "both"),
-                "run_condition": step.get("run_condition", "always"),
-            }
-        )
+        step_payload = {
+            "ingredient_id": ingredient_id,
+            "step_order": step.get("step_order", 1),
+            "on_success": step.get("on_success", "continue"),
+            "parallel_group": step.get("parallel_group", 0),
+            "depth": step.get("depth", 0),
+            "service_payload": step.get("service_payload"),
+            "service_exec_parameters_override": step.get("service_exec_parameters_override"),
+            "service_exec_expected_secs": step.get("service_exec_expected_secs"),
+            "service_exec_timeout": step.get("service_exec_timeout"),
+            "service_exec_expected_outcome": step.get("service_exec_expected_outcome"),
+            "run_phase": step.get("run_phase", "both"),
+            "run_condition": step.get("run_condition", "always"),
+        }
+        if bool(step.get("service_payload_from_order")):
+            step_payload["service_payload_from_order"] = True
+        steps.append(step_payload)
     return {
         "name": recipe["name"],
         "description": recipe.get("description"),

@@ -19,6 +19,7 @@ GITHUB_SERVICE_EXECS = {
 GITHUB_READ_OPERATIONS = {"read_file", "list_files"}
 GITHUB_WRITE_OPERATIONS = {"commit_files", "create_pull_request", "commit_and_pr"}
 GITHUB_CREDENTIAL_TYPE = "github_token"
+SERVICE_PAYLOAD_OBJECT_ERROR = "service_payload must be an object when provided"
 
 
 class GitHubExecutionAdapter(ExecutionAdapter):
@@ -71,6 +72,8 @@ class GitHubExecutionAdapter(ExecutionAdapter):
         service_exec = (ctx.service_exec or "").strip().lower()
         if service_exec not in GITHUB_SERVICE_EXECS:
             return f"Unsupported github service_exec: {ctx.service_exec}"
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return SERVICE_PAYLOAD_OBJECT_ERROR
         transport_error = self.helper.validate_transport_security()
         if transport_error:
             return transport_error
@@ -82,7 +85,7 @@ class GitHubExecutionAdapter(ExecutionAdapter):
                 "github repo_write operation must be one of: "
                 "commit_and_pr, commit_files, create_pull_request"
             )
-        payload = ctx.service_payload or {}
+        payload = _payload(ctx)
         if operation == "read_file" and not str(payload.get("path") or "").strip():
             return "github read_file requires service_payload.path"
         if operation in {"commit_files", "commit_and_pr"}:
@@ -144,9 +147,16 @@ class GitHubExecutionAdapter(ExecutionAdapter):
         service_exec = (ctx.service_exec or "").strip().lower()
         operation = "health_check" if service_exec == "health_check" else _operation(ctx)
         service_exec_id = f"github:{operation}:{uuid4()}"
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return _payload_contract_error(
+                service_type=self.service_type,
+                service_exec_id=service_exec_id,
+                message=SERVICE_PAYLOAD_OBJECT_ERROR,
+            )
         try:
             helper = await self._helper_with_credentials(operation)
-            result = await self._execute(helper, operation, ctx.service_payload or {})
+            payload = _payload(ctx)
+            result = await self._execute(helper, operation, payload)
             return ExecutionResult(
                 service_type=self.service_type,
                 status="succeeded",
@@ -282,6 +292,25 @@ def _credential_token(payload: JSONObject) -> str:
 def _operation(ctx: ExecutionContext) -> str:
     params = ctx.service_exec_parameters if isinstance(ctx.service_exec_parameters, dict) else {}
     return str(params.get("operation") or "").strip().lower()
+
+
+def _payload(ctx: ExecutionContext) -> JSONObject:
+    return {} if ctx.service_payload is None else ctx.service_payload
+
+
+def _payload_contract_error(
+    *, service_type: str, service_exec_id: str, message: str
+) -> ExecutionResult:
+    outcome: JSONObject = {"success": False, "status": "errored", "message": message}
+    return ExecutionResult(
+        service_type=service_type,
+        status="errored",
+        service_exec_id=service_exec_id,
+        service_exec_error=message,
+        result=outcome,
+        raw=outcome,
+        retryable=False,
+    )
 
 
 def _string_file_map(value: object) -> dict[str, str]:

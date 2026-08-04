@@ -13,6 +13,7 @@ RELEASE_SERVICE_EXECS = {
     "health_check",
     "check_updates",
 }
+SERVICE_PAYLOAD_OBJECT_ERROR = "service_payload must be an object when provided"
 
 
 class ReleaseExecutionAdapter(ExecutionAdapter):
@@ -24,6 +25,8 @@ class ReleaseExecutionAdapter(ExecutionAdapter):
         service_exec = (ctx.service_exec or "").strip().lower()
         if service_exec not in RELEASE_SERVICE_EXECS:
             return f"Unsupported release service_exec: {ctx.service_exec}"
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return SERVICE_PAYLOAD_OBJECT_ERROR
         return None
 
     def health_check(self) -> PluginHealthResult:
@@ -54,6 +57,12 @@ class ReleaseExecutionAdapter(ExecutionAdapter):
     async def dispatch(self, ctx: ExecutionContext) -> ExecutionResult:
         service_exec = (ctx.service_exec or "").strip().lower()
         service_exec_id = f"release:{service_exec}:{uuid4()}"
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return _payload_contract_error(
+                service_type=self.service_type,
+                service_exec_id=service_exec_id,
+                message=SERVICE_PAYLOAD_OBJECT_ERROR,
+            )
 
         try:
             if service_exec == "health_check":
@@ -132,3 +141,18 @@ class ReleaseExecutionAdapter(ExecutionAdapter):
             },
             retryable=False,
         )
+
+
+def _payload_contract_error(
+    *, service_type: str, service_exec_id: str, message: str
+) -> ExecutionResult:
+    outcome: JSONObject = {"success": False, "status": "errored", "message": message}
+    return ExecutionResult(
+        service_type=service_type,
+        status="errored",
+        service_exec_id=service_exec_id,
+        service_exec_error=message,
+        result=outcome,
+        raw=outcome,
+        retryable=False,
+    )

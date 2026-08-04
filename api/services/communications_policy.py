@@ -16,7 +16,7 @@ from sqlalchemy.orm import joinedload
 
 from api.models.models import Ingredient, Recipe, RecipeIngredient, ServicePlugin
 from api.plugins.catalog import build_enabled_plugin_capability_catalog
-from api.plugins.contract import validate_service_payload
+from api.plugins.contract import validate_service_payload_for_operation
 from api.services.capability_resolution import (
     resolve_active_capability_ingredient,
     select_communication_capability,
@@ -515,7 +515,15 @@ async def replace_recipe_communication_steps(
                 f"{spec['service_type']}.{spec['service_exec']}"
             )
         ingredient = resolved.ingredient
-        validate_service_payload(spec["service_payload"], ingredient.payload_schema)
+        service_exec_parameters = dict(ingredient.service_exec_parameters or {})
+        overrides = spec.get("service_exec_parameters_override")
+        if isinstance(overrides, dict):
+            service_exec_parameters.update(overrides)
+        validate_service_payload_for_operation(
+            spec["service_payload"],
+            ingredient.payload_schema,
+            service_exec_parameters or None,
+        )
         spec["ingredient_id"] = ingredient.id
         spec["service_exec_expected_secs"] = ingredient.default_expected_secs
         spec["service_exec_timeout"] = ingredient.default_timeout

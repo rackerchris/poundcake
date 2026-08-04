@@ -770,9 +770,8 @@ def _prometheus_rule_evidence_step(
     capabilities: list[JSONObject],
     alert_name: str,
     source_path: str,
-    rule_data: JSONObject | None,
+    _rule_data: JSONObject | None,
 ) -> RemediationStepSpec:
-    rule = rule_data if isinstance(rule_data, dict) else {}
     capability = _best_capability(
         capabilities,
         alert_group="",
@@ -780,13 +779,11 @@ def _prometheus_rule_evidence_step(
         phase="evidence",
         preferred_service_type="prometheus",
     )
-    query = str(rule.get("expr") or f'ALERTS{{alertname="{alert_name}"}}')
     if capability is not None:
         return _capability_step(
             capability,
             service_payload_overrides={
                 "alert_name": alert_name,
-                "query": query,
             },
             service_exec_parameter_overrides={
                 "alert_name": alert_name,
@@ -800,7 +797,6 @@ def _prometheus_rule_evidence_step(
         task_key_template="prometheus-inspect",
         service_payload={
             "alert_name": alert_name,
-            "query": query,
             "labels": "{{ order.labels }}",
             "lookback_seconds": 3600,
             "step_seconds": 60,

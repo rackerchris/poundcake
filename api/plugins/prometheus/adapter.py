@@ -34,6 +34,7 @@ PROMETHEUS_WATCHDOG_OPERATIONS = {
     "check_heartbeat",
 }
 PROMETHEUS_CREDENTIAL_TYPE = "prometheus_http_auth"
+SERVICE_PAYLOAD_OBJECT_ERROR = "service_payload must be an object when provided"
 
 
 class PrometheusExecutionAdapter(ExecutionAdapter):
@@ -86,9 +87,13 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
         service_exec = (ctx.service_exec or "").strip().lower()
         if service_exec not in PROMETHEUS_SERVICE_EXECS:
             return f"Unsupported prometheus service_exec: {ctx.service_exec}"
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return SERVICE_PAYLOAD_OBJECT_ERROR
         if service_exec == "watchdog":
             operation = _operation(ctx)
-            if operation and operation not in PROMETHEUS_WATCHDOG_OPERATIONS:
+            if not operation:
+                return "prometheus watchdog requires service_exec_parameters.operation"
+            if operation not in PROMETHEUS_WATCHDOG_OPERATIONS:
                 return (
                     f"prometheus watchdog operation must be one of: "
                     f"{', '.join(sorted(PROMETHEUS_WATCHDOG_OPERATIONS))}"
@@ -104,14 +109,14 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
                 "alert_evidence, list_label_values, list_labels, list_metrics, "
                 "list_rule_groups, list_rules"
             )
-        payload = ctx.service_payload if isinstance(ctx.service_payload, dict) else {}
+        payload = {} if ctx.service_payload is None else ctx.service_payload
         if operation == "list_label_values" and not str(payload.get("label_name") or "").strip():
             return "prometheus list_label_values requires service_payload.label_name"
         if operation == "alert_evidence":
-            if not str(payload.get("query") or "").strip():
-                return "prometheus alert_evidence requires service_payload.query"
             if not str(payload.get("alert_name") or "").strip():
                 return "prometheus alert_evidence requires service_payload.alert_name"
+            if str(payload.get("query") or "").strip():
+                return "prometheus alert_evidence does not accept service_payload.query"
         return None
 
     def health_check(self) -> PluginHealthResult:
@@ -159,9 +164,15 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
         if service_exec == "watchdog":
             watchdog_operation = _operation(ctx)
             service_exec_id = f"prometheus:watchdog:{watchdog_operation}:{uuid4()}"
+            if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+                return _payload_contract_error(
+                    service_type=self.service_type,
+                    service_exec_id=service_exec_id,
+                    message=SERVICE_PAYLOAD_OBJECT_ERROR,
+                )
             try:
                 result = await self._execute_watchdog(
-                    watchdog_operation, ctx.service_payload or {}, ctx.req_id
+                    watchdog_operation, _payload(ctx), ctx.req_id
                 )
                 status = self._status_from_result(result)
                 return ExecutionResult(
@@ -193,9 +204,15 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
 
         operation = _operation(ctx) if service_exec == "inspect" else service_exec
         service_exec_id = f"prometheus:{operation}:{uuid4()}"
+        if ctx.service_payload is not None and not isinstance(ctx.service_payload, dict):
+            return _payload_contract_error(
+                service_type=self.service_type,
+                service_exec_id=service_exec_id,
+                message=SERVICE_PAYLOAD_OBJECT_ERROR,
+            )
         client = await self._client_with_credentials()
         try:
-            result = await self._execute(client, operation, ctx.service_payload or {})
+            result = await self._execute(client, operation, _payload(ctx))
             status = self._status_from_result(result)
             return ExecutionResult(
                 service_type=self.service_type,
@@ -228,7 +245,7 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
     ) -> JSONObject:
         from api.services.adapter_runtime import check_prometheus_watchdog_heartbeat_once
 
-        if operation in ("check_heartbeat", ""):
+        if operation == "check_heartbeat":
             result = await check_prometheus_watchdog_heartbeat_once()
             return {**result, "success": True, "status": "succeeded"}
         raise ValueError(f"Unsupported watchdog operation: {operation}")
@@ -311,7 +328,6 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
             labels = payload.get("labels") if isinstance(payload.get("labels"), dict) else {}
             result = await client.alert_evidence(
                 alert_name=str(payload.get("alert_name") or ""),
-                query=str(payload.get("query") or ""),
                 labels=labels,
                 lookback_seconds=_optional_int(payload.get("lookback_seconds"), default=3600),
                 step_seconds=_optional_int(payload.get("step_seconds"), default=60),
@@ -339,6 +355,25 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
 def _optional_str(value: object) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+
+def _payload(ctx: ExecutionContext) -> JSONObject:
+    return {} if ctx.service_payload is None else ctx.service_payload
+
+
+def _payload_contract_error(
+    *, service_type: str, service_exec_id: str, message: str
+) -> ExecutionResult:
+    outcome: JSONObject = {"success": False, "status": "errored", "message": message}
+    return ExecutionResult(
+        service_type=service_type,
+        status="errored",
+        service_exec_id=service_exec_id,
+        service_exec_error=message,
+        result=outcome,
+        raw=outcome,
+        retryable=False,
+    )
 
 
 def _optional_int(value: object, *, default: int) -> int:

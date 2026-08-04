@@ -41,6 +41,47 @@ Bakery credentials with direct SQL or Helm fixtures.
 - Scheduled plugin health checks.
 - Bootstrap credential registration with remote Bakery.
 
+## Payload contracts
+
+Operation-level `payload_schema` validation is authoritative. Invalid payloads
+are rejected before adapter execution.
+
+Ticket creation operations (`open` and `create`) require:
+
+- `title`
+- `description`
+- `source`
+- `context`
+
+The creation payload and its nested `context` object are fail-closed: only the
+documented fields are accepted.
+
+Ticket mutation operations (`notify`, `update`, and `close`) require a
+resolvable ticket identifier. Recipes may provide it as top-level
+`service_payload.ticket_id` or inside `service_payload.context` using one of:
+
+- `ticket_id`
+- `bakery_ticket_id`
+- `bakery_comms_id`
+- `communication_id`
+
+Mutation payloads and their nested `context` object are also fail-closed. The
+payload may include the documented ticket identifier fields, standard
+communication fields, and no unsupported extras.
+
+The adapter also resolves those same keys from execution context paths produced
+by prior dish steps, including `context.ticket_id`, `context.bakery_ticket_id`,
+`context.bakery_comms_id`, `context.communication_id`, and the same keys under
+`context.dish.context_updates`.
+
+The `incident_reconcile.reconcile` operation accepts only an optional integer
+`limit`.
+
+The `collect` operations (`monitor_diagnostics`, `cluster_inventory`, and
+`ticket_context`) accept only these optional fields: integer `order_id`, string
+`req_id`, string `bakery_ticket_id`, string `namespace`, and integer `limit`
+from 1 through 200.
+
 ## Validation
 
 Verify plugin state after deployment:

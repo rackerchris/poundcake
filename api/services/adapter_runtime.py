@@ -101,18 +101,21 @@ async def get_bakery_ticket_context(
             )
             ingredients = (await db.execute(ingredient_query.limit(limit))).scalars().all()
 
-        dish_query = select(Dish)
-        if order_ids:
-            dish_query = dish_query.where(
-                or_(Dish.order_id.in_(order_ids), Dish.req_id.in_(req_ids))
+        dishes: list[Dish] = []
+        has_scoping_criteria = any([order_id is not None, normalized_req_id, normalized_ticket_id])
+        if order_ids or normalized_req_id or not has_scoping_criteria:
+            dish_query = select(Dish)
+            if order_ids:
+                dish_query = dish_query.where(
+                    or_(Dish.order_id.in_(order_ids), Dish.req_id.in_(req_ids))
+                )
+            elif normalized_req_id:
+                dish_query = dish_query.where(Dish.req_id == normalized_req_id)
+            dishes = (
+                (await db.execute(dish_query.order_by(Dish.updated_at.desc()).limit(limit)))
+                .scalars()
+                .all()
             )
-        elif normalized_req_id:
-            dish_query = dish_query.where(Dish.req_id == normalized_req_id)
-        dishes = (
-            (await db.execute(dish_query.order_by(Dish.updated_at.desc()).limit(limit)))
-            .scalars()
-            .all()
-        )
 
     return {
         "criteria": criteria,

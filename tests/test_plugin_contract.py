@@ -25,6 +25,16 @@ from api.plugins.catalog import (
     _load_plugin,
     build_enabled_plugin_registry,
 )
+from api.plugins.alertmanager.templates import ALERTMANAGER_INGREDIENT_TEMPLATES
+from api.plugins.bakery.templates import ingredient_templates as bakery_ingredient_templates
+from api.plugins.dummy.templates import DUMMY_INGREDIENT_TEMPLATES
+from api.plugins.genestack_monitoring.templates import GENESTACK_MONITORING_INGREDIENT_TEMPLATES
+from api.plugins.git.templates import GIT_INGREDIENT_TEMPLATES
+from api.plugins.github.templates import GITHUB_INGREDIENT_TEMPLATES
+from api.plugins.k8s.templates import K8S_INGREDIENT_TEMPLATES
+from api.plugins.prometheus.templates import PROMETHEUS_INGREDIENT_TEMPLATES
+from api.plugins.release.templates import RELEASE_INGREDIENT_TEMPLATES
+from api.plugins.stackstorm.templates import STACKSTORM_INGREDIENT_TEMPLATES
 from api.plugins.manifest import (
     ServicePlugin as ServicePluginManifest,
     ServicePluginManifestError,
@@ -65,6 +75,19 @@ STRICT_SCHEMA = {
     "required": ["message"],
     "additionalProperties": False,
 }
+
+BUILTIN_PLUGIN_TEMPLATE_SETS = (
+    ("alertmanager", ALERTMANAGER_INGREDIENT_TEMPLATES),
+    ("bakery", bakery_ingredient_templates()),
+    ("dummy", DUMMY_INGREDIENT_TEMPLATES),
+    ("genestack_monitoring", GENESTACK_MONITORING_INGREDIENT_TEMPLATES),
+    ("git", GIT_INGREDIENT_TEMPLATES),
+    ("github", GITHUB_INGREDIENT_TEMPLATES),
+    ("k8s", K8S_INGREDIENT_TEMPLATES),
+    ("prometheus", PROMETHEUS_INGREDIENT_TEMPLATES),
+    ("release", RELEASE_INGREDIENT_TEMPLATES),
+    ("stackstorm", STACKSTORM_INGREDIENT_TEMPLATES),
+)
 
 
 def _called_name(node: ast.expr) -> str:
@@ -264,6 +287,67 @@ def test_validate_service_payload_for_operation_applies_selected_schema() -> Non
         base_schema,
         parameters,
     )
+
+
+def test_builtin_plugin_operations_have_authoritative_fail_closed_payload_schemas() -> None:
+    violations: list[str] = []
+    for service_type, templates in BUILTIN_PLUGIN_TEMPLATE_SETS:
+        for template in templates:
+            label = (
+                f"{service_type}:{template.get('service_exec')}:"
+                f"{template.get('task_key_template')}"
+            )
+            schema = template.get("payload_schema")
+            if not isinstance(schema, dict):
+                violations.append(f"{label}: missing payload_schema")
+            else:
+                if schema.get("type") != "object":
+                    violations.append(f"{label}: payload_schema must be an object schema")
+                if schema.get("additionalProperties") is not False:
+                    violations.append(f"{label}: payload_schema must fail closed")
+                try:
+                    validate_payload_schema(schema)
+                except ServicePluginContractError as exc:
+                    violations.append(f"{label}: payload_schema invalid: {exc}")
+
+            parameters = template.get("service_exec_parameters") or {}
+            if not isinstance(parameters, dict):
+                violations.append(f"{label}: service_exec_parameters must be an object")
+                continue
+            operations = parameters.get("allowed_operations") or []
+            if not operations:
+                continue
+            if not isinstance(operations, list):
+                violations.append(f"{label}: allowed_operations must be a list")
+                continue
+            metadata = parameters.get("operation_metadata") or {}
+            if not isinstance(metadata, dict):
+                violations.append(f"{label}: operation_metadata must be an object")
+                continue
+            for operation in operations:
+                operation_label = f"{label}:{operation}"
+                op_meta = metadata.get(operation)
+                if not isinstance(op_meta, dict):
+                    violations.append(f"{operation_label}: missing operation_metadata")
+                    continue
+                op_schema = op_meta.get("payload_schema")
+                if not isinstance(op_schema, dict):
+                    violations.append(f"{operation_label}: missing operation payload_schema")
+                    continue
+                if op_schema.get("type") != "object":
+                    violations.append(
+                        f"{operation_label}: operation payload_schema must be an object schema"
+                    )
+                if op_schema.get("additionalProperties") is not False:
+                    violations.append(
+                        f"{operation_label}: operation payload_schema must fail closed"
+                    )
+                try:
+                    validate_payload_schema(op_schema)
+                except ServicePluginContractError as exc:
+                    violations.append(f"{operation_label}: operation payload_schema invalid: {exc}")
+
+    assert violations == []
 
 
 def test_execution_context_requires_json_object_payloads() -> None:
@@ -487,6 +571,23 @@ async def test_orchestrator_validates_adapter_dispatch_result() -> None:
     )
     assert result.status == "errored"
     assert result.service_exec_error == "Adapter returned invalid ExecutionResult for dispatch"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_returns_errored_result_for_malformed_execution_context() -> None:
+    result = await ExecutionOrchestrator(ExecutionAdapterRegistry()).dispatch(
+        {
+            "service_type": "bad",
+            "service_exec": "run",
+            "req_id": "unit-test",
+            "service_payload": ["not", "an", "object"],
+        }
+    )
+
+    assert result.service_type == "bad"
+    assert result.status == "errored"
+    assert result.retryable is False
+    assert "Malformed ExecutionContext" in str(result.service_exec_error)
 
 
 @pytest.mark.asyncio

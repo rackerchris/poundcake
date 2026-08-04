@@ -45,6 +45,30 @@ def _template(
     }
 
 
+_EMPTY_SCHEMA = _schema({})
+_LABELS_SCHEMA: JSONObject = {
+    "type": "object",
+    "additionalProperties": {"type": ["string", "number", "integer", "boolean", "null"]},
+}
+_ALERT_EVIDENCE_SCHEMA = _schema(
+    {
+        "alert_name": {"type": "string", "minLength": 1},
+        "labels": _LABELS_SCHEMA,
+        "lookback_seconds": {"type": "integer", "minimum": 60, "maximum": 86400},
+        "step_seconds": {"type": "integer", "minimum": 15, "maximum": 3600},
+    },
+    required=["alert_name"],
+)
+_LIST_LABELS_SCHEMA = _schema({"metric": {"type": "string", "minLength": 1}})
+_LIST_LABEL_VALUES_SCHEMA = _schema(
+    {
+        "label_name": {"type": "string", "minLength": 1},
+        "metric": {"type": "string", "minLength": 1},
+    },
+    required=["label_name"],
+)
+
+
 PROMETHEUS_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
     _template("health_check", purpose="plugin_health"),
     _template(
@@ -53,7 +77,6 @@ PROMETHEUS_INGREDIENT_TEMPLATES: tuple[JSONObject, ...] = (
             {
                 "metric": {"type": "string", "minLength": 1},
                 "label_name": {"type": "string", "minLength": 1},
-                "query": {"type": "string", "minLength": 1},
                 "alert_name": {"type": "string", "minLength": 1},
                 "labels": {"type": "object", "additionalProperties": True},
                 "lookback_seconds": {"type": "integer", "minimum": 60},
@@ -87,15 +110,33 @@ PROMETHEUS_INGREDIENT_TEMPLATES[1]["service_exec_parameters"] = {
     "operation_metadata": {
         "alert_evidence": {
             "label": "Alert evidence",
-            "description": "Evaluate an alert expression and collect current plus recent series evidence.",
+            "description": "Collect current plus recent series evidence for one alert name.",
+            "payload_schema": _ALERT_EVIDENCE_SCHEMA,
         },
-        "list_rules": {"label": "List rules", "description": "List alerting rules."},
-        "list_rule_groups": {"label": "List rule groups", "description": "List rule groups."},
-        "list_metrics": {"label": "List metrics", "description": "List metric names."},
-        "list_labels": {"label": "List labels", "description": "List label names."},
+        "list_rules": {
+            "label": "List rules",
+            "description": "List alerting rules.",
+            "payload_schema": _EMPTY_SCHEMA,
+        },
+        "list_rule_groups": {
+            "label": "List rule groups",
+            "description": "List rule groups.",
+            "payload_schema": _EMPTY_SCHEMA,
+        },
+        "list_metrics": {
+            "label": "List metrics",
+            "description": "List metric names.",
+            "payload_schema": _EMPTY_SCHEMA,
+        },
+        "list_labels": {
+            "label": "List labels",
+            "description": "List label names.",
+            "payload_schema": _LIST_LABELS_SCHEMA,
+        },
         "list_label_values": {
             "label": "List label values",
             "description": "List values for a label.",
+            "payload_schema": _LIST_LABEL_VALUES_SCHEMA,
         },
     },
 }
@@ -106,6 +147,7 @@ PROMETHEUS_INGREDIENT_TEMPLATES[2]["service_exec_parameters"] = {
         "reload_config": {
             "label": "Reload config",
             "description": "Trigger Prometheus to reload its current rule and config state.",
+            "payload_schema": _EMPTY_SCHEMA,
         }
     },
 }
@@ -116,6 +158,7 @@ PROMETHEUS_INGREDIENT_TEMPLATES[3]["service_exec_parameters"] = {
         "check_heartbeat": {
             "label": "Check heartbeat",
             "description": "Periodic watchdog heartbeat check — creates synthetic incident if missing.",
+            "payload_schema": _EMPTY_SCHEMA,
         },
     },
 }
@@ -136,6 +179,30 @@ PROMETHEUS_RECIPE_TEMPLATES: tuple[JSONObject, ...] = (
                 "service_payload": {},
                 "service_exec_expected_secs": 5,
                 "service_exec_timeout": 30,
+                "service_exec_expected_outcome": {"success": True},
+                "run_phase": "firing",
+                "run_condition": "always",
+            }
+        ],
+    },
+    {
+        "name": "operator-action:prometheus:reload-config",
+        "description": "Operator-requested Prometheus rule/config reload.",
+        "enabled": True,
+        "recipe_ingredients": [
+            {
+                "service_type": "prometheus",
+                "service_exec": "reload_config",
+                "destination_target": "prometheus",
+                "task_key_template": "prometheus-reload-config",
+                "step_order": 1,
+                "service_payload": {},
+                "service_exec_parameters_override": {
+                    "operation": "reload_config",
+                    "allowed_operations": ["reload_config"],
+                },
+                "service_exec_expected_secs": 10,
+                "service_exec_timeout": 60,
                 "service_exec_expected_outcome": {"success": True},
                 "run_phase": "firing",
                 "run_condition": "always",

@@ -29,6 +29,35 @@ fail() {
     exit 1
 }
 
+helm_release_status() {
+    local release_name="$1"
+    local namespace="$2"
+
+    "$HELM_BIN" status "$release_name" -n "$namespace" 2>/dev/null \
+        | awk '/^STATUS:/ {print $2; exit}'
+}
+
+recover_non_deployed_release() {
+    local release_name="$1"
+    local namespace="$2"
+    local status
+
+    status="$(helm_release_status "$release_name" "$namespace" || true)"
+    case "$status" in
+        "")
+            return 0
+            ;;
+        deployed)
+            return 0
+            ;;
+    esac
+
+    log "found Helm release $release_name in status $status; deleting stale Helm release metadata"
+    "$KUBECTL_BIN" delete secret -n "$namespace" \
+        -l "owner=helm,name=$release_name" \
+        --ignore-not-found
+}
+
 detect_executable() {
     local env_var="$1"
     local command_name="$2"
@@ -89,12 +118,14 @@ if [ "$WAIT" = "true" ]; then
     helm_wait_args+=(--wait --timeout "$WAIT_TIMEOUT")
 fi
 
+recover_non_deployed_release "$PROMETHEUS_CRDS_RELEASE_NAME" "$MONITORING_NAMESPACE"
 log "installing Prometheus Operator CRDs release $PROMETHEUS_CRDS_RELEASE_NAME in namespace $MONITORING_NAMESPACE"
 "$HELM_BIN" upgrade --install "$PROMETHEUS_CRDS_RELEASE_NAME" "$PROMETHEUS_CRDS_CHART" \
     --version "$PROMETHEUS_CRDS_CHART_VERSION" \
     --namespace "$MONITORING_NAMESPACE" \
     "${helm_wait_args[@]}"
 
+recover_non_deployed_release "$PROMETHEUS_RELEASE_NAME" "$MONITORING_NAMESPACE"
 log "installing Prometheus Operator stack release $PROMETHEUS_RELEASE_NAME in namespace $MONITORING_NAMESPACE"
 "$HELM_BIN" upgrade --install "$PROMETHEUS_RELEASE_NAME" "$PROMETHEUS_CHART" \
     --version "$PROMETHEUS_CHART_VERSION" \

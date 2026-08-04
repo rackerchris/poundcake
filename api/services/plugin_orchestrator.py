@@ -22,6 +22,31 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _raw_service_type(ctx: object) -> str:
+    if isinstance(ctx, ExecutionContext):
+        return ctx.service_type
+    if isinstance(ctx, dict):
+        value = ctx.get("service_type")
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return "unknown"
+
+
+def _malformed_context_result(
+    ctx: object,
+    exc: ValidationError,
+    *,
+    service_exec_id: str | None = None,
+) -> ExecutionResult:
+    return ExecutionResult(
+        service_type=_raw_service_type(ctx),
+        status="errored",
+        service_exec_id=service_exec_id,
+        service_exec_error=f"Malformed ExecutionContext: {exc.errors()[0]['msg']}",
+        retryable=False,
+    )
+
+
 class ExecutionOrchestrator:
     """Dispatches execution contexts to service_type-specific adapters with shared retries."""
 
@@ -38,7 +63,10 @@ class ExecutionOrchestrator:
         return adapter
 
     async def dispatch(self, ctx: ExecutionContext) -> ExecutionResult:
-        ctx = ExecutionContext.model_validate(ctx)
+        try:
+            ctx = ExecutionContext.model_validate(ctx)
+        except ValidationError as exc:
+            return _malformed_context_result(ctx, exc)
         try:
             adapter = self._adapter_for_context(ctx)
         except ValueError as exc:
@@ -101,7 +129,10 @@ class ExecutionOrchestrator:
         )
 
     async def poll(self, ctx: ExecutionContext, service_exec_id: str) -> ExecutionResult:
-        ctx = ExecutionContext.model_validate(ctx)
+        try:
+            ctx = ExecutionContext.model_validate(ctx)
+        except ValidationError as exc:
+            return _malformed_context_result(ctx, exc, service_exec_id=service_exec_id)
         try:
             adapter = self._adapter_for_context(ctx)
         except ValueError as exc:
@@ -128,7 +159,10 @@ class ExecutionOrchestrator:
         )
 
     async def cancel(self, ctx: ExecutionContext, service_exec_id: str) -> ExecutionResult:
-        ctx = ExecutionContext.model_validate(ctx)
+        try:
+            ctx = ExecutionContext.model_validate(ctx)
+        except ValidationError as exc:
+            return _malformed_context_result(ctx, exc, service_exec_id=service_exec_id)
         try:
             adapter = self._adapter_for_context(ctx)
         except ValueError as exc:
@@ -160,7 +194,15 @@ class ExecutionOrchestrator:
         *,
         force: bool = False,
     ) -> PluginBootstrapResult | None:
-        ctx = ExecutionContext.model_validate(ctx)
+        try:
+            ctx = ExecutionContext.model_validate(ctx)
+        except ValidationError as exc:
+            return PluginBootstrapResult(
+                service_type=_raw_service_type(ctx),
+                status="failed",
+                message=f"Malformed ExecutionContext: {exc.errors()[0]['msg']}",
+                error_code="execution_contract_error",
+            )
         adapter = self._registry.get(ctx.service_type)
         if adapter is None:
             return None

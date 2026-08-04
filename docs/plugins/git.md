@@ -38,3 +38,18 @@ commit user name, and commit user email.
 - `repo_read` operations: `read_file`, `list_files`
 - `repo_write` operations: `commit_files`, `create_pull_request`,
   `commit_and_pr`
+
+## Payload contracts
+
+Operation-level `payload_schema` validation is authoritative. Invalid payloads
+are rejected before adapter execution.
+
+- `read_file` requires `service_payload.path`.
+- `list_files` accepts optional `path` and `recursive`.
+- `commit_files` requires `branch` and a non-empty `files` object.
+- `create_pull_request` requires `branch` and `title`.
+- `commit_and_pr` requires `branch`, a non-empty `files` object, and `title`.
+
+Optional supported fields include repository override fields, refs or base
+branches, commit messages, and pull request body text where the adapter supports
+them.

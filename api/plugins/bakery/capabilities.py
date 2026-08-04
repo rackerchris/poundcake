@@ -21,10 +21,8 @@ def load_bakery_capability_templates() -> tuple[JSONObject, ...]:
             "mode": "communication",
             "resource_kinds": ["ticket", "thread", "communication"],
             "trigger_match": {"phase": "communicate"},
-            "required_inputs": ["source", "context"],
+            "required_inputs": ["title", "description", "source", "context"],
             "optional_inputs": [
-                "title",
-                "description",
                 "message",
                 "severity",
                 "category",
@@ -36,7 +34,12 @@ def load_bakery_capability_templates() -> tuple[JSONObject, ...]:
                 "comment",
             ],
             "defaults": {
-                "service_payload": {},
+                "service_payload": {
+                    "title": "PoundCake communication",
+                    "description": "PoundCake opened a Bakery communication.",
+                    "source": "poundcake",
+                    "context": {},
+                },
                 "service_exec_parameters": {"operation": "open"},
                 "expected_outcome": {"success": True},
                 "expected_secs": 5,

@@ -129,6 +129,30 @@ resolves in-cluster Service DNS and discovered Service endpoints, then performs
 DNS, TCP, or HTTP GET probes with a short timeout and narrow request shape. It
 does not accept arbitrary external hosts or general-purpose HTTP requests.
 
+## Payload contracts
+
+Operation-level `payload_schema` validation is authoritative. Invalid payloads
+are rejected before adapter execution.
+
+- `pod_action.get`, `logs`, `events`, and `delete` require `namespace` and
+  `name`.
+- `deployment_action.get`, `scale`, `rollout_restart`, and `rollout_status`
+  require `namespace` and `name`; `scale` also requires `replicas`.
+- `workload_action.*` operations require `namespace`, `kind`, and `name`.
+- `workload_triage.pod_diagnostics`, `logs`, and `events` require
+  `namespace`; if `name` is provided, `kind` is also required.
+- `workload_triage.pvc_diagnostics` requires either `persistentvolume`,
+  `namespace` plus `persistentvolumeclaim`, or `namespace` plus `name`.
+- `failed_job_cleanup.delete` requires `namespace` plus `job_name` or `name`.
+- `resource_pressure_remediation.scale_deployment` requires `namespace`,
+  `replicas`, and `deployment_name` or `name`.
+- `resource_pressure_remediation.patch_hpa_bounds` requires `namespace`,
+  `hpa_name` or `name`, and at least one of `min_replicas` or `max_replicas`.
+- `service_probe.dns`, `tcp`, and `http` require `namespace` plus
+  `service_name` or `name`; `tcp` and `http` also require `port`.
+- List and health operations accept no payload fields unless their operation
+  schema explicitly documents one.
+
 ## Devstack
 
 The devstack installs PoundCake with the k8s plugin enabled and service-plugin

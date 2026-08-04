@@ -10,6 +10,8 @@ Ported from poundcake/src/poundcake/prometheus.py.
 Note: CRD manager and Git integration can be added as separate modules.
 """
 
+import json
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -33,12 +35,34 @@ from api.types import JSONObject
 
 logger = get_logger(__name__)
 SYSTEM_REQ_ID = "SYSTEM-PROM"
+PROMETHEUS_LABEL_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 def _optional_string(value: Any) -> str | None:
     if value is None or value == "":
         return None
     return str(value)
+
+
+def _prometheus_label_matcher(name: str, value: object) -> str:
+    label_name = str(name or "").strip()
+    if not PROMETHEUS_LABEL_NAME_RE.match(label_name):
+        raise ValueError(f"Invalid Prometheus label name: {label_name}")
+    label_value = str(value or "").strip()
+    return f"{label_name}={json.dumps(label_value)}"
+
+
+def _alert_evidence_query(*, alert_name: str, labels: JSONObject | None = None) -> str:
+    normalized_alert_name = str(alert_name or "").strip()
+    if not normalized_alert_name:
+        raise ValueError("Prometheus alert evidence requires alert_name")
+    matchers = [_prometheus_label_matcher("alertname", normalized_alert_name)]
+    for key, value in sorted((labels or {}).items()):
+        if key == "alertname" or value is None:
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            matchers.append(_prometheus_label_matcher(str(key), value))
+    return f"ALERTS{{{','.join(matchers)}}}"
 
 
 def _prometheus_unhealthy_status(status_code: int) -> str:
@@ -416,12 +440,12 @@ class PrometheusClient:
         self,
         *,
         alert_name: str,
-        query: str,
         labels: JSONObject | None = None,
         lookback_seconds: int = 3600,
         step_seconds: int = 60,
     ) -> JSONObject:
-        """Collect current and recent Prometheus evidence for one alert expression."""
+        """Collect current and recent Prometheus evidence for one alert."""
+        query = _alert_evidence_query(alert_name=alert_name, labels=labels)
         now = datetime.now(timezone.utc)
         end = str(int(now.timestamp()))
         start = str(int((now - timedelta(seconds=max(60, lookback_seconds))).timestamp()))
