@@ -356,6 +356,29 @@ async def _prepare_managed_request_payload(payload: JSONObject) -> JSONObject:
     policy = (
         context.get("poundcake_policy") if isinstance(context.get("poundcake_policy"), dict) else {}
     )
+
+    # Extract route metadata from context for Bakery catalog validation
+    if not policy:
+        execution_target = str(
+            context.get("execution_target")
+            or context.get("provider_type")
+            or context.get("destination_target")
+            or ""
+        ).strip()
+        destination_target = str(
+            context.get("destination_target") or execution_target or ""
+        ).strip()
+        if execution_target:
+            policy = {
+                "scope": "global",
+                "owner_key": "managed:global:communications",
+                "route_id": "bakery.communication.open.default",
+                "label": f"Bakery - {destination_target}" if destination_target else "Bakery",
+                "execution_target": execution_target,
+                "destination_target": destination_target,
+                "provider_config": {},
+            }
+
     execution_target = str(
         context.get("execution_target")
         or context.get("provider_type")
@@ -368,6 +391,23 @@ async def _prepare_managed_request_payload(payload: JSONObject) -> JSONObject:
         context["provider_type"] = execution_target
     context["source"] = "poundcake_system"
     normalized["source"] = normalized.get("source") or "poundcake"
+
+    provider_config = (
+        context.get("provider_config") if isinstance(context.get("provider_config"), dict) else {}
+    )
+    provider_config = dict(provider_config)
+    if _bakery_account_number() and not provider_config.get("account_number"):
+        provider_config["account_number"] = _bakery_account_number()
+    if _bakery_queue() and not provider_config.get("queue"):
+        provider_config["queue"] = _bakery_queue()
+    if _bakery_subcategory() and not provider_config.get("subcategory"):
+        provider_config["subcategory"] = _bakery_subcategory()
+    if provider_config:
+        context["provider_config"] = provider_config
+
+    if policy:
+        context["poundcake_policy"] = policy
+
     normalized["context"] = context
     return normalized
 
