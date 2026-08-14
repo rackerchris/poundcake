@@ -1,0 +1,162 @@
+name: Bulk Cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      cleanup_target:
+        description: Select which cleanup to run
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - packages
+          - tags-and-releases
+      package_target:
+        description: Select which package(s) to prune
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - poundcake
+          - ui
+          - chart
+      min_versions_to_keep:
+        description: Number of newest package versions to preserve
+        type: number
+        required: true
+        default: 5
+      tag_pattern:
+        description: Git tag pattern to delete, for example v1.* or test-*
+        type: string
+        required: false
+        default: ""
+      delete_releases:
+        description: Delete matching GitHub releases as well as tags
+        type: boolean
+        required: true
+        default: true
+      confirm_cleanup:
+        description: Type DELETE to run destructive cleanup
+        type: string
+        required: true
+        default: ""
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: bulk-cleanup-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PACKAGE_OWNER: ${{ vars.GHCR_OWNER || github.repository_owner }}
+  REPO_NAME: ${{ vars.GHCR_REPO_NAME || github.event.repository.name }}
+  CHART_PATH: helm
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm destructive cleanup
+        run: |
+          if [ "${{ inputs.confirm_cleanup }}" != "DELETE" ]; then
+            echo "Set confirm_cleanup to DELETE before running cleanup." >&2
+            exit 1
+          fi
+
+      - name: Validate tag cleanup input
+        if: ${{ inputs.cleanup_target == 'all' || inputs.cleanup_target == 'tags-and-releases' }}
+        run: |
+          if [ -z "${{ inputs.tag_pattern }}" ]; then
+            echo "tag_pattern is required when cleaning tags or releases." >&2
+            exit 1
+          fi
+
+  delete-packages:
+    runs-on: ubuntu-latest
+    needs: validate
+    if: ${{ inputs.cleanup_target == 'all' || inputs.cleanup_target == 'packages' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Resolve Helm chart package name
+        if: ${{ inputs.package_target == 'all' || inputs.package_target == 'chart' }}
+        id: chart_meta
+        run: |
+          chart_name="$(awk -F': ' '/^name:/ {print $2; exit}' "${{ env.CHART_PATH }}/Chart.yaml")"
+          if [ -z "$chart_name" ]; then
+            echo "Failed to resolve chart name from ${{ env.CHART_PATH }}/Chart.yaml" >&2
+            exit 1
+          fi
+          echo "chart_name=$chart_name" >> "$GITHUB_OUTPUT"
+
+      - name: Delete old API package versions
+        if: ${{ inputs.package_target == 'all' || inputs.package_target == 'poundcake' }}
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: ${{ env.PACKAGE_OWNER }}
+          package-name: ${{ env.REPO_NAME }}
+          package-type: container
+          min-versions-to-keep: ${{ inputs.min_versions_to_keep }}
+          ignore-versions: '^(latest|main|v.*|[0-9]+\.[0-9]+\.[0-9]+.*)$'
+          token: ${{ secrets.CR_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Delete old UI package versions
+        if: ${{ inputs.package_target == 'all' || inputs.package_target == 'ui' }}
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: ${{ env.PACKAGE_OWNER }}
+          package-name: ${{ env.REPO_NAME }}-ui
+          package-type: container
+          min-versions-to-keep: ${{ inputs.min_versions_to_keep }}
+          ignore-versions: '^(latest|main|v.*|[0-9]+\.[0-9]+\.[0-9]+.*)$'
+          token: ${{ secrets.CR_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Delete old Helm chart package versions
+        if: ${{ inputs.package_target == 'all' || inputs.package_target == 'chart' }}
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: ${{ env.PACKAGE_OWNER }}
+          package-name: charts/${{ steps.chart_meta.outputs.chart_name }}
+          package-type: container
+          min-versions-to-keep: ${{ inputs.min_versions_to_keep }}
+          delete-only-pre-release-versions: "true"
+          token: ${{ secrets.CR_PAT || secrets.GITHUB_TOKEN }}
+
+  delete-tags-and-releases:
+    runs-on: ubuntu-latest
+    needs: validate
+    if: ${{ inputs.cleanup_target == 'all' || inputs.cleanup_target == 'tags-and-releases' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Delete matching tags and releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_PATTERN: ${{ inputs.tag_pattern }}
+          DELETE_RELEASES: ${{ inputs.delete_releases }}
+        run: |
+          git fetch --tags --force
+          mapfile -t tags < <(git tag -l "$TAG_PATTERN" --sort=creatordate)
+          if [ "${#tags[@]}" -eq 0 ]; then
+            echo "No tags matched pattern: $TAG_PATTERN"
+            exit 0
+          fi
+
+          printf 'Matched tags:\n'
+          printf '  %s\n' "${tags[@]}"
+
+          for tag in "${tags[@]}"; do
+            if [ "$DELETE_RELEASES" = "true" ] && gh release view "$tag" >/dev/null 2>&1; then
+              gh release delete "$tag" --cleanup-tag --yes
+              continue
+            fi
+            git push origin ":refs/tags/$tag"
+          done
