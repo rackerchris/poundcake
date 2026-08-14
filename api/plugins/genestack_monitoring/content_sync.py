@@ -23,6 +23,7 @@ from api.plugins.genestack_monitoring.helper_contracts import (
 )
 from api.plugins.genestack_monitoring.remediation_profiles import (
     MANAGED_REMEDIATION_MARKER,
+    RemediationStepSpec,
     remediation_step_specs,
 )
 from api.plugins.contract import ServicePluginContractError

@@ -4,6 +4,7 @@ repos:
     rev: v5.0.0
     hooks:
       - id: check-yaml
+        args: ["--allow-multiple-documents"]
         exclude: ^helm/templates/
       - id: end-of-file-fixer
       - id: trailing-whitespace
@@ -25,7 +26,7 @@ repos:
     rev: v1.37.1
     hooks:
       - id: yamllint
-        args: ["-c", ".yamllint.yml", "."]
+        args: ["-c", ".yamllint.yml"]
 
   - repo: local
     hooks:
