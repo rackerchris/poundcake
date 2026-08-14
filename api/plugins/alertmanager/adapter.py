@@ -113,7 +113,7 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
             if operation not in ALERTMANAGER_INSPECT_OPERATIONS:
                 return "alertmanager inspect operation must be one of: " + ", ".join(
                     ALERTMANAGER_INSPECT_OPERATIONS
-            )
+                )
             if operation == "find_inhibited_by_source":
                 fingerprint = str(_payload(ctx).get("fingerprint") or "").strip()
                 if not fingerprint:
@@ -129,11 +129,15 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
             payload = _payload(ctx)
             if operation in {"create", "update"}:
                 if not isinstance(payload.get("matchers"), list) or not payload.get("matchers"):
-                    return "alertmanager suppression create/update requires service_payload.matchers"
+                    return (
+                        "alertmanager suppression create/update requires service_payload.matchers"
+                    )
                 if not str(payload.get("name") or "").strip():
                     return "alertmanager suppression create/update requires service_payload.name"
                 if not str(payload.get("starts_at") or "").strip():
-                    return "alertmanager suppression create/update requires service_payload.starts_at"
+                    return (
+                        "alertmanager suppression create/update requires service_payload.starts_at"
+                    )
                 if not str(payload.get("ends_at") or "").strip():
                     return "alertmanager suppression create/update requires service_payload.ends_at"
                 if operation == "update" and not str(payload.get("source_ref") or "").strip():
@@ -535,7 +539,9 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
                 endpoint="silences",
                 response=response,
             )
-        silence_id = _silence_id_from_response(response, fallback=str(payload.get("source_ref") or ""))
+        silence_id = _silence_id_from_response(
+            response, fallback=str(payload.get("source_ref") or "")
+        )
         silence = await self._fetch_silence(silence_id)
         normalized = self._normalize_silence(silence)
         outcome: JSONObject = {
@@ -590,7 +596,16 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
     async def _wait_for_expired_silence(self, source_ref: str) -> JSONObject:
         silence = await self._fetch_silence(source_ref)
         for _ in range(8):
-            state = str(((silence.get("status") or {}) if isinstance(silence, dict) else {}).get("state") or "").strip().lower()
+            state = (
+                str(
+                    ((silence.get("status") or {}) if isinstance(silence, dict) else {}).get(
+                        "state"
+                    )
+                    or ""
+                )
+                .strip()
+                .lower()
+            )
             if state and state != "active":
                 return silence
             await asyncio.sleep(0.5)
@@ -861,7 +876,9 @@ class AlertmanagerExecutionAdapter(ExecutionAdapter):
     def _normalize_silence(self, item: JSONObject) -> JSONObject:
         status = item.get("status") if isinstance(item.get("status"), dict) else {}
         comment = str(item.get("comment") or "")
-        name, reason = _decode_comment(comment, fallback_name=str(item.get("id") or "alertmanager silence"))
+        name, reason = _decode_comment(
+            comment, fallback_name=str(item.get("id") or "alertmanager silence")
+        )
         return {
             "source_ref": str(item.get("id") or ""),
             "name": name,
@@ -1023,7 +1040,9 @@ def _silence_id_from_response(response: httpx.Response, *, fallback: str = "") -
     except ValueError:
         payload = {}
     if isinstance(payload, dict):
-        silence_id = str(payload.get("silenceID") or payload.get("silenceId") or payload.get("id") or "").strip()
+        silence_id = str(
+            payload.get("silenceID") or payload.get("silenceId") or payload.get("id") or ""
+        ).strip()
         if silence_id:
             return silence_id
     if fallback:

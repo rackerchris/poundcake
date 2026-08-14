@@ -278,7 +278,9 @@ def bindings_list_cmd(ctx: click.Context, provider: str | None) -> None:
 )
 @click.option("--group", "external_group", default=None, help="External group name")
 @click.option("--principal-id", default=None, type=int, help="Observed principal id")
-@click.option("--dry-run", is_flag=True, help="Validate and preview the binding without creating it")
+@click.option(
+    "--dry-run", is_flag=True, help="Validate and preview the binding without creating it"
+)
 @click.pass_context
 def bindings_create_cmd(
     ctx: click.Context,
@@ -314,7 +316,11 @@ def bindings_create_cmd(
             print_dry_run_preview(
                 ctx,
                 command="auth bindings create",
-                target=str(validated.get("external_group") or validated.get("principal_id") or "new binding"),
+                target=str(
+                    validated.get("external_group")
+                    or validated.get("principal_id")
+                    or "new binding"
+                ),
                 payload=validated,
                 summary={
                     "provider": validated.get("provider"),
@@ -356,7 +362,9 @@ def bindings_create_cmd(
 @click.option(
     "--group", "external_group", default=None, help="Updated group name for group bindings"
 )
-@click.option("--dry-run", is_flag=True, help="Validate and preview the binding update without saving it")
+@click.option(
+    "--dry-run", is_flag=True, help="Validate and preview the binding update without saving it"
+)
 @click.pass_context
 def bindings_update_cmd(
     ctx: click.Context,

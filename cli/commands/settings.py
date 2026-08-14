@@ -18,7 +18,9 @@ def _settings_table(payload: dict[str, object]) -> str:
                     "version": payload.get("version"),
                     "auth_enabled": payload.get("auth_enabled"),
                     "rbac_enabled": payload.get("rbac_enabled"),
-                    "global_communications_configured": payload.get("global_communications_configured"),
+                    "global_communications_configured": payload.get(
+                        "global_communications_configured"
+                    ),
                     "prometheus_use_crds": payload.get("prometheus_use_crds"),
                     "prometheus_crd_namespace": payload.get("prometheus_crd_namespace"),
                     "prometheus_url": payload.get("prometheus_url"),
@@ -63,4 +65,3 @@ def show_settings(ctx: click.Context) -> None:
     except PoundCakeClientError as exc:
         print_error(f"Failed to load settings: {exc}")
         raise click.Abort() from exc
-

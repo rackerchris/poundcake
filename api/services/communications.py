@@ -40,6 +40,7 @@ ALERTMANAGER_REQUIRED_ANNOTATION_FIELDS = {
     "description",
 }
 
+
 def normalize_destination_type(value: str | None) -> str:
     return str(value or "").strip().lower()
 

@@ -20,8 +20,7 @@ async def main() -> None:
         await conn.run_sync(Base.metadata.create_all)
         for service_type, view_name in INTERNAL_SERVICE_IDENTITY_VIEW_BY_SERVICE.items():
             await conn.execute(
-                text(
-                    f"""
+                text(f"""
                     CREATE OR REPLACE VIEW {view_name} AS
                     SELECT
                         sic.id,
@@ -35,8 +34,7 @@ async def main() -> None:
                     INNER JOIN service_plugins AS sp
                         ON sp.id = sic.service_plugin_id
                     WHERE sp.service_type = :service_type
-                    """
-                ),
+                    """),
                 {"service_type": service_type},
             )
     logger.info(

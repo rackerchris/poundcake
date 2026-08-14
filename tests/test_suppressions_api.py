@@ -71,7 +71,9 @@ class _Db:
 
 
 @pytest.mark.asyncio
-async def test_create_suppression_route_uses_alertmanager_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_suppression_route_uses_alertmanager_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
 
     async def _fake_create_alertmanager_suppression(**kwargs: object) -> SimpleNamespace:
@@ -117,7 +119,9 @@ async def test_create_suppression_route_uses_alertmanager_lifecycle(monkeypatch:
 
 
 @pytest.mark.asyncio
-async def test_cancel_suppression_route_expires_alertmanager_silence(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_cancel_suppression_route_expires_alertmanager_silence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     suppression = _suppression_row()
     captured: dict[str, object] = {}
 

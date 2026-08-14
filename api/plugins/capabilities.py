@@ -137,11 +137,7 @@ def apply_operator_capability_overrides(
     config = operator_config if isinstance(operator_config, Mapping) else {}
     enabled_map = config.get("capabilities_enabled")
     override_map = config.get("capability_overrides")
-    enabled_by_operator = (
-        enabled_map
-        if isinstance(enabled_map, Mapping)
-        else {}
-    )
+    enabled_by_operator = enabled_map if isinstance(enabled_map, Mapping) else {}
     overrides = override_map if isinstance(override_map, Mapping) else {}
 
     capability_id = str(template.get("capability_id") or "").strip().lower()
@@ -205,7 +201,10 @@ def _resolve_ingredient_template(
             continue
         if str(template.get("task_key_template") or "").strip() != task_key_template:
             continue
-        if destination_target and str(template.get("destination_target") or "").strip() != destination_target:
+        if (
+            destination_target
+            and str(template.get("destination_target") or "").strip() != destination_target
+        ):
             continue
         return template
     return None

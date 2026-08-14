@@ -114,9 +114,7 @@ def _etcd_capabilities(available_refs: set[str]) -> list[JSONObject]:
     )
     workflow_prefix = str(etcd_profile.get("workflow_prefix") or "poundcake.etcd_").strip()
     phases = [
-        str(item).strip()
-        for item in etcd_profile.get("workflow_phases", [])
-        if str(item).strip()
+        str(item).strip() for item in etcd_profile.get("workflow_phases", []) if str(item).strip()
     ] or ["evidence", "remediation", "verify_recovery"]
     templates: list[JSONObject] = []
     for raw_group in etcd_profile.get("alert_groups", []):
@@ -269,7 +267,13 @@ def _profile_capabilities(available_refs: set[str]) -> list[JSONObject]:
                         "phase": "remediation",
                     },
                     "required_inputs": ["alert_name", "alert_group_name", "labels"],
-                    "optional_inputs": ["annotations", "severity", "order_id", "req_id", "evidence"],
+                    "optional_inputs": [
+                        "annotations",
+                        "severity",
+                        "order_id",
+                        "req_id",
+                        "evidence",
+                    ],
                     "defaults": {
                         "service_payload": {
                             "workflow_ref": workflow_ref,

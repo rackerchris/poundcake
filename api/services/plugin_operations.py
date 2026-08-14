@@ -451,9 +451,7 @@ async def list_service_plugin_configs(
     _require_capability(requester_service_type, "service-plugin:read")
 
     async with plugin_operation_db_session() as db:
-        result = await db.execute(
-            select(ServicePlugin).where(ServicePlugin.enabled.is_(True))
-        )
+        result = await db.execute(select(ServicePlugin).where(ServicePlugin.enabled.is_(True)))
         rows = result.scalars().all()
     configs: dict[str, JSONObject] = {}
     for row in rows:
@@ -474,7 +472,11 @@ async def list_recipe_management_states(
     _require_capability(requester_service_type, "service-plugin:read")
 
     normalized_names = sorted(
-        {str(recipe_name or "").strip() for recipe_name in recipe_names if str(recipe_name or "").strip()}
+        {
+            str(recipe_name or "").strip()
+            for recipe_name in recipe_names
+            if str(recipe_name or "").strip()
+        }
     )
     if not normalized_names:
         return {}

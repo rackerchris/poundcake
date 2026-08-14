@@ -25,7 +25,10 @@ def _pack_actions_roots() -> list[Path]:
     if configured_root:
         roots.append(Path(configured_root).expanduser())
     sibling_repo_root = (
-        STACKSTORM_PLUGIN_ROOT.parent.parent.parent.parent / "poundcake-stackstorm" / "packs" / "poundcake"
+        STACKSTORM_PLUGIN_ROOT.parent.parent.parent.parent
+        / "poundcake-stackstorm"
+        / "packs"
+        / "poundcake"
     )
     roots.append(sibling_repo_root)
     roots.append(STACKSTORM_CONTENT_ROOT)

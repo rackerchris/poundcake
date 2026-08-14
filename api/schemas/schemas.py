@@ -1032,6 +1032,7 @@ class DishIngredientUpsert(BaseModel):
 
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
+
 class DishIngredientResponse(BaseModel):
     """Dish ingredient execution record."""
 

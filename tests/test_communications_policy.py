@@ -239,6 +239,7 @@ async def test_replace_recipe_communication_steps_reuses_existing_managed_step()
     session = _Session()
 
     monkeypatch = pytest.MonkeyPatch()
+
     async def fake_enabled_plugin_configs(_db: object) -> dict[str, object]:
         return {}
 
@@ -377,6 +378,7 @@ async def test_replace_recipe_communication_steps_loads_existing_steps_via_sessi
     session = _Session()
 
     monkeypatch = pytest.MonkeyPatch()
+
     async def fake_enabled_plugin_configs(_db: object) -> dict[str, object]:
         return {}
 
@@ -471,9 +473,7 @@ def test_bakery_comms_template_accepts_managed_policy_context() -> None:
     from api.plugins.bakery.templates import ingredient_templates
 
     template = next(
-        item
-        for item in ingredient_templates()
-        if item["service_exec"] == "communication"
+        item for item in ingredient_templates() if item["service_exec"] == "communication"
     )
     parameters = dict(template["service_exec_parameters"])
     parameters["operation"] = "open"
@@ -500,9 +500,7 @@ def test_bakery_comms_template_accepts_planned_alert_context() -> None:
     from api.plugins.bakery.templates import ingredient_templates
 
     template = next(
-        item
-        for item in ingredient_templates()
-        if item["service_exec"] == "communication"
+        item for item in ingredient_templates() if item["service_exec"] == "communication"
     )
     parameters = dict(template["service_exec_parameters"])
     parameters["operation"] = "open"
@@ -569,6 +567,7 @@ async def test_replace_recipe_communication_steps_requires_enabled_comms_capabil
 
     session = _Session()
     monkeypatch = pytest.MonkeyPatch()
+
     async def fake_enabled_plugin_configs(_db: object) -> dict[str, object]:
         return {}
 

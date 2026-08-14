@@ -256,7 +256,9 @@ async def test_require_service_enforces_internal_rate_limit(
     reset_internal_rate_limits()
 
     request = _request(method="POST", path="/api/v1/internal/service-registry/ingredients/bulk")
-    request.scope["route"] = type("Route", (), {"path": "/api/v1/internal/service-registry/ingredients/bulk"})()
+    request.scope["route"] = type(
+        "Route", (), {"path": "/api/v1/internal/service-registry/ingredients/bulk"}
+    )()
     context = AuthContext(
         provider="service",
         subject_id="timer-subject",

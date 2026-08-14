@@ -92,8 +92,7 @@ class ReleaseExecutionAdapter(ExecutionAdapter):
                 result = await check_once()
                 status = (
                     "succeeded"
-                    if result.get("status")
-                    not in {"disabled", "errored"}
+                    if result.get("status") not in {"disabled", "errored"}
                     else "succeeded"
                 )
                 return ExecutionResult(

@@ -209,7 +209,9 @@ def _safe_error_message(exc: Exception) -> str:
     return message[:500]
 
 
-def _payload_contract_error(*, service_type: str, service_exec_id: str, message: str) -> ExecutionResult:
+def _payload_contract_error(
+    *, service_type: str, service_exec_id: str, message: str
+) -> ExecutionResult:
     outcome: JSONObject = {"success": False, "status": "errored", "message": message}
     return ExecutionResult(
         service_type=service_type,
@@ -444,9 +446,7 @@ class BakeryExecutionAdapter(ExecutionAdapter):
                 "credential_type": BAKERY_CREDENTIAL_TYPE,
                 "credential_key_id": "default",
                 "required": True,
-                "usage": (
-                    "Bakery monitor HMAC credential provisioned through Credential Manager."
-                ),
+                "usage": ("Bakery monitor HMAC credential provisioned through Credential Manager."),
                 "credential_schema": {
                     "type": "object",
                     "properties": {
@@ -559,8 +559,7 @@ class BakeryExecutionAdapter(ExecutionAdapter):
                     "details": {
                         "credential_check_status": credential_check.status,
                         "credential_status": (
-                            (credential_check.details or {}).get("credential_status")
-                            or "unknown"
+                            (credential_check.details or {}).get("credential_status") or "unknown"
                         ),
                         "credential_check": credential_check_details,
                     },

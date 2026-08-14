@@ -450,8 +450,7 @@ def test_dummy_communication_override_keeps_template_allow_list() -> None:
     assert resolved["operation"] == "close"
     assert resolved["allowed_operations"] == ["open", "notify", "update", "close"]
     assert (
-        resolved["operation_metadata"]
-        == template["service_exec_parameters"]["operation_metadata"]
+        resolved["operation_metadata"] == template["service_exec_parameters"]["operation_metadata"]
     )
 
 

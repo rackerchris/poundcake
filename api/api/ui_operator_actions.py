@@ -129,7 +129,4 @@ async def list_ui_operator_actions(
         statement = statement.where(OperatorAuditEvent.status == status.strip())
     statement = statement.limit(limit)
     result = await db.execute(statement)
-    return [
-        OperatorAuditEventResponse.model_validate(row)
-        for row in result.scalars().all()
-    ]
+    return [OperatorAuditEventResponse.model_validate(row) for row in result.scalars().all()]

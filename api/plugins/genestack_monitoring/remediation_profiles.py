@@ -431,9 +431,7 @@ def _capability_matches(
     if not isinstance(trigger_match, dict):
         return False
     match_domains = {
-        str(item).strip().lower()
-        for item in trigger_match.get("domains", [])
-        if str(item).strip()
+        str(item).strip().lower() for item in trigger_match.get("domains", []) if str(item).strip()
     }
     if match_domains and domain.strip().lower() not in match_domains:
         return False
@@ -570,6 +568,7 @@ def _alertmanager_evidence_step(capabilities: list[JSONObject]) -> RemediationSt
         expected_secs=10,
         timeout=60,
     )
+
 
 def _evidence_step(group: str) -> RemediationStepSpec:
     if group in POD_REMEDIATION_GROUPS:

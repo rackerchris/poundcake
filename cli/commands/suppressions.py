@@ -91,7 +91,9 @@ def _build_matchers(
     return matchers
 
 
-def _matchers_from_order_labels(labels: JSONObject, label_keys: tuple[str, ...]) -> list[JSONObject]:
+def _matchers_from_order_labels(
+    labels: JSONObject, label_keys: tuple[str, ...]
+) -> list[JSONObject]:
     matchers: list[JSONObject] = []
     missing: list[str] = []
     for label_key in label_keys:
@@ -264,7 +266,13 @@ def create_suppression(
 @click.option("--name", required=True)
 @click.option("--starts-at", required=True, help="ISO-8601 start time")
 @click.option("--ends-at", required=True, help="ISO-8601 end time")
-@click.option("--label-key", "label_keys", multiple=True, required=True, help="Order label key to copy into an eq matcher; repeat to add more")
+@click.option(
+    "--label-key",
+    "label_keys",
+    multiple=True,
+    required=True,
+    help="Order label key to copy into an eq matcher; repeat to add more",
+)
 @click.option("--reason", default=None)
 @click.option("--created-by", default=None)
 @click.option("--summary-ticket-enabled/--summary-ticket-disabled", default=True, show_default=True)

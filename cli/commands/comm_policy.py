@@ -116,7 +116,9 @@ def show_policy(ctx: click.Context) -> None:
     help="JSON or YAML policy payload",
 )
 @click.option("--route-json", multiple=True, help="JSON object describing one communication route")
-@click.option("--dry-run", is_flag=True, help="Validate and preview the policy payload without saving it")
+@click.option(
+    "--dry-run", is_flag=True, help="Validate and preview the policy payload without saving it"
+)
 @click.pass_context
 def set_policy(
     ctx: click.Context,
@@ -137,7 +139,9 @@ def set_policy(
         )
         if dry_run:
             routes = validated.get("routes") or []
-            current_policy = client.get_global_communications_policy().model_dump(mode="json", by_alias=True)
+            current_policy = client.get_global_communications_policy().model_dump(
+                mode="json", by_alias=True
+            )
             current_routes = current_policy.get("routes") or []
             print_dry_run_preview(
                 ctx,
@@ -160,14 +164,20 @@ def set_policy(
                     {
                         "route_count": len(current_routes),
                         "enabled_route_count": sum(
-                            1 for route in current_routes if isinstance(route, dict) and route.get("enabled")
+                            1
+                            for route in current_routes
+                            if isinstance(route, dict) and route.get("enabled")
                         ),
                         "providers": sorted(
                             {
-                                str(route.get("service_type") or route.get("execution_target") or "").strip()
+                                str(
+                                    route.get("service_type") or route.get("execution_target") or ""
+                                ).strip()
                                 for route in current_routes
                                 if isinstance(route, dict)
-                                and str(route.get("service_type") or route.get("execution_target") or "").strip()
+                                and str(
+                                    route.get("service_type") or route.get("execution_target") or ""
+                                ).strip()
                             }
                         ),
                     },

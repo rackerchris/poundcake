@@ -402,7 +402,14 @@ async def test_alertmanager_create_suppression_posts_bounded_payload() -> None:
                     "endsAt": "2026-07-14T01:00:00+00:00",
                     "createdBy": "alice",
                     "comment": "PoundCake suppression: Database maintenance\n---\nKernel patching",
-                    "matchers": [{"name": "alertname", "value": "NodeDown", "isRegex": False, "isEqual": True}],
+                    "matchers": [
+                        {
+                            "name": "alertname",
+                            "value": "NodeDown",
+                            "isRegex": False,
+                            "isEqual": True,
+                        }
+                    ],
                     "status": {"state": "active"},
                 },
             )
@@ -436,7 +443,9 @@ async def test_alertmanager_create_suppression_posts_bounded_payload() -> None:
     assert captured["post_url"] == "https://alertmanager.example.test/api/v2/silences"
     assert captured["post_kwargs"] == {
         "json": {
-            "matchers": [{"name": "alertname", "value": "NodeDown", "isRegex": False, "isEqual": True}],
+            "matchers": [
+                {"name": "alertname", "value": "NodeDown", "isRegex": False, "isEqual": True}
+            ],
             "startsAt": "2026-07-14T00:00:00+00:00",
             "endsAt": "2026-07-14T01:00:00+00:00",
             "createdBy": "alice",
@@ -480,7 +489,14 @@ async def test_alertmanager_expire_suppression_reposts_silence_with_now_end() ->
                     "endsAt": "2026-07-14T01:00:00+00:00",
                     "createdBy": "alice",
                     "comment": "PoundCake suppression: Database maintenance\n---\nKernel patching",
-                    "matchers": [{"name": "alertname", "value": "NodeDown", "isRegex": False, "isEqual": True}],
+                    "matchers": [
+                        {
+                            "name": "alertname",
+                            "value": "NodeDown",
+                            "isRegex": False,
+                            "isEqual": True,
+                        }
+                    ],
                     "status": {"state": state},
                 },
             )

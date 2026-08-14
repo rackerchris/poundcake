@@ -171,9 +171,7 @@ class PrometheusExecutionAdapter(ExecutionAdapter):
                     message=SERVICE_PAYLOAD_OBJECT_ERROR,
                 )
             try:
-                result = await self._execute_watchdog(
-                    watchdog_operation, _payload(ctx), ctx.req_id
-                )
+                result = await self._execute_watchdog(watchdog_operation, _payload(ctx), ctx.req_id)
                 status = self._status_from_result(result)
                 return ExecutionResult(
                     service_type=self.service_type,

@@ -1505,7 +1505,11 @@ def _timer_runtime_path(path: str, method: str) -> bool:
             or path.endswith("/poll-release")
             or path.endswith("/reconcile")
         )
-    if path.startswith("/api/v1/dishes/") and path.endswith("/ingredient-status") and method == "GET":
+    if (
+        path.startswith("/api/v1/dishes/")
+        and path.endswith("/ingredient-status")
+        and method == "GET"
+    ):
         return True
     if path.startswith("/api/v1/cook/dishes/") and path.endswith("/advance") and method == "POST":
         return True

@@ -138,9 +138,7 @@ def _require_provider_helper(
 ) -> object:
     helper = helpers.get(provider)
     if helper is None:
-        raise PluginBootstrapError(
-            f"{operation} requires enabled {provider} plugin helper"
-        )
+        raise PluginBootstrapError(f"{operation} requires enabled {provider} plugin helper")
     _require_helper_methods(helper, provider=provider, operation=operation, methods=methods)
     return helper
 
@@ -152,15 +150,9 @@ def _require_helper_methods(
     operation: str,
     methods: Sequence[str],
 ) -> None:
-    missing = [
-        name
-        for name in methods
-        if not _is_callable_attr(helper, name)
-    ]
+    missing = [name for name in methods if not _is_callable_attr(helper, name)]
     if missing:
-        raise PluginBootstrapError(
-            f"{operation} requires enabled {provider} plugin helper"
-        )
+        raise PluginBootstrapError(f"{operation} requires enabled {provider} plugin helper")
 
 
 def _is_callable_attr(helper: object, name: str) -> bool:

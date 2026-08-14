@@ -137,9 +137,7 @@ def _ticket_mutation_schema() -> JSONObject:
 
 
 def _comms_template(provider: str) -> JSONObject:
-    ticket_create_schema = _comms_schema(
-        required=["title", "description", "source", "context"]
-    )
+    ticket_create_schema = _comms_schema(required=["title", "description", "source", "context"])
     ticket_mutation_schema = _ticket_mutation_schema()
     ticket_create_payload = {
         "title": "PoundCake communication",

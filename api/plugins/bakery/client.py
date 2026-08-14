@@ -164,8 +164,7 @@ def validate_transport_config() -> str | None:
         return "POUNDCAKE_BAKERY_BASE_URL must use http or https"
     if not is_secure_plugin_transport(base_url):
         return (
-            "POUNDCAKE_BAKERY_BASE_URL must use https, loopback HTTP, "
-            "or in-cluster service DNS"
+            "POUNDCAKE_BAKERY_BASE_URL must use https, loopback HTTP, " "or in-cluster service DNS"
         )
     return None
 
@@ -397,7 +396,9 @@ async def bootstrap_monitor_credential(
     db: object | None = None,
 ) -> BakeryMonitorCredential:
     if force:
-        logger.info("Bakery credential bootstrap requested; verifying configured credential instead")
+        logger.info(
+            "Bakery credential bootstrap requested; verifying configured credential instead"
+        )
     return await ensure_monitor_credential_configured()
 
 

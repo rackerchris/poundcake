@@ -412,7 +412,9 @@ def recipe_ingredient_status(ctx: click.Context, recipe_id: int) -> None:
 @click.option("--communications-mode", type=click.Choice(["inherit", "local"]), default=None)
 @click.option("--step-json", multiple=True, help="JSON object describing one recipe step")
 @click.option("--route-json", multiple=True, help="JSON object describing one communication route")
-@click.option("--dry-run", is_flag=True, help="Validate and preview the recipe payload without saving it")
+@click.option(
+    "--dry-run", is_flag=True, help="Validate and preview the recipe payload without saving it"
+)
 @click.pass_context
 def create_recipe(
     ctx: click.Context,
@@ -470,13 +472,17 @@ def create_recipe(
                     "enabled_route_count": sum(1 for route in routes if route.get("enabled")),
                 },
                 impact="If this recipe is enabled, new matching work can use these steps and communication routes immediately after save.",
-                changes=build_preview_changes({}, next_recipe, labels={
-                    "name": "Recipe",
-                    "enabled": "Enabled",
-                    "communications_mode": "Communications",
-                    "enabled_route_count": "Enabled routes",
-                    "step_count": "Steps",
-                }),
+                changes=build_preview_changes(
+                    {},
+                    next_recipe,
+                    labels={
+                        "name": "Recipe",
+                        "enabled": "Enabled",
+                        "communications_mode": "Communications",
+                        "enabled_route_count": "Enabled routes",
+                        "step_count": "Steps",
+                    },
+                ),
             )
             return
         response = client.create_recipe(validated)
@@ -502,7 +508,9 @@ def create_recipe(
 @click.option("--communications-mode", type=click.Choice(["inherit", "local"]), default=None)
 @click.option("--step-json", multiple=True, help="JSON object describing one recipe step")
 @click.option("--route-json", multiple=True, help="JSON object describing one communication route")
-@click.option("--dry-run", is_flag=True, help="Validate and preview the recipe update without saving it")
+@click.option(
+    "--dry-run", is_flag=True, help="Validate and preview the recipe update without saving it"
+)
 @click.pass_context
 def update_recipe(
     ctx: click.Context,
@@ -563,9 +571,14 @@ def update_recipe(
                         "name": current_recipe.get("name"),
                         "enabled": current_recipe.get("enabled"),
                         "clear_timeout_sec": current_recipe.get("clear_timeout_sec"),
-                        "communications_mode": (current_recipe.get("communications") or {}).get("mode"),
+                        "communications_mode": (current_recipe.get("communications") or {}).get(
+                            "mode"
+                        ),
                         "enabled_route_count": sum(
-                            1 for route in (current_recipe.get("communications") or {}).get("routes", [])
+                            1
+                            for route in (current_recipe.get("communications") or {}).get(
+                                "routes", []
+                            )
                             if isinstance(route, dict) and route.get("enabled")
                         ),
                         "step_count": len(current_recipe.get("recipe_ingredients") or []),
@@ -574,9 +587,12 @@ def update_recipe(
                         "name": next_recipe.get("name"),
                         "enabled": next_recipe.get("enabled"),
                         "clear_timeout_sec": next_recipe.get("clear_timeout_sec"),
-                        "communications_mode": (next_recipe.get("communications") or {}).get("mode"),
+                        "communications_mode": (next_recipe.get("communications") or {}).get(
+                            "mode"
+                        ),
                         "enabled_route_count": sum(
-                            1 for route in (next_recipe.get("communications") or {}).get("routes", [])
+                            1
+                            for route in (next_recipe.get("communications") or {}).get("routes", [])
                             if isinstance(route, dict) and route.get("enabled")
                         ),
                         "step_count": len(next_recipe.get("recipe_ingredients") or []),

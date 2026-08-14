@@ -830,7 +830,9 @@ class PoundCakeClient:
             SuppressionUpdate,
             "Invalid suppression update payload",
         )
-        response = self._request("PATCH", f"/api/v1/suppressions/{suppression_id}", json=request_payload)
+        response = self._request(
+            "PATCH", f"/api/v1/suppressions/{suppression_id}", json=request_payload
+        )
         return self._validate_model(
             response,
             SuppressionResponse,

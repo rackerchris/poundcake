@@ -114,13 +114,9 @@ async def execute_service_execution(
             {
                 "service_type": row.service_type,
                 "service_exec": row.service_exec,
-                "service_payload": (
-                    {} if row.service_payload is None else row.service_payload
-                ),
+                "service_payload": ({} if row.service_payload is None else row.service_payload),
                 "service_exec_parameters": (
-                    {}
-                    if row.service_exec_parameters is None
-                    else row.service_exec_parameters
+                    {} if row.service_exec_parameters is None else row.service_exec_parameters
                 ),
                 "retry_count": row.retry_count or 0,
                 "retry_delay": row.retry_delay or 0,

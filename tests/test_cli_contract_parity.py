@@ -588,7 +588,9 @@ def _dish_ingredient_payload() -> dict[str, object]:
     }
 
 
-def test_plugins_list_uses_canonical_command(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_plugins_list_uses_canonical_command(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def fake_request_with_retry_sync(**kwargs: object) -> httpx.Response:
         assert kwargs["cookies"] == {"session_token": "session-123"}
         return _json_response(
@@ -601,7 +603,16 @@ def test_plugins_list_uses_canonical_command(runner: CliRunner, monkeypatch: pyt
     monkeypatch.setattr(client_module, "request_with_retry_sync", fake_request_with_retry_sync)
     result = runner.invoke(
         cli,
-        ["--url", "http://example.test", "--token", "session-123", "--format", "json", "plugins", "list"],
+        [
+            "--url",
+            "http://example.test",
+            "--token",
+            "session-123",
+            "--format",
+            "json",
+            "plugins",
+            "list",
+        ],
     )
 
     assert result.exit_code == 0
@@ -1211,7 +1222,9 @@ def test_scheduled_tasks_status_show_run_now_and_delete(
         if url.endswith("/api/v1/scheduled-tasks/12/run-now"):
             return _json_response(method, url, 200, _scheduled_task_status_payload())
         if url.endswith("/api/v1/scheduled-tasks/12") and method == "DELETE":
-            return _json_response(method, url, 200, _scheduled_task_payload() | {"is_enabled": False})
+            return _json_response(
+                method, url, 200, _scheduled_task_payload() | {"is_enabled": False}
+            )
         raise AssertionError(f"Unexpected request {method} {url}")
 
     monkeypatch.setattr(client_module, "request_with_retry_sync", fake_request_with_retry_sync)
@@ -1233,11 +1246,27 @@ def test_scheduled_tasks_status_show_run_now_and_delete(
     )
     result_run_now = runner.invoke(
         cli,
-        ["--url", "http://example.test", "--token", "session-123", "scheduled-tasks", "run-now", "12"],
+        [
+            "--url",
+            "http://example.test",
+            "--token",
+            "session-123",
+            "scheduled-tasks",
+            "run-now",
+            "12",
+        ],
     )
     result_delete = runner.invoke(
         cli,
-        ["--url", "http://example.test", "--token", "session-123", "scheduled-tasks", "delete", "12"],
+        [
+            "--url",
+            "http://example.test",
+            "--token",
+            "session-123",
+            "scheduled-tasks",
+            "delete",
+            "12",
+        ],
     )
 
     assert result_status.exit_code == 0
@@ -1392,11 +1421,27 @@ def test_extended_operator_routes_have_typed_cli_commands(
     )
     result_recipe_ingredient_status = runner.invoke(
         cli,
-        ["--url", "http://example.test", "--token", "session-123", "recipes", "ingredient-status", "5"],
+        [
+            "--url",
+            "http://example.test",
+            "--token",
+            "session-123",
+            "recipes",
+            "ingredient-status",
+            "5",
+        ],
     )
     result_recipe_by_name = runner.invoke(
         cli,
-        ["--url", "http://example.test", "--token", "session-123", "recipes", "show-by-name", "demo-recipe"],
+        [
+            "--url",
+            "http://example.test",
+            "--token",
+            "session-123",
+            "recipes",
+            "show-by-name",
+            "demo-recipe",
+        ],
     )
     result_ingredient_status = runner.invoke(
         cli,
@@ -1434,7 +1479,15 @@ def test_extended_operator_routes_have_typed_cli_commands(
     )
     result_order_history = runner.invoke(
         cli,
-        ["--url", "http://example.test", "--token", "session-123", "orders", "execution-history", "88"],
+        [
+            "--url",
+            "http://example.test",
+            "--token",
+            "session-123",
+            "orders",
+            "execution-history",
+            "88",
+        ],
     )
     result_dish_ingredients = runner.invoke(
         cli,
@@ -1442,7 +1495,15 @@ def test_extended_operator_routes_have_typed_cli_commands(
     )
     result_dish_history = runner.invoke(
         cli,
-        ["--url", "http://example.test", "--token", "session-123", "dishes", "ingredient-history", "7"],
+        [
+            "--url",
+            "http://example.test",
+            "--token",
+            "session-123",
+            "dishes",
+            "ingredient-history",
+            "7",
+        ],
     )
 
     assert result_recipe_status.exit_code == 0

@@ -32,9 +32,7 @@ from shared.hmac import build_hmac_signing_payload, hmac_sha256_hex
 
 def _bakery_template(service_exec: str) -> dict[str, object]:
     return next(
-        template
-        for template in ingredient_templates()
-        if template["service_exec"] == service_exec
+        template for template in ingredient_templates() if template["service_exec"] == service_exec
     )
 
 
@@ -276,8 +274,7 @@ def test_bakery_transport_requires_https_outside_dev(monkeypatch) -> None:
     monkeypatch.setenv("POUNDCAKE_BAKERY_BASE_URL", "http://bakery.example.com")
 
     assert client.validate_transport_config() == (
-        "POUNDCAKE_BAKERY_BASE_URL must use https, loopback HTTP, "
-        "or in-cluster service DNS"
+        "POUNDCAKE_BAKERY_BASE_URL must use https, loopback HTTP, " "or in-cluster service DNS"
     )
 
 

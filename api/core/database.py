@@ -5,6 +5,7 @@
 # |_|   \___/ \__,_|_| |_|\__,_|\____\__,_|_|\_\___|
 #
 """Database configuration and session management."""
+
 from contextlib import asynccontextmanager
 from typing import Any
 from typing import AsyncGenerator
@@ -16,6 +17,7 @@ from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 logger = get_logger(__name__)
+
 
 def get_async_database_url() -> str:
     """Return an async DB URL for the runtime engine."""

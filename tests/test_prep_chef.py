@@ -21,7 +21,11 @@ def test_run_once_polls_new_orders_before_resolving_and_dispatches_both(
     def request(method: str, url: str, **kwargs: object) -> _Response:
         params = kwargs.get("params")
         calls.append((method, url, params if isinstance(params, dict) else None))
-        if method == "GET" and isinstance(params, dict) and params.get("processing_status") == "new":
+        if (
+            method == "GET"
+            and isinstance(params, dict)
+            and params.get("processing_status") == "new"
+        ):
             return _Response(200, [{"id": 101, "req_id": "req-new", "processing_status": "new"}])
         if (
             method == "GET"
@@ -59,7 +63,11 @@ def test_run_once_dedupes_orders_seen_in_both_poll_results(monkeypatch) -> None:
 
     def request(method: str, url: str, **kwargs: object) -> _Response:
         params = kwargs.get("params")
-        if method == "GET" and isinstance(params, dict) and params.get("processing_status") == "new":
+        if (
+            method == "GET"
+            and isinstance(params, dict)
+            and params.get("processing_status") == "new"
+        ):
             return _Response(200, [{"id": 101, "req_id": "req-shared", "processing_status": "new"}])
         if (
             method == "GET"

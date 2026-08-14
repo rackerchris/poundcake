@@ -254,9 +254,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     release_update_enabled: bool = True
     release_update_check_interval_seconds: int = 21600
-    release_update_oci_repository: str = (
-        "oci://ghcr.io/rackerlabs/charts/poundcake"
-    )
+    release_update_oci_repository: str = "oci://ghcr.io/rackerlabs/charts/poundcake"
     release_update_include_prereleases: bool = False
     release_update_registry_username: str = ""
     release_update_registry_password: str = ""

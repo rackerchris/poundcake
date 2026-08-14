@@ -197,9 +197,7 @@ async def sync_genestack_monitoring_content_prepare(
         recipe_steps: list[RecipeStepPayload] = []
         for idx, spec in enumerate(specs, start=1):
             if spec.service_payload is not None and not isinstance(spec.service_payload, dict):
-                raise ServicePluginContractError(
-                    "service_payload must be an object when provided"
-                )
+                raise ServicePluginContractError("service_payload must be an object when provided")
             marker = {
                 "managed_by": MANAGED_REMEDIATION_MARKER,
                 "managed_role": str(spec.role),
@@ -448,7 +446,10 @@ def _recipe_publication_outcome_for_specs(specs: list[RemediationStepSpec]) -> s
     action_steps = [spec for spec in specs if str(spec.role) == "action_alert"]
     if not action_steps:
         return "degraded_to_review"
-    if all(spec.service_type == "bakery" and spec.service_exec == "communication" for spec in action_steps):
+    if all(
+        spec.service_type == "bakery" and spec.service_exec == "communication"
+        for spec in action_steps
+    ):
         return "degraded_to_review"
     return "published_managed_recipe"
 

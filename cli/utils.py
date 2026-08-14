@@ -40,7 +40,9 @@ def build_diff_rows(
     keys = list(dict.fromkeys([*current.keys(), *next.keys()]))
     rows: list[dict[str, str]] = []
     for key in keys:
-        if compact_json(to_plain_data(current.get(key))) == compact_json(to_plain_data(next.get(key))):
+        if compact_json(to_plain_data(current.get(key))) == compact_json(
+            to_plain_data(next.get(key))
+        ):
             continue
         rows.append(
             {

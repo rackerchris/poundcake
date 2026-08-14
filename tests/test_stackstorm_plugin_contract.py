@@ -159,9 +159,7 @@ def test_stackstorm_adapter_rejects_non_object_service_payload() -> None:
     adapter = StackStormExecutionAdapter(manager=_FakeStackStormManager())  # type: ignore[arg-type]
     ctx = _ctx(payload={}).model_copy(update={"service_payload": ["not", "an", "object"]})
 
-    assert (
-        adapter.validate(ctx) == "service_payload must be an object when provided"
-    )
+    assert adapter.validate(ctx) == "service_payload must be an object when provided"
 
 
 @pytest.mark.asyncio

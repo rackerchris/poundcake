@@ -675,9 +675,7 @@ def test_k8s_adapter_rejects_non_object_service_payload() -> None:
         update={"service_payload": ["not", "an", "object"]}
     )
 
-    assert (
-        adapter.validate(ctx) == "service_payload must be an object when provided"
-    )
+    assert adapter.validate(ctx) == "service_payload must be an object when provided"
 
 
 def test_k8s_templates_are_valid_service_plugin_templates() -> None:

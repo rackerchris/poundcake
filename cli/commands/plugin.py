@@ -282,7 +282,9 @@ def show_plugin(ctx: click.Context, service_type: str) -> None:
 @click.option("--query-limit", type=int, default=None)
 @click.option("--health-check-interval-seconds", type=int, default=None)
 @click.option("--status-message", default=None)
-@click.option("--dry-run", is_flag=True, help="Validate and preview the plugin update without saving it")
+@click.option(
+    "--dry-run", is_flag=True, help="Validate and preview the plugin update without saving it"
+)
 @click.pass_context
 def update_plugin(
     ctx: click.Context,
@@ -333,14 +335,8 @@ def update_plugin(
                 },
                 impact="Plugin runtime state and cadence changes take effect immediately after save.",
                 changes=build_preview_changes(
-                    {
-                        key: current_plugin.get(key)
-                        for key in validated.keys()
-                    },
-                    {
-                        key: next_plugin.get(key)
-                        for key in validated.keys()
-                    },
+                    {key: current_plugin.get(key) for key in validated.keys()},
+                    {key: next_plugin.get(key) for key in validated.keys()},
                     labels={
                         "enabled": "Plugin enabled",
                         "run_interval_seconds": "Run interval (sec)",
@@ -403,7 +399,11 @@ def config_show(ctx: click.Context, service_type: str) -> None:
     help="JSON/YAML file containing the configuration object",
 )
 @click.option("--output-json", is_flag=True, help="Output raw JSON")
-@click.option("--dry-run", is_flag=True, help="Validate and preview the configuration update without saving it")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Validate and preview the configuration update without saving it",
+)
 @click.pass_context
 def config_set(
     ctx: click.Context,
@@ -428,8 +428,12 @@ def config_set(
         )
         if dry_run:
             rendered_config = validated.get("config") or {}
-            current_configuration = client.get_plugin_configuration(service_type).model_dump(mode="json", by_alias=True)
-            current_config = require_mapping(current_configuration.get("config") or {}, "plugin configuration")
+            current_configuration = client.get_plugin_configuration(service_type).model_dump(
+                mode="json", by_alias=True
+            )
+            current_config = require_mapping(
+                current_configuration.get("config") or {}, "plugin configuration"
+            )
             print_dry_run_preview(
                 ctx,
                 command="plugins config set",
@@ -470,7 +474,9 @@ def credentials_group() -> None:
     help="JSON/YAML file containing the credential payload object",
 )
 @click.option("--rotate-credential/--no-rotate-credential", default=False, show_default=True)
-@click.option("--dry-run", is_flag=True, help="Validate and preview the credential update without saving it")
+@click.option(
+    "--dry-run", is_flag=True, help="Validate and preview the credential update without saving it"
+)
 @click.pass_context
 def credentials_set(
     ctx: click.Context,
@@ -486,7 +492,9 @@ def credentials_set(
     client = get_client(ctx)
     output_format = get_output_format(ctx)
     try:
-        credential_payload = _resolve_payload(file=payload_file, json_value=payload_json, label="payload")
+        credential_payload = _resolve_payload(
+            file=payload_file, json_value=payload_json, label="payload"
+        )
         if credential_payload is None:
             raise click.BadParameter("Provide --payload-json or --payload-file")
         request_payload = {
@@ -502,7 +510,9 @@ def credentials_set(
             "Invalid plugin credential payload",
         )
         if dry_run:
-            current_configuration = client.get_plugin_configuration(service_type).model_dump(mode="json", by_alias=True)
+            current_configuration = client.get_plugin_configuration(service_type).model_dump(
+                mode="json", by_alias=True
+            )
             current_key_id = current_configuration.get("credential_key_id") or "default"
             print_dry_run_preview(
                 ctx,
@@ -513,9 +523,7 @@ def credentials_set(
                     "credential_type": validated.get("credential_type"),
                     "credential_key_id": validated.get("credential_key_id"),
                     "rotate_credential": bool(validated.get("rotate_credential")),
-                    "credential_fields": sorted(
-                        (validated.get("credential_payload") or {}).keys()
-                    ),
+                    "credential_fields": sorted((validated.get("credential_payload") or {}).keys()),
                 },
                 impact="Saving rotates or updates the adapter credential material used by future authenticated plugin work.",
                 changes=build_preview_changes(

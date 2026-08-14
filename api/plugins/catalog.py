@@ -133,9 +133,7 @@ def get_enabled_plugin_recipe_templates() -> list[JSONObject]:
 
 def get_enabled_plugin_communication_routes() -> list[JSONObject]:
     """Return default communication routes derived from enabled capabilities."""
-    return communication_routes_from_capability_catalog(
-        build_enabled_plugin_capability_catalog()
-    )
+    return communication_routes_from_capability_catalog(build_enabled_plugin_capability_catalog())
 
 
 def get_enabled_plugin_scheduled_task_templates() -> list[JSONObject]:

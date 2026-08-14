@@ -455,7 +455,9 @@ def _status_result_summary(outcome: dict[str, Any]) -> dict[str, Any] | None:
 def _serialize_admin_dish_ingredient_history(record: DishIngredient) -> DishIngredientResponse:
     """Return full runtime evidence for admins with secret-like nested keys redacted."""
     payload = DishIngredientResponse.model_validate(record).model_dump(mode="python")
-    payload["service_exec_error"] = _sanitize_status_string(str(payload.get("service_exec_error") or ""))
+    payload["service_exec_error"] = _sanitize_status_string(
+        str(payload.get("service_exec_error") or "")
+    )
     if not payload["service_exec_error"]:
         payload["service_exec_error"] = None
     for key in (

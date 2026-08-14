@@ -14,7 +14,6 @@ from api.services.database_access import (
 )
 from api.types import JSONObject
 
-
 ADAPTER_RUNTIME_PRINCIPAL = principal_for_internal_service("api")
 
 

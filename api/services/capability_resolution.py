@@ -162,6 +162,8 @@ async def resolve_active_capability_ingredient(
         mode=str(capability.get("mode") or "").strip().lower(),
         operation=operation,
         defaults=dict(capability.get("defaults") or {}),
-        priority=int(capability.get("priority") or 0) if capability.get("priority") is not None else None,
+        priority=(
+            int(capability.get("priority") or 0) if capability.get("priority") is not None else None
+        ),
         ingredient=ingredient,
     )

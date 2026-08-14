@@ -126,7 +126,9 @@ def _load_task_payload_file(path: Path, label: str) -> dict[str, Any]:
     return require_mapping(load_data_file(path), label)
 
 
-def _resolve_task_payload(file: Path | None, payload_json: str | None, label: str) -> dict[str, Any] | None:
+def _resolve_task_payload(
+    file: Path | None, payload_json: str | None, label: str
+) -> dict[str, Any] | None:
     if file is not None and payload_json is not None:
         raise click.BadParameter(f"--{label}-file cannot be combined with --{label}-json")
     if file is not None:
@@ -201,7 +203,9 @@ def _build_create_payload(
             "next_run_at": next_run_at,
             "priority": priority,
             "timeout_seconds": timeout_seconds,
-            "task_payload": _resolve_task_payload(task_payload_file, task_payload_json, "task-payload"),
+            "task_payload": _resolve_task_payload(
+                task_payload_file, task_payload_json, "task-payload"
+            ),
             "task_parameters": _resolve_task_payload(
                 task_parameters_file,
                 task_parameters_json,
@@ -263,7 +267,9 @@ def _build_update_payload(
             "next_run_at": next_run_at,
             "priority": priority,
             "timeout_seconds": timeout_seconds,
-            "task_payload": _resolve_task_payload(task_payload_file, task_payload_json, "task-payload"),
+            "task_payload": _resolve_task_payload(
+                task_payload_file, task_payload_json, "task-payload"
+            ),
             "task_parameters": _resolve_task_payload(
                 task_parameters_file,
                 task_parameters_json,
@@ -359,7 +365,9 @@ def show_task(ctx: click.Context, task_id: int) -> None:
     default=None,
 )
 @click.option("--expected-outcome-json", default=None)
-@click.option("--dry-run", is_flag=True, help="Validate and preview the scheduled task without saving it")
+@click.option(
+    "--dry-run", is_flag=True, help="Validate and preview the scheduled task without saving it"
+)
 @click.pass_context
 def create_task(
     ctx: click.Context,
@@ -430,12 +438,16 @@ def create_task(
                     "run_interval_seconds": validated.get("run_interval_seconds"),
                 },
                 impact="Saving creates a new recurring task definition that Dishwasher can schedule immediately.",
-                changes=build_preview_changes({}, next_task, labels={
-                    "task_type": "Task type",
-                    "service_type": "Service type",
-                    "enabled": "Enabled",
-                    "run_interval_seconds": "Run interval (sec)",
-                }),
+                changes=build_preview_changes(
+                    {},
+                    next_task,
+                    labels={
+                        "task_type": "Task type",
+                        "service_type": "Service type",
+                        "enabled": "Enabled",
+                        "run_interval_seconds": "Run interval (sec)",
+                    },
+                ),
             )
             return
         response = client.create_scheduled_task(validated)
@@ -448,7 +460,9 @@ def create_task(
 @scheduled_tasks.command("update")
 @click.argument("task_id", type=int)
 @click.option("--file", type=click.Path(exists=True, path_type=Path), default=None)
-@click.option("--payload-json", default=None, help="Full scheduled task update payload as JSON object")
+@click.option(
+    "--payload-json", default=None, help="Full scheduled task update payload as JSON object"
+)
 @click.option("--enabled/--disabled", "is_enabled", default=None)
 @click.option("--run-interval-seconds", type=int, default=None)
 @click.option("--next-run-at", default=None)
@@ -463,7 +477,11 @@ def create_task(
     default=None,
 )
 @click.option("--expected-outcome-json", default=None)
-@click.option("--dry-run", is_flag=True, help="Validate and preview the scheduled task update without saving it")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Validate and preview the scheduled task update without saving it",
+)
 @click.pass_context
 def update_task(
     ctx: click.Context,

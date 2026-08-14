@@ -5,7 +5,6 @@ from __future__ import annotations
 from api.plugins.contract import health_check_operation_parameters
 from api.types import JSONObject
 
-
 DUMMY_COMMUNICATION_PAYLOAD_SCHEMA: JSONObject = {
     "type": "object",
     "properties": {

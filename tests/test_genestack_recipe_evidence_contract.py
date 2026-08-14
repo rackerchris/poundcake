@@ -497,9 +497,7 @@ def _assert_recipe_has_classifiable_evidence_before_final_communication(
 
     assert specs
 
-    communication_index = next(
-        idx for idx, spec in enumerate(specs) if spec.role == "communicate"
-    )
+    communication_index = next(idx for idx, spec in enumerate(specs) if spec.role == "communicate")
     evidence_before_bakery = []
     for spec in specs[:communication_index]:
         params = spec.service_exec_parameters or {}
@@ -653,15 +651,11 @@ def test_generic_recipe_uses_alert_identity_for_prometheus_evidence() -> None:
     specs = remediation_step_specs(
         "openstack-api-down-critical",
         "alerts/openstack/control-plane.yaml",
-        {"expr": 'sum(rate(http_requests_total[5m])) > 0'},
+        {"expr": "sum(rate(http_requests_total[5m])) > 0"},
         capabilities=_all_capabilities(),
     )
 
-    evidence_step = next(
-        spec
-        for spec in specs
-        if spec.role == "gather_prometheus_evidence"
-    )
+    evidence_step = next(spec for spec in specs if spec.role == "gather_prometheus_evidence")
 
     assert "query" not in evidence_step.service_payload
     assert evidence_step.service_payload["alert_name"] == "openstack-api-down-critical"
@@ -685,7 +679,7 @@ def test_generic_recipe_uses_prometheus_capability_for_evidence() -> None:
     specs = remediation_step_specs(
         "openstack-api-down-critical",
         "alerts/openstack/control-plane.yaml",
-        {"expr": 'sum(rate(http_requests_total[5m])) > 0'},
+        {"expr": "sum(rate(http_requests_total[5m])) > 0"},
         capabilities=_all_capabilities(),
     )
 
@@ -700,7 +694,7 @@ def test_generic_recipe_uses_github_capability_for_source_evidence() -> None:
     specs = remediation_step_specs(
         "openstack-api-down-critical",
         "alerts/openstack/control-plane.yaml",
-        {"expr": 'sum(rate(http_requests_total[5m])) > 0'},
+        {"expr": "sum(rate(http_requests_total[5m])) > 0"},
         capabilities=_all_capabilities(),
     )
 
