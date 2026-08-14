@@ -43,6 +43,52 @@ tests:
         template: templates/poundcake-startup-jobs.yaml
         documentIndex: 0
 
+  - it: wires all embedded mariadb init DB user secrets into the container
+    set:
+      poundcake.enabled: true
+      database.mode: embedded
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MYSQL_PLUGIN_REGISTRY_USER
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: DB_PLUGIN_REGISTRY_USER
+        template: templates/poundcake-infra-deployments.yaml
+        documentIndex: 0
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MYSQL_PLUGIN_REGISTRY_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: DB_PLUGIN_REGISTRY_PASSWORD
+        template: templates/poundcake-infra-deployments.yaml
+        documentIndex: 0
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MYSQL_SERVICE_IDENTITY_MANAGER_USER
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: DB_SERVICE_IDENTITY_MANAGER_USER
+        template: templates/poundcake-infra-deployments.yaml
+        documentIndex: 0
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: MYSQL_SERVICE_IDENTITY_MANAGER_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: poundcake-secrets
+                key: DB_SERVICE_IDENTITY_MANAGER_PASSWORD
+        template: templates/poundcake-infra-deployments.yaml
+        documentIndex: 0
+
   - it: renders shared operator DB resources and suppresses embedded poundcake mariadb resources
     set:
       poundcake.enabled: true

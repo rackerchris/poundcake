@@ -10,6 +10,8 @@ PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 . "$SCRIPT_DIR/load-local-secrets.sh"
 
 CHART_DIR="${CHART_DIR:-$PROJECT_ROOT/helm}"
+POUNDCAKE_HELM_INSTALLER="${POUNDCAKE_HELM_INSTALLER:-$PROJECT_ROOT/install/install-poundcake-helm.sh}"
+DEVSTACK_BASE_OVERRIDES="${DEVSTACK_BASE_OVERRIDES:-$PROJECT_ROOT/helm/overrides/poundcake-only-overrides.yaml}"
 KIND_CONFIG="${KIND_CONFIG:-$SCRIPT_DIR/kind-config.yaml}"
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-poundcake}"
 KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
@@ -115,6 +117,17 @@ General options:
   --timeout DURATION        Wait timeout (default: 15m)
   --values FILE             Override values file
   --help                    Show this help message
+
+Environment overrides:
+  POUNDCAKE_HELM_INSTALLER  Installer wrapper to use for PoundCake installs
+                            (default: install/install-poundcake-helm.sh)
+  DEVSTACK_BASE_OVERRIDES   Local base Helm overrides for the installer
+                            (default: helm/overrides/poundcake-only-overrides.yaml)
+  STACKSTORM_WAIT_TIMEOUT   StackStorm install wait timeout (default: --timeout value)
+  STACKSTORM_PROGRESS_DEADLINE_SECONDS
+                            StackStorm Deployment progress deadline for slow first pulls
+                            (default: 1800)
+  HELM_EXTRA_ARGS           Extra Helm args passed through the installer
 
 When no component flags are given, only the kind cluster is created
 (if cluster creation is enabled) and nothing else is installed.
@@ -265,22 +278,54 @@ detect_executable() {
 }
 
 prepare_devstack_secret_values() {
-    if [ -z "${DEVSTACK_DB_ROOT_PASSWORD:-}" ]; then
+    local include_values="false"
+    local app_image_repository=""
+    local app_image_tag=""
+    local ui_image_repository=""
+    local ui_image_tag=""
+
+    if [ -n "${DEVSTACK_DB_ROOT_PASSWORD:-}" ]; then
+        include_values="true"
+    fi
+    if [ "$INSTALL_CHART" = "true" ]; then
+        include_values="true"
+    fi
+    if [ "$include_values" != "true" ]; then
         return 0
     fi
+
+    SPLIT_IMAGE_REPOSITORY=""
+    SPLIT_IMAGE_TAG=""
+    split_image_ref "$APP_IMAGE"
+    app_image_repository="$SPLIT_IMAGE_REPOSITORY"
+    app_image_tag="$SPLIT_IMAGE_TAG"
+    split_image_ref "$UI_IMAGE"
+    ui_image_repository="$SPLIT_IMAGE_REPOSITORY"
+    ui_image_tag="$SPLIT_IMAGE_TAG"
+
     DEVSTACK_TMP_VALUES_FILE="$(mktemp "${TMPDIR:-/tmp}/poundcake-devstack-values.XXXXXX")"
     cat >"$DEVSTACK_TMP_VALUES_FILE" <<EOF
+poundcakeImage:
+  repository: "${app_image_repository}"
+  tag: "${app_image_tag}"
+uiImage:
+  repository: "${ui_image_repository}"
+  tag: "${ui_image_tag}"
+EOF
+    if [ -n "${DEVSTACK_DB_ROOT_PASSWORD:-}" ]; then
+        cat >>"$DEVSTACK_TMP_VALUES_FILE" <<EOF
 secrets:
   dbRootPassword: "${DEVSTACK_DB_ROOT_PASSWORD}"
 mariadb:
   rootPassword: "${DEVSTACK_DB_ROOT_PASSWORD}"
 EOF
+    fi
     if [ -n "$VALUES_FILE" ]; then
         VALUES_FILE="${VALUES_FILE}:$DEVSTACK_TMP_VALUES_FILE"
     else
         VALUES_FILE="$DEVSTACK_TMP_VALUES_FILE"
     fi
-    log "loaded dbRootPassword override from local devstack secrets file"
+    log "loaded local image refs and devstack secrets into a temporary values file"
 }
 
 prepare_devstack_secret_values
@@ -353,7 +398,6 @@ apply_node_sysctls() {
 apply_node_sysctls
 
 KUBECTL_BIN="$(detect_executable KUBECTL_BIN kubectl /opt/homebrew/bin/kubectl /usr/local/bin/kubectl)"
-HELM_BIN="$(detect_executable HELM_BIN helm /opt/homebrew/bin/helm /usr/local/bin/helm)"
 
 # Pre-install check: cluster must exist for any helm/kubectl work
 if [ "$INSTALL_CHART" = "true" ] || [ "$INSTALL_MONITORING" = "true" ] || [ "$INSTALL_STACKSTORM" = "true" ]; then
@@ -381,53 +425,44 @@ fi
 "$KUBECTL_BIN" create namespace "$POUNDCAKE_NAMESPACE" --dry-run=client -o yaml | "$KUBECTL_BIN" apply -f -
 
 if [ "$INSTALL_CHART" = "true" ]; then
-    helm_args=(
-        upgrade
-        --install
-        "$RELEASE_NAME"
-        "$CHART_DIR"
-        --namespace
-        "$POUNDCAKE_NAMESPACE"
-    )
-    if [ "$WAIT" = "true" ]; then
-        helm_args+=(--wait --timeout "$WAIT_TIMEOUT")
-    fi
+    [ -x "$POUNDCAKE_HELM_INSTALLER" ] || fail "POUNDCAKE_HELM_INSTALLER is not executable: $POUNDCAKE_HELM_INSTALLER"
+    [ -f "$DEVSTACK_BASE_OVERRIDES" ] || fail "DEVSTACK_BASE_OVERRIDES does not exist: $DEVSTACK_BASE_OVERRIDES"
+
+    installer_args=()
     if [ -n "$VALUES_FILE" ]; then
         IFS=':' read -r -a values_files <<< "$VALUES_FILE"
         for values_file in "${values_files[@]}"; do
             [ -f "$values_file" ] || fail "VALUES_FILE does not exist: $values_file"
-            helm_args+=(-f "$values_file")
+            installer_args+=(-f "$values_file")
         done
     fi
     if [ -n "$HELM_EXTRA_ARGS" ]; then
         read -r -a extra_args <<< "$HELM_EXTRA_ARGS"
-        helm_args+=("${extra_args[@]}")
+        installer_args+=("${extra_args[@]}")
     fi
-    app_image_repository=""
-    app_image_tag=""
-    ui_image_repository=""
-    ui_image_tag=""
-    SPLIT_IMAGE_REPOSITORY=""
-    SPLIT_IMAGE_TAG=""
-    split_image_ref "$APP_IMAGE"
-    app_image_repository="$SPLIT_IMAGE_REPOSITORY"
-    app_image_tag="$SPLIT_IMAGE_TAG"
-    split_image_ref "$UI_IMAGE"
-    ui_image_repository="$SPLIT_IMAGE_REPOSITORY"
-    ui_image_tag="$SPLIT_IMAGE_TAG"
-    helm_args+=(
-        --set-string
-        "poundcakeImage.repository=$app_image_repository"
-        --set-string
-        "poundcakeImage.tag=$app_image_tag"
-        --set-string
-        "uiImage.repository=$ui_image_repository"
-        --set-string
-        "uiImage.tag=$ui_image_tag"
-    )
 
-    log "installing Helm release $RELEASE_NAME in namespace $POUNDCAKE_NAMESPACE"
-    "$HELM_BIN" "${helm_args[@]}"
+    log "installing Helm release $RELEASE_NAME in namespace $POUNDCAKE_NAMESPACE via install/install-poundcake-helm.sh"
+    POUNDCAKE_CHART_REPO="" \
+        POUNDCAKE_BASE_OVERRIDES="$DEVSTACK_BASE_OVERRIDES" \
+        POUNDCAKE_GLOBAL_OVERRIDES_DIR="" \
+        POUNDCAKE_SERVICE_CONFIG_DIR="" \
+        POUNDCAKE_HELM_POST_RENDERER="" \
+        POUNDCAKE_HELM_POST_RENDERER_OVERLAY_DIR="" \
+        POUNDCAKE_CREATE_IMAGE_PULL_SECRET="false" \
+        POUNDCAKE_OPERATORS_MODE="skip" \
+        POUNDCAKE_RELEASE_NAME="$RELEASE_NAME" \
+        POUNDCAKE_NAMESPACE="$POUNDCAKE_NAMESPACE" \
+        POUNDCAKE_HELM_TIMEOUT="$WAIT_TIMEOUT" \
+        POUNDCAKE_HELM_WAIT="false" \
+        CHART_DIR="$CHART_DIR" \
+        "$POUNDCAKE_HELM_INSTALLER" "${installer_args[@]}"
+
+    if [ "$WAIT" = "true" ]; then
+        log "waiting for PoundCake deployments to become available"
+        "$KUBECTL_BIN" -n "$POUNDCAKE_NAMESPACE" wait --for=condition=Available deployment --all --timeout="$WAIT_TIMEOUT"
+    else
+        log "WAIT=false; skipping post-install deployment wait"
+    fi
     if [ "$CONFIGURE_GITHUB_PUBLIC_READ" = "true" ]; then
         if [ "$REQUIRE_GITHUB_WRITE" = "true" ]; then
             log "configuring PoundCake GitHub adapter for write-capable devstack usage"
@@ -475,7 +510,7 @@ fi
 
 if [ "$INSTALL_STACKSTORM" = "true" ]; then
     log "installing external StackStorm release"
-    STACKSTORM_NAMESPACE="$STACKSTORM_NAMESPACE" WAIT="$WAIT" \
+    STACKSTORM_NAMESPACE="$STACKSTORM_NAMESPACE" WAIT="$WAIT" STACKSTORM_WAIT_TIMEOUT="${STACKSTORM_WAIT_TIMEOUT:-$WAIT_TIMEOUT}" \
         "$SCRIPT_DIR/install-stackstorm.sh"
     if [ "$CONFIGURE_STACKSTORM_ADAPTER" = "true" ]; then
         log "configuring PoundCake StackStorm adapter"
