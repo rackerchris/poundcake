@@ -6,12 +6,10 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from api.api.expediter import expediter_dispatch_from_cook
 from api.api.orders import dispatch_order
 from api.core.config import get_settings
 from api.api.auth import require_service
@@ -35,25 +33,22 @@ from api.models.models import (
     ServicePlugin,
 )
 from api.plugins.state import (
+    EXPEDITER_RUNNER_RECEIPT_PREFIX,
+    EXPEDITER_RUNNER_SERVICE_TYPE,
     PLUGIN_CALLABLE_RUN_STATES,
     PLUGIN_RUN_STATE_FAILED,
     PLUGIN_RUN_STATE_HEALTHY,
     TERMINAL_EXECUTION_STATUSES,
     normalize_plugin_run_state,
     runtime_seconds,
-    sla_exceeded,
-    validate_execution_transition,
-    verdict_status,
 )
 from api.schemas.schemas import (
     CookAdvanceReadyItem,
     CookAdvanceResponse,
     CookDispatchedItem,
     CookSegmentMetadata,
-    ExecuteRequest,
     OrderDispatchResponse,
 )
-from api.services.plugin_orchestrator import ExecutionOrchestrator, get_execution_orchestrator
 from api.services.suppression_service import (
     find_first_matching_suppression,
     normalize_utc_datetime,
@@ -71,7 +66,6 @@ async def cook_order(
     request: Request,
     order_id: int,
     db: AsyncSession = Depends(get_db),
-    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
     _context: object = Depends(require_service),
 ) -> OrderDispatchResponse:
     """Expand a dispatchable order into a dish with hydrated service execution rows."""
@@ -118,7 +112,6 @@ async def cook_order(
             dish_id=response.dish_id,
             req_id=request.state.req_id,
             db=db,
-            orchestrator=orchestrator,
         )
     return response
 
@@ -255,15 +248,13 @@ async def advance_dish(
     request: Request,
     dish_id: int,
     db: AsyncSession = Depends(get_db),
-    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
     _context: object = Depends(require_service),
 ) -> CookAdvanceResponse:
-    """Dispatch the next runnable service segment for a dish or mark it complete."""
+    """Mark the next runnable service segment for Expediter-owned execution."""
     return await _advance_dish(
         dish_id=dish_id,
         req_id=request.state.req_id,
         db=db,
-        orchestrator=orchestrator,
     )
 
 
@@ -272,7 +263,6 @@ async def _advance_dish(
     dish_id: int,
     req_id: str,
     db: AsyncSession,
-    orchestrator: ExecutionOrchestrator,
 ) -> CookAdvanceResponse:
     result = await db.execute(
         select(Dish).options(selectinload(Dish.recipe)).where(Dish.id == dish_id)
@@ -406,7 +396,7 @@ async def _advance_dish(
     ready = segment.rows
     dispatched: list[CookDispatchedItem] = []
     logger.info(
-        "Cook dispatching execution segment",
+        "Cook marking execution segment ready",
         extra={
             "req_id": req_id,
             "order_id": dish.order_id,
@@ -429,106 +419,23 @@ async def _advance_dish(
                 DishIngredient.service_exec_claimed_at.is_(None),
             )
             .values(
-                service_exec_status="dispatched",
+                service_exec_status="running",
                 service_exec_start_time=start_time,
-                service_exec_claimed_at=start_time,
-                service_exec_claimed_by=req_id,
+                service_exec_id=f"{EXPEDITER_RUNNER_RECEIPT_PREFIX}{row_id}",
+                service_exec_actual_outcome={
+                    "success": True,
+                    "status": "running",
+                    "receipt_owner": EXPEDITER_RUNNER_SERVICE_TYPE,
+                    "dish_ingredient_id": row_id,
+                },
+                service_exec_claimed_at=None,
+                service_exec_claimed_by=None,
                 updated_at=start_time,
             )
         )
         await db.commit()
         if getattr(claim_result, "rowcount", 0) == 0:
             continue
-        try:
-            result = await expediter_dispatch_from_cook(
-                req_id=req_id,
-                payload=ExecuteRequest(
-                    dish_ingredient_id=row_id,
-                    service_type=str(item["service_type"]),
-                    service_exec=str(item["service_exec"]),
-                    service_payload=(
-                        item.get("service_payload")
-                        if item.get("service_payload") is not None
-                        else {}
-                    ),
-                    service_exec_parameters=(
-                        item.get("service_exec_parameters")
-                        if item.get("service_exec_parameters") is not None
-                        else {}
-                    ),
-                    retry_count=int(item.get("retry_count") or 0),
-                    retry_delay=int(item.get("retry_delay") or 0),
-                    service_exec_timeout=int(item.get("service_exec_timeout") or 300),
-                    context={
-                        "req_id": item.get("req_id") or req_id,
-                        "dish_id": dish.id,
-                        "order_id": dish.order_id,
-                        "recipe_ingredient_id": item.get("recipe_ingredient_id"),
-                        "destination_target": item.get("destination_target") or "",
-                    },
-                ),
-                db=db,
-                orchestrator=orchestrator,
-            )
-        except (HTTPException, ValidationError) as exc:
-            result = None
-            if isinstance(exc, HTTPException):
-                service_exec_status = "errored" if exc.status_code >= 500 else "failed"
-                service_exec_error = str(exc.detail)
-                failure_reason = "expediter_dispatch_error"
-                failure_detail = str(exc.detail)
-            else:
-                service_exec_status = "failed"
-                service_exec_error = str(exc)
-                failure_reason = "execution_contract_error"
-                failure_detail = str(exc)
-            service_exec_id = None
-            actual_outcome = {
-                "success": False,
-                "status": service_exec_status,
-                "reason": failure_reason,
-                "detail": failure_detail,
-            }
-        else:
-            service_exec_status = verdict_status(
-                requested_status=result.status,
-                expected_outcome=item.get("service_exec_expected_outcome"),
-                actual_outcome=result.raw or result.service_exec_actual_outcome,
-            )
-            service_exec_error = result.service_exec_error
-            service_exec_id = result.service_exec_id
-            actual_outcome = result.raw or result.service_exec_actual_outcome
-
-        completed_time = (
-            utc_now_db() if service_exec_status in TERMINAL_EXECUTION_STATUSES else None
-        )
-        row = await db.get(DishIngredient, row_id)
-        if row is None or row.deleted:
-            continue
-        row.service_exec_status = validate_execution_transition(
-            row.service_exec_status,
-            service_exec_status,
-        )
-        row.service_exec_start_time = row.service_exec_start_time or start_time
-        row.service_exec_completed_time = completed_time
-        row.service_exec_id = service_exec_id
-        row.service_exec_actual_outcome = (
-            actual_outcome
-            if completed_time is not None and isinstance(actual_outcome, dict)
-            else None
-        )
-        row.service_exec_error = service_exec_error
-        row.service_exec_claimed_at = None
-        row.service_exec_claimed_by = None
-        if completed_time is not None:
-            row.service_exec_run_time = runtime_seconds(
-                row.service_exec_start_time,
-                completed_time,
-            )
-        row.service_exec_sla_exceeded = sla_exceeded(
-            row.service_exec_expected_secs,
-            row.service_exec_run_time,
-        )
         db_dish = await db.get(Dish, dish_id)
         if db_dish is not None:
             db_dish.processing_status = "processing"
@@ -541,13 +448,13 @@ async def _advance_dish(
                 req_id=str(item.get("req_id") or req_id),
                 service_type=str(item["service_type"]),
                 service_exec=str(item["service_exec"]),
-                service_exec_id=service_exec_id,
-                service_exec_status=service_exec_status,
-                service_exec_error=service_exec_error,
+                service_exec_id=f"{EXPEDITER_RUNNER_RECEIPT_PREFIX}{row_id}",
+                service_exec_status="running",
+                service_exec_error=None,
             )
         )
         logger.info(
-            "Cook runtime row dispatched",
+            "Cook runtime row marked ready",
             extra={
                 "req_id": str(item.get("req_id") or req_id),
                 "order_id": dish.order_id,
@@ -555,8 +462,8 @@ async def _advance_dish(
                 "dish_ingredient_id": row_id,
                 "service_type": str(item["service_type"]),
                 "service_exec": str(item["service_exec"]),
-                "service_exec_id": service_exec_id,
-                "service_exec_status": service_exec_status,
+                "service_exec_id": f"{EXPEDITER_RUNNER_RECEIPT_PREFIX}{row_id}",
+                "service_exec_status": "running",
             },
         )
 

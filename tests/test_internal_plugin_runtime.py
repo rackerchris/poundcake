@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
+import pytest
+
 from kitchen import service_helpers
 from shared.internal_hmac import (
     INTERNAL_HMAC_KEY_ID_HEADER,
@@ -18,12 +20,16 @@ class _Logger:
     def __init__(self) -> None:
         self.infos: list[dict[str, object]] = []
         self.warnings: list[dict[str, object]] = []
+        self.errors: list[dict[str, object]] = []
 
     def info(self, _message: str, *, extra: dict[str, object]) -> None:
         self.infos.append(extra)
 
     def warning(self, _message: str, *, extra: dict[str, object]) -> None:
         self.warnings.append(extra)
+
+    def error(self, _message: str, *, extra: dict[str, object]) -> None:
+        self.errors.append(extra)
 
 
 class _Response:
@@ -36,7 +42,6 @@ class _Response:
 
 
 def test_worker_runtime_config_reads_internal_plugin_api(monkeypatch) -> None:
-    service_helpers._RUNTIME_CONFIG_CACHE.clear()
     service_helpers._INTERNAL_HMAC_SECRET_CACHE.clear()
     captured: dict[str, object] = {}
 
@@ -181,34 +186,56 @@ def test_unknown_worker_service_does_not_query_or_sign(monkeypatch) -> None:
     assert headers == {"X-Request-ID": "unit-test"}
 
 
-def test_worker_runtime_config_falls_back_to_last_good_config(monkeypatch) -> None:
-    service_helpers._RUNTIME_CONFIG_CACHE.clear()
-    service_helpers._RUNTIME_CONFIG_CACHE["timer"] = {
-        "enabled": False,
-        "run_interval_seconds": 21,
-        "query_limit": 33,
-        "source": "api",
-    }
+def test_known_worker_control_plane_request_requires_hmac_secret(monkeypatch) -> None:
+    service_helpers._INTERNAL_HMAC_SECRET_CACHE.clear()
+
+    def request(*_args: object, **_kwargs: object) -> _Response:
+        raise AssertionError("known internal worker should not send unsigned control-plane request")
+
+    async def load_credential(**_kwargs: object) -> dict[str, str]:
+        raise RuntimeError("credential unavailable")
+
+    monkeypatch.setattr(service_helpers, "request_with_retry_sync", request)
+    monkeypatch.setattr(service_helpers, "_read_internal_hmac_payload", load_credential)
+    monkeypatch.setenv("POUNDCAKE_INTERNAL_HMAC_SERVICE_TYPE", "timer")
+
+    try:
+        service_helpers.request_control_plane_sync(
+            "GET",
+            "http://api:8000/api/v1/plugins/timer",
+            req_id="unit-test",
+            timeout=5,
+        )
+    except service_helpers.InternalControlPlaneAuthError as exc:
+        assert "internal HMAC credential lookup failed for timer" in str(exc)
+    else:
+        raise AssertionError("expected internal control-plane auth failure")
+
+
+def test_worker_runtime_config_fails_closed_when_api_unavailable(monkeypatch) -> None:
+    service_helpers._INTERNAL_HMAC_SECRET_CACHE.clear()
 
     def request(*_args: object, **_kwargs: object) -> _Response:
         return _Response(503, {})
 
     logger = _Logger()
     monkeypatch.setattr(service_helpers, "request_with_retry_sync", request)
+    monkeypatch.setenv("POUNDCAKE_INTERNAL_HMAC_SERVICE_TYPE", "timer")
 
-    config = service_helpers.get_worker_runtime_config(
-        api_base_url="http://api:8000/api/v1",
-        service_type="timer",
-        req_id="unit-test",
-        default_interval=10,
-        default_query_limit=50,
-        logger=logger,
-    )
+    async def load_credential(**_kwargs: object) -> dict[str, str]:
+        return {"hmac_secret": "unit-secret"}
 
-    assert config == {
-        "enabled": False,
-        "run_interval_seconds": 21,
-        "query_limit": 33,
-        "source": "api",
-    }
-    assert logger.warnings
+    monkeypatch.setattr(service_helpers, "_read_internal_hmac_payload", load_credential)
+
+    with pytest.raises(service_helpers.WorkerRuntimeConfigError):
+        service_helpers.get_worker_runtime_config(
+            api_base_url="http://api:8000/api/v1",
+            service_type="timer",
+            req_id="unit-test",
+            default_interval=10,
+            default_query_limit=50,
+            logger=logger,
+        )
+
+    assert logger.errors
+    assert logger.errors[-1]["service_type"] == "timer"

@@ -259,6 +259,16 @@ class ServicePluginActionResponse(BaseModel):
     checked_at: datetime
 
 
+class OperatorActionAcceptedResponse(BaseModel):
+    status: str = "accepted"
+    message: str
+    order_id: int
+    order_req_id: str
+    service_type: str
+    service_exec: str
+    submitted_at: datetime
+
+
 class PrometheusRuleGroupSummary(BaseModel):
     name: str
     rule_count: int = Field(default=0, ge=0)

@@ -86,6 +86,7 @@ def test_trusted_internal_principal_constructor_stays_in_boundary_modules() -> N
     allowed_files = {
         Path("api/services/database_access.py"),
         Path("api/services/credential_manager.py"),
+        Path("api/services/adapter_runtime.py"),
         Path("api/services/service_identity.py"),
         Path("api/services/plugin_bootstrap.py"),
         Path("api/services/plugin_operations.py"),

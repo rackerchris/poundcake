@@ -72,12 +72,17 @@ class _Db:
 
 @pytest.mark.asyncio
 async def test_create_suppression_route_uses_alertmanager_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
-    expected = _suppression_row()
     captured: dict[str, object] = {}
 
-    async def _fake_create_alertmanager_suppression(**kwargs: object) -> AlertSuppression:
+    async def _fake_create_alertmanager_suppression(**kwargs: object) -> SimpleNamespace:
         captured.update(kwargs)
-        return expected
+        return SimpleNamespace(
+            order_id=201,
+            order_req_id=str(kwargs["req_id"]),
+            service_type="alertmanager",
+            service_exec="suppression",
+            submitted_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+        )
 
     monkeypatch.setattr(
         "api.api.suppressions.create_alertmanager_suppression",
@@ -98,34 +103,37 @@ async def test_create_suppression_route_uses_alertmanager_lifecycle(monkeypatch:
         request=_request("/api/v1/suppressions"),
         payload=payload,
         db=_Db(),  # type: ignore[arg-type]
-        orchestrator=object(),  # type: ignore[arg-type]
         _context=object(),
     )
 
     assert captured["req_id"] == "test-suppression-route"
     assert captured["payload"].name == "Database maintenance"
-    assert response.id == 42
-    assert response.source == "plugin"
-    assert response.source_service_type == "alertmanager"
-    assert response.source_ref == "sil-42"
-    assert response.matchers[0].label_key == "alertname"
+    assert response.status == "accepted"
+    assert response.message == "Suppression create order accepted"
+    assert response.order_id == 201
+    assert response.order_req_id == "test-suppression-route"
+    assert response.service_type == "alertmanager"
+    assert response.service_exec == "suppression"
 
 
 @pytest.mark.asyncio
 async def test_cancel_suppression_route_expires_alertmanager_silence(monkeypatch: pytest.MonkeyPatch) -> None:
     suppression = _suppression_row()
-    canceled = _suppression_row()
-    canceled.enabled = False
-    canceled.canceled_at = datetime(2026, 7, 14, 0, 30, tzinfo=timezone.utc)
     captured: dict[str, object] = {}
 
     async def _fake_get_suppression(_db: object, suppression_id: int) -> AlertSuppression | None:
         assert suppression_id == 42
         return suppression
 
-    async def _fake_expire_alertmanager_suppression(**kwargs: object) -> AlertSuppression:
+    async def _fake_expire_alertmanager_suppression(**kwargs: object) -> SimpleNamespace:
         captured.update(kwargs)
-        return canceled
+        return SimpleNamespace(
+            order_id=202,
+            order_req_id=str(kwargs["req_id"]),
+            service_type="alertmanager",
+            service_exec="suppression",
+            submitted_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+        )
 
     monkeypatch.setattr("api.api.suppressions.get_suppression", _fake_get_suppression)
     monkeypatch.setattr(
@@ -137,15 +145,16 @@ async def test_cancel_suppression_route_expires_alertmanager_silence(monkeypatch
         request=_request("/api/v1/suppressions/42/cancel"),
         suppression_id=42,
         db=_Db(),  # type: ignore[arg-type]
-        orchestrator=object(),  # type: ignore[arg-type]
         _context=object(),
     )
 
     assert captured["req_id"] == "test-suppression-route"
     assert captured["suppression"].source_ref == "sil-42"
-    assert response.id == 42
-    assert response.status == "canceled"
-    assert response.source_service_type == "alertmanager"
+    assert response.status == "accepted"
+    assert response.message == "Suppression cancel order accepted"
+    assert response.order_id == 202
+    assert response.service_type == "alertmanager"
+    assert response.service_exec == "suppression"
 
 
 @pytest.mark.asyncio
@@ -153,17 +162,21 @@ async def test_update_suppression_route_updates_alertmanager_backed_suppression(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     suppression = _suppression_row()
-    updated = _suppression_row()
-    updated.reason = "Extended maintenance"
     captured: dict[str, object] = {}
 
     async def _fake_get_suppression(_db: object, suppression_id: int) -> AlertSuppression | None:
         assert suppression_id == 42
         return suppression
 
-    async def _fake_update_alertmanager_suppression(**kwargs: object) -> AlertSuppression:
+    async def _fake_update_alertmanager_suppression(**kwargs: object) -> SimpleNamespace:
         captured.update(kwargs)
-        return updated
+        return SimpleNamespace(
+            order_id=203,
+            order_req_id=str(kwargs["req_id"]),
+            service_type="alertmanager",
+            service_exec="suppression",
+            submitted_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+        )
 
     monkeypatch.setattr("api.api.suppressions.get_suppression", _fake_get_suppression)
     monkeypatch.setattr(
@@ -177,11 +190,12 @@ async def test_update_suppression_route_updates_alertmanager_backed_suppression(
         suppression_id=42,
         payload=payload,
         db=_Db(),  # type: ignore[arg-type]
-        orchestrator=object(),  # type: ignore[arg-type]
         _context=object(),
     )
 
     assert captured["req_id"] == "test-suppression-route"
     assert captured["suppression"].source_ref == "sil-42"
     assert captured["payload"].reason == "Extended maintenance"
-    assert response.reason == "Extended maintenance"
+    assert response.status == "accepted"
+    assert response.message == "Suppression update order accepted"
+    assert response.order_id == 203

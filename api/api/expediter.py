@@ -15,89 +15,20 @@ from api.core.logging import get_logger
 from api.core.time import align_datetime_pair
 from api.models.models import Dish, DishIngredient, ServicePlugin
 from api.schemas.schemas import (
-    ExecuteRequest,
     ExecutionEnvelopeResponse,
 )
 from api.services.plugin_orchestrator import ExecutionOrchestrator, get_execution_orchestrator
 from api.plugins.state import (
     EXPEDITER_RUNNER_RECEIPT_PREFIX,
-    EXPEDITER_RUNNER_SERVICE_TYPE,
     PLUGIN_RUN_STATE_UNKNOWN,
     TERMINAL_EXECUTION_STATUSES,
     normalize_plugin_run_state,
     plugin_run_state_blocks_dispatch,
 )
 from api.plugins.types import ExecutionContext, ExecutionResult
-from api.validation.execution import validate_service_execution_request
 
 router = APIRouter()
 logger = get_logger(__name__)
-
-
-async def expediter_dispatch_from_cook(
-    *,
-    req_id: str,
-    payload: ExecuteRequest,
-    db: AsyncSession | None = None,
-    orchestrator: ExecutionOrchestrator,
-) -> ExecutionEnvelopeResponse:
-    """Dispatch a hydrated runtime row through the service plugin gateway."""
-    validation_error = validate_service_execution_request(
-        service_type=payload.service_type,
-        service_exec=payload.service_exec,
-        service_payload=payload.service_payload,
-        service_exec_parameters=payload.service_exec_parameters,
-        context=payload.context,
-    )
-    if validation_error:
-        logger.warning(
-            "Expediter dispatch validation failed",
-            extra={
-                "req_id": req_id,
-                "dish_ingredient_id": payload.dish_ingredient_id,
-                "service_type": payload.service_type,
-                "service_exec": payload.service_exec,
-            },
-        )
-        raise HTTPException(status_code=400, detail=validation_error)
-
-    service_payload = {} if payload.service_payload is None else payload.service_payload
-    service_exec_parameters = (
-        {} if payload.service_exec_parameters is None else payload.service_exec_parameters
-    )
-    context = dict(payload.context or {})
-    operator_config = await _plugin_operator_config(db=db, service_type=payload.service_type)
-    if operator_config:
-        context["operator_config"] = operator_config
-    ctx = ExecutionContext.model_validate(
-        {
-            "service_type": payload.service_type,
-            "service_exec": payload.service_exec,
-            "service_payload": service_payload,
-            "service_exec_parameters": service_exec_parameters,
-            "retry_count": payload.retry_count,
-            "retry_delay": payload.retry_delay,
-            "service_exec_timeout": payload.service_exec_timeout,
-            "context": context,
-            "req_id": req_id,
-        }
-    )
-    result = _expediter_runner_dispatch_result(ctx, payload)
-    logger.info(
-        "Expediter dispatched service execution",
-        extra={
-            "req_id": req_id,
-            "dish_ingredient_id": payload.dish_ingredient_id,
-            "dish_id": context.get("dish_id"),
-            "order_id": context.get("order_id"),
-            "service_type": payload.service_type,
-            "service_exec": payload.service_exec,
-            "service_exec_id": result.service_exec_id,
-            "service_exec_status": result.status,
-        },
-    )
-
-    return _envelope_from_result(result)
 
 
 @router.post(
@@ -364,38 +295,6 @@ def _envelope_from_result(result: ExecutionResult) -> ExecutionEnvelopeResponse:
             "context_updates": result.context_updates,
             "attempts": result.attempts,
         }
-    )
-
-
-def _expediter_runner_dispatch_result(
-    ctx: ExecutionContext,
-    payload: ExecuteRequest,
-) -> ExecutionResult:
-    row_id = payload.dish_ingredient_id
-    if row_id is None:
-        return ExecutionResult(
-            service_type=ctx.service_type,
-            status="errored",
-            service_exec_error="dish_ingredient_id is required for expediter-runner dispatch",
-            retryable=False,
-        )
-    return ExecutionResult(
-        service_type=ctx.service_type,
-        status="running",
-        service_exec_id=f"{EXPEDITER_RUNNER_RECEIPT_PREFIX}{row_id}",
-        result={
-            "success": True,
-            "status": "running",
-            "receipt_owner": EXPEDITER_RUNNER_SERVICE_TYPE,
-            "dish_ingredient_id": row_id,
-        },
-        raw={
-            "success": True,
-            "status": "running",
-            "receipt_owner": EXPEDITER_RUNNER_SERVICE_TYPE,
-            "dish_ingredient_id": row_id,
-        },
-        retryable=False,
     )
 
 

@@ -644,6 +644,16 @@ async def get_global_policy_routes(db: AsyncSession) -> list[CommunicationRoute]
     return _group_routes_from_steps(recipe.recipe_ingredients)
 
 
+async def get_global_policy_recipe_for_planning(db: AsyncSession) -> Recipe | None:
+    recipe = await _load_global_policy_recipe(db)
+    if recipe is None:
+        return None
+    routes = _group_routes_from_steps(recipe.recipe_ingredients)
+    if not any(route.enabled for route in routes):
+        return None
+    return recipe
+
+
 async def global_policy_configured(db: AsyncSession) -> bool:
     routes = await get_global_policy_routes(db)
     return any(route.enabled for route in routes)
@@ -786,16 +796,6 @@ async def sync_fallback_policy_recipe(
             fallback=True,
         ),
     )
-    return recipe
-
-
-async def get_global_policy_recipe_for_dispatch(db: AsyncSession) -> Recipe | None:
-    recipe = await _load_global_policy_recipe(db)
-    if recipe is None:
-        return None
-    routes = _group_routes_from_steps(recipe.recipe_ingredients)
-    if not any(route.enabled for route in routes):
-        return None
     return recipe
 
 

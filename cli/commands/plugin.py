@@ -126,9 +126,12 @@ def _plugin_action_table(item: dict[str, object]) -> str:
                 "Result",
                 {
                     "service_type": item.get("service_type"),
+                    "service_exec": item.get("service_exec"),
                     "status": item.get("status"),
                     "message": item.get("message"),
-                    "checked_at": item.get("checked_at"),
+                    "order_id": item.get("order_id"),
+                    "order_req_id": item.get("order_req_id"),
+                    "submitted_at": item.get("submitted_at"),
                 },
             ),
             ("Details", item.get("details") or {}),
@@ -546,32 +549,16 @@ def credentials_set(
 
 @plugins.command("test-connection")
 @click.argument("service_type")
-@click.option("--config-json", default=None, help="Optional config override JSON object")
-@click.option(
-    "--config-file",
-    type=click.Path(exists=True, path_type=Path),
-    default=None,
-    help="Optional config override JSON/YAML file",
-)
-@click.option("--credential-key-id", default="default", show_default=True)
 @click.pass_context
 def test_connection(
     ctx: click.Context,
     service_type: str,
-    config_json: str | None,
-    config_file: Path | None,
-    credential_key_id: str,
 ) -> None:
-    """Run a control-plane connection test for an external plugin."""
+    """Queue a health-check order for an external plugin."""
     client = get_client(ctx)
     output_format = get_output_format(ctx)
     try:
-        config = _resolve_payload(file=config_file, json_value=config_json, label="config")
-        response = client.test_plugin_connection(
-            service_type,
-            config=config,
-            credential_key_id=credential_key_id,
-        )
+        response = client.test_plugin_connection(service_type)
         print_output(response, output_format, table_renderer=_plugin_action_table)
     except (click.BadParameter, PoundCakeClientError) as exc:
         print_error(f"Plugin connection test failed for {service_type}: {exc}")

@@ -8,7 +8,9 @@ import pytest
 
 from api.models.models import DishIngredient, Ingredient, Recipe, RecipeIngredient
 from api.plugins.contract import ServicePluginContractError
+import api.services.dish_planner as dish_planner
 from api.services.dish_planner import (
+    build_dish_plan,
     expected_run_secs_from_recipe_snapshot,
     seed_dish_ingredients_for_phase,
 )
@@ -93,6 +95,21 @@ def _comms_ingredient() -> Ingredient:
         retry_delay=0,
         on_failure="continue",
     )
+
+
+def _route_payload(route_id: str) -> dict:
+    return {
+        "context": {
+            "poundcake_policy": {
+                "route_id": route_id,
+                "service_type": "dummy",
+                "destination_target": "dummy",
+                "provider_config": {},
+                "enabled": True,
+                "position": 1,
+            }
+        }
+    }
 
 
 def test_seed_dish_ingredients_copies_ingredient_slas_when_recipe_has_no_override() -> None:
@@ -503,6 +520,127 @@ def test_seed_dish_ingredients_does_not_duplicate_existing_global_comms_row() ->
     )
 
     assert [row.recipe_ingredient_id for row in rows] == [112]
+
+
+@pytest.mark.asyncio
+async def test_build_dish_plan_inherits_global_comms_when_recipe_has_no_local_comms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remediation = RecipeIngredient(
+        id=114,
+        ingredient=_ingredient(),
+        step_order=1,
+        parallel_group=0,
+        depth=0,
+        run_phase="firing",
+        run_condition="always",
+    )
+    global_comms = RecipeIngredient(
+        id=115,
+        ingredient=_comms_ingredient(),
+        step_order=1000,
+        parallel_group=0,
+        depth=1000,
+        run_phase="firing",
+        run_condition="always",
+        service_payload=_route_payload("global-route"),
+    )
+    recipe = Recipe(
+        id=510,
+        name="inherits-global-comms",
+        enabled=True,
+        recipe_ingredients=[remediation],
+    )
+    global_recipe = Recipe(
+        id=511,
+        name="pcm-policy-global",
+        enabled=True,
+        recipe_ingredients=[global_comms],
+    )
+
+    async def _global_policy_recipe(_db: object) -> Recipe:
+        return global_recipe
+
+    monkeypatch.setattr(
+        dish_planner,
+        "get_global_policy_recipe_for_planning",
+        _global_policy_recipe,
+    )
+
+    plan = await build_dish_plan(object(), recipe=recipe, order=SimpleNamespace(raw_data={}))
+
+    assert plan.recipe is recipe
+    assert plan.inherited_recipe_ingredients == [global_comms]
+
+
+@pytest.mark.asyncio
+async def test_build_dish_plan_keeps_local_comms_as_the_effective_comms_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local_comms = RecipeIngredient(
+        id=116,
+        ingredient=_comms_ingredient(),
+        step_order=2,
+        parallel_group=0,
+        depth=1,
+        run_phase="firing",
+        run_condition="always",
+        service_payload=_route_payload("local-route"),
+    )
+    recipe = Recipe(
+        id=512,
+        name="local-comms",
+        enabled=True,
+        recipe_ingredients=[local_comms],
+    )
+
+    async def _unexpected_global_policy_recipe(_db: object) -> Recipe:
+        raise AssertionError("local comms recipes must not load global policy")
+
+    monkeypatch.setattr(
+        dish_planner,
+        "get_global_policy_recipe_for_planning",
+        _unexpected_global_policy_recipe,
+    )
+
+    plan = await build_dish_plan(object(), recipe=recipe, order=SimpleNamespace(raw_data={}))
+
+    assert plan.recipe is recipe
+    assert plan.inherited_recipe_ingredients == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_data",
+    [
+        {"operator_action": True},
+        {"order_type": "scheduled_task"},
+    ],
+)
+async def test_build_dish_plan_keeps_predeclared_orders_exact(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_data: dict,
+) -> None:
+    recipe = Recipe(
+        id=513,
+        name="predeclared",
+        enabled=True,
+        recipe_ingredients=[],
+    )
+
+    async def _unexpected_global_policy_recipe(_db: object) -> Recipe:
+        raise AssertionError("predeclared order plans must not load inherited policy")
+
+    monkeypatch.setattr(
+        dish_planner,
+        "get_global_policy_recipe_for_planning",
+        _unexpected_global_policy_recipe,
+    )
+
+    plan = await build_dish_plan(object(), recipe=recipe, order=SimpleNamespace(raw_data=raw_data))
+
+    assert plan.recipe is recipe
+    assert plan.inherited_recipe_ingredients == []
 
 
 def test_expected_run_secs_from_recipe_snapshot_matches_phase_eligible_steps() -> None:

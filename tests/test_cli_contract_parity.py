@@ -127,10 +127,12 @@ def _plugin_configuration_payload() -> dict[str, object]:
 def _plugin_action_payload() -> dict[str, object]:
     return {
         "service_type": "stackstorm",
-        "status": "healthy",
-        "message": "stackstorm connection checked",
-        "details": {"latency_ms": 20, "config": {"base_url": "https://st2.example.test"}},
-        "checked_at": "2026-07-08T00:00:00+00:00",
+        "service_exec": "health_check",
+        "status": "accepted",
+        "message": "stackstorm connection check order accepted",
+        "order_id": 88,
+        "order_req_id": "cli-plugin-action",
+        "submitted_at": "2026-07-08T00:00:00+00:00",
     }
 
 
@@ -181,20 +183,6 @@ def _prometheus_rule_record_payload() -> dict[str, object]:
         "source": {"file": "alerts/demo.yaml", "format": "spec.groups"},
         "rule_data": {"alert": "DemoAlert", "expr": "vector(1)"},
         "checked_at": "2026-07-08T00:00:00+00:00",
-    }
-
-
-def _repo_sync_payload() -> dict[str, object]:
-    return {
-        "status": "succeeded",
-        "message": "Prepared Genestack alert update.",
-        "branch": "poundcake/demoalert",
-        "pull_request": {"number": 12, "url": "https://example.test/pr/12"},
-        "exported": {"files": 1, "rule_name": "DemoAlert"},
-        "skipped": {"missing_source_metadata": 0},
-        "warnings": [],
-        "cleared": None,
-        "imported": None,
     }
 
 
@@ -723,9 +711,19 @@ def test_plugins_credentials_test_connection_and_prometheus_rules(
             return _json_response(method, url, 200, _plugin_configuration_payload())
         if url.endswith("/api/v1/plugins/stackstorm/test-connection"):
             assert kwargs["json"] == {"credential_key_id": "default"}
-            return _json_response(method, url, 200, _plugin_action_payload())
+            return _json_response(method, url, 202, _plugin_action_payload())
         if url.endswith("/api/v1/plugins/prometheus/reload"):
-            return _json_response(method, url, 200, _plugin_action_payload())
+            return _json_response(
+                method,
+                url,
+                202,
+                {
+                    **_plugin_action_payload(),
+                    "service_type": "prometheus",
+                    "service_exec": "reload_config",
+                    "message": "prometheus reload order accepted",
+                },
+            )
         if url.endswith("/api/v1/plugins/k8s/prometheus-rules"):
             assert kwargs["params"] == {"namespace": "monitoring"}
             return _json_response(method, url, 200, _prometheus_rules_payload())
@@ -773,7 +771,17 @@ def test_plugins_credentials_test_connection_and_prometheus_rules(
                 "group_name": "demo",
                 "rule_name": "DemoAlert",
             }
-            return _json_response(method, url, 200, _repo_sync_payload())
+            return _json_response(
+                method,
+                url,
+                202,
+                {
+                    **_plugin_action_payload(),
+                    "service_type": "genestack_monitoring",
+                    "service_exec": "repo_sync",
+                    "message": "Genestack alert export order accepted",
+                },
+            )
         raise AssertionError(f"Unexpected request {method} {url}")
 
     monkeypatch.setattr(client_module, "request_with_retry_sync", fake_request_with_retry_sync)

@@ -24,6 +24,7 @@ from api.schemas.schemas import (
     IncidentTimelineResponse,
     ObservabilityActivityStatusRecord,
     ObservabilityOverviewResponse,
+    OperatorActionAcceptedResponse,
     OrderStatusResponse,
     RecipeIngredientStatusResponse,
     RecipeStatusResponse,
@@ -229,6 +230,168 @@ def test_provider_execution_dispatch_stays_inside_expediter_boundary() -> None:
                 and path not in allowed_orchestrator_instantiation_files
             ):
                 violations.append(f"{path}:{node.lineno} instantiates ExecutionOrchestrator")
+
+    assert violations == []
+
+
+def test_execution_authority_imports_stay_inside_execution_doors() -> None:
+    allowed_files = {
+        Path("api/api/expediter.py"),
+        Path("api/services/plugin_orchestrator.py"),
+    }
+    forbidden_names = {"ExecutionOrchestrator", "get_execution_orchestrator"}
+    violations: list[str] = []
+    for path in sorted(Path("api").rglob("*.py")):
+        if "__pycache__" in path.parts or path in allowed_files:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module == "api.services.plugin_orchestrator":
+                    imported = {alias.name for alias in node.names}
+                    leaked = imported & forbidden_names
+                    if leaked:
+                        violations.append(
+                            f"{path}:{node.lineno} imports {', '.join(sorted(leaked))}"
+                        )
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "api.services.plugin_orchestrator":
+                        violations.append(f"{path}:{node.lineno} imports {alias.name}")
+
+    assert violations == []
+
+
+def test_cook_does_not_call_expediter_execution_door_locally() -> None:
+    path = Path("api/api/cook.py")
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    forbidden_import_modules = {"api.api.expediter"}
+    forbidden_calls = {
+        "expediter_dispatch_from_cook",
+        "execute_service_execution",
+        "get_service_execution_status",
+        "cancel_service_execution",
+    }
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "") in forbidden_import_modules:
+            violations.append(f"{path}:{node.lineno} imports from {node.module}")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in forbidden_import_modules:
+                    violations.append(f"{path}:{node.lineno} imports {alias.name}")
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id in forbidden_calls:
+                violations.append(f"{path}:{node.lineno} calls {func.id}()")
+            elif isinstance(func, ast.Attribute) and func.attr in forbidden_calls:
+                violations.append(f"{path}:{node.lineno} calls {func.attr}()")
+
+    assert violations == []
+
+
+def test_sessionlocal_usage_stays_behind_database_access_boundary() -> None:
+    allowed_files = {
+        Path("api/core/database.py"),
+        Path("api/services/database_access.py"),
+        Path("api/scripts/bootstrap_adapter_credentials.py"),
+        Path("api/scripts/bootstrap_plugin_registry.py"),
+        Path("api/scripts/bootstrap_plugins.py"),
+        Path("api/scripts/bootstrap_service_identities.py"),
+    }
+    violations: list[str] = []
+    for path in sorted(Path("api").rglob("*.py")):
+        if "__pycache__" in path.parts or path in allowed_files:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "") == "api.core.database":
+                if any(alias.name == "SessionLocal" for alias in node.names):
+                    violations.append(f"{path}:{node.lineno} imports SessionLocal")
+            elif isinstance(node, ast.Name) and node.id == "SessionLocal":
+                violations.append(f"{path}:{node.lineno} references SessionLocal")
+
+    assert violations == []
+
+
+def test_internal_control_plane_http_uses_signed_request_boundary() -> None:
+    allowed_files = {
+        Path("kitchen/service_helpers.py"),
+    }
+    violations: list[str] = []
+    for root in (Path("kitchen"), Path("api")):
+        for path in sorted(root.rglob("*.py")):
+            if "__pycache__" in path.parts or path in allowed_files:
+                continue
+            source = path.read_text(encoding="utf-8")
+            if "POUNDCAKE_API_URL" not in source and "API_BASE_URL" not in source:
+                continue
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name in {"httpx", "requests"}:
+                            violations.append(f"{path}:{node.lineno} imports {alias.name}")
+                elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] in {
+                    "httpx",
+                    "requests",
+                }:
+                    violations.append(f"{path}:{node.lineno} imports from {node.module}")
+
+    assert violations == []
+
+
+def test_guarded_provider_mutators_return_order_acceptance() -> None:
+    provider_mutators = {
+        ("PUT", "/api/v1/plugins/k8s/prometheus-rules/{crd_name}/rules/{rule_name}"),
+        ("POST", "/api/v1/plugins/k8s/prometheus-rules/{crd_name}/rules"),
+        ("POST", "/api/v1/plugins/genestack_monitoring/export-alert-updates"),
+        ("POST", "/api/v1/plugins/{service_type}/test-connection"),
+        ("POST", "/api/v1/plugins/prometheus/reload"),
+        ("POST", "/api/v1/suppressions"),
+        ("PATCH", "/api/v1/suppressions/{suppression_id}"),
+        ("POST", "/api/v1/suppressions/{suppression_id}/cancel"),
+    }
+    response_models = _route_response_model_by_key()
+    for route in provider_mutators:
+        assert route in route_surface_keys(RouteSurface.CONFIGURATION_EDITOR)
+        assert response_models[route] is OperatorActionAcceptedResponse
+
+
+def test_order_intake_does_not_drive_workflow_locally() -> None:
+    path = Path("api/services/order_intake.py")
+    forbidden_import_modules = {
+        "api.api.cook",
+        "api.api.dishes",
+        "api.api.expediter",
+        "api.api.orders",
+    }
+    forbidden_calls = {
+        "dispatch_order",
+        "_advance_dish",
+        "claim_dish_ingredient_for_execution",
+        "execute_service_execution",
+        "reconcile_executed_dish_ingredient",
+    }
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    violations: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module in forbidden_import_modules:
+                violations.append(f"{path}:{node.lineno} imports from {module}")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in forbidden_import_modules:
+                    violations.append(f"{path}:{node.lineno} imports {alias.name}")
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id in forbidden_calls:
+                violations.append(f"{path}:{node.lineno} calls {func.id}()")
+            elif isinstance(func, ast.Attribute) and func.attr in forbidden_calls:
+                violations.append(f"{path}:{node.lineno} calls {func.attr}()")
 
     assert violations == []
 

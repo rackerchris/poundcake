@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from starlette.requests import Request
@@ -681,7 +682,7 @@ class _PrometheusRuleAdapter(ExecutionAdapter):
 
 
 @pytest.mark.asyncio
-async def test_plugin_api_test_connection_is_adapter_only(monkeypatch) -> None:
+async def test_plugin_api_test_connection_submits_health_check_order(monkeypatch) -> None:
     row = _external_plugin_row("connection")
     monkeypatch.setattr(
         "api.api.plugins._plugin_by_service_type",
@@ -689,6 +690,22 @@ async def test_plugin_api_test_connection_is_adapter_only(monkeypatch) -> None:
             service_type="connection",
             adapter_factory=lambda: _ConnectionTestAdapter(),
         ),
+    )
+    action_orders: list[dict[str, object]] = []
+
+    async def fake_submit_operator_action_order(**kwargs: object) -> SimpleNamespace:
+        action_orders.append(dict(kwargs))
+        return SimpleNamespace(
+            order_id=105,
+            order_req_id=str(kwargs["req_id"]),
+            service_type=str(kwargs["service_type"]),
+            service_exec=str(kwargs["service_exec"]),
+            submitted_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+        )
+
+    monkeypatch.setattr(
+        "api.api.plugins.submit_operator_action_order",
+        fake_submit_operator_action_order,
     )
 
     request = Request(
@@ -704,13 +721,54 @@ async def test_plugin_api_test_connection_is_adapter_only(monkeypatch) -> None:
     response = await run_plugin_connection_test(
         "connection",
         request,
-        payload=ServicePluginConnectionTestRequest(config={"url": "http://configured.test"}),
+        payload=ServicePluginConnectionTestRequest(),
         db=_StackStormConfigDb(row),  # type: ignore[arg-type]
         _context=object(),
     )
 
-    assert response.status == "healthy"
-    assert response.details["url"] == "http://configured.test"
+    assert response.status == "accepted"
+    assert response.message == "connection connection check order accepted"
+    assert response.order_id == 105
+    assert len(action_orders) == 1
+    assert action_orders[0]["req_id"] == "TEST-PLUGIN-CONNECTION"
+    assert action_orders[0]["recipe_name"] == "plugin-health-check:connection"
+    assert action_orders[0]["service_type"] == "connection"
+    assert action_orders[0]["service_exec"] == "health_check"
+    assert action_orders[0]["task_key_template"] == "connection-health-check"
+    assert action_orders[0]["service_payload"] == {}
+
+
+@pytest.mark.asyncio
+async def test_plugin_api_test_connection_rejects_transient_config(monkeypatch) -> None:
+    row = _external_plugin_row("connection")
+    monkeypatch.setattr(
+        "api.api.plugins._plugin_by_service_type",
+        lambda _service_type: ServicePluginManifest(
+            service_type="connection",
+            adapter_factory=lambda: _ConnectionTestAdapter(),
+        ),
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/plugins/connection/test-connection",
+            "headers": [],
+        }
+    )
+    request.state.req_id = "TEST-PLUGIN-CONNECTION"
+
+    with pytest.raises(HTTPException) as exc:
+        await run_plugin_connection_test(
+            "connection",
+            request,
+            payload=ServicePluginConnectionTestRequest(config={"url": "http://configured.test"}),
+            db=_StackStormConfigDb(row),  # type: ignore[arg-type]
+            _context=object(),
+        )
+
+    assert exc.value.status_code == 400
+    assert "stored plugin health-check recipe" in str(exc.value.detail)
 
 
 @pytest.mark.asyncio
@@ -896,29 +954,20 @@ async def test_plugin_api_updates_one_prometheus_rule_entry(monkeypatch) -> None
     )
     action_orders: list[dict[str, object]] = []
 
-    async def fake_run_operator_action_order(**kwargs: object) -> SimpleNamespace:
+    async def fake_submit_operator_action_order(**kwargs: object) -> SimpleNamespace:
         action_orders.append(dict(kwargs))
-        payload = kwargs["service_payload"]
-        assert isinstance(payload, dict)
-        await adapter.helper.update_rule_in_named_crd(
-            crd_name=str(payload["crd_name"]),
-            group_name=str(payload["group_name"]),
-            rule_name=str(payload["rule_name"]),
-            rule_data=payload["rule_data"],  # type: ignore[arg-type]
-            source_metadata=payload.get("source_metadata"),
+        return SimpleNamespace(
+            order_id=101,
+            order_req_id=str(kwargs["req_id"]),
+            service_type=str(kwargs["service_type"]),
+            service_exec=str(kwargs["service_exec"]),
+            submitted_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
         )
-        return SimpleNamespace(status="succeeded", outcome={"success": True}, error=None)
 
     monkeypatch.setattr(
-        "api.api.plugins.run_operator_action_order",
-        fake_run_operator_action_order,
+        "api.api.plugins.submit_operator_action_order",
+        fake_submit_operator_action_order,
     )
-    reloads: list[str] = []
-
-    async def fake_reload(**kwargs: object) -> None:
-        reloads.append(str(kwargs["req_id"]))
-
-    monkeypatch.setattr("api.api.plugins._reload_prometheus_rule_state", fake_reload)
     request = Request(
         {
             "type": "http",
@@ -939,16 +988,24 @@ async def test_plugin_api_updates_one_prometheus_rule_entry(monkeypatch) -> None
         request=request,
         namespace="monitoring",
         db=object(),
-        orchestrator=object(),
         _context=object(),
     )
 
-    assert response.rule_data["expr"] == "vector(2)"
-    assert reloads == ["TEST-PROM-RELOAD"]
+    assert response.status == "accepted"
+    assert response.message == "PrometheusRule update order accepted"
+    assert response.order_id == 101
+    assert response.order_req_id == "TEST-PROM-RELOAD"
     assert len(action_orders) == 1
     assert action_orders[0]["recipe_name"] == "operator-action:k8s:prometheus-rule-apply"
     assert action_orders[0]["service_type"] == "k8s"
     assert action_orders[0]["service_exec"] == "prometheus_rule"
+    assert action_orders[0]["service_payload"] == {
+        "crd_name": "demo-rules",
+        "group_name": "demo",
+        "rule_name": "DemoAlert",
+        "rule_data": {"alert": "DemoAlert", "expr": "vector(2)"},
+        "namespace": "monitoring",
+    }
 
 
 @pytest.mark.asyncio
@@ -967,29 +1024,20 @@ async def test_plugin_api_creates_one_prometheus_rule_entry_and_reloads(monkeypa
     )
     action_orders: list[dict[str, object]] = []
 
-    async def fake_run_operator_action_order(**kwargs: object) -> SimpleNamespace:
+    async def fake_submit_operator_action_order(**kwargs: object) -> SimpleNamespace:
         action_orders.append(dict(kwargs))
-        payload = kwargs["service_payload"]
-        assert isinstance(payload, dict)
-        await adapter.helper.add_rule_to_named_crd(
-            crd_name=str(payload["crd_name"]),
-            group_name=str(payload["group_name"]),
-            rule_name=str(payload["rule_name"]),
-            rule_data=payload["rule_data"],  # type: ignore[arg-type]
-            source_metadata=payload.get("source_metadata"),
+        return SimpleNamespace(
+            order_id=102,
+            order_req_id=str(kwargs["req_id"]),
+            service_type=str(kwargs["service_type"]),
+            service_exec=str(kwargs["service_exec"]),
+            submitted_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
         )
-        return SimpleNamespace(status="succeeded", outcome={"success": True}, error=None)
 
     monkeypatch.setattr(
-        "api.api.plugins.run_operator_action_order",
-        fake_run_operator_action_order,
+        "api.api.plugins.submit_operator_action_order",
+        fake_submit_operator_action_order,
     )
-    reloads: list[str] = []
-
-    async def fake_reload(**kwargs: object) -> None:
-        reloads.append(str(kwargs["req_id"]))
-
-    monkeypatch.setattr("api.api.plugins._reload_prometheus_rule_state", fake_reload)
     request = Request(
         {
             "type": "http",
@@ -1010,17 +1058,24 @@ async def test_plugin_api_creates_one_prometheus_rule_entry_and_reloads(monkeypa
         request=request,
         namespace="monitoring",
         db=object(),
-        orchestrator=object(),
         _context=object(),
     )
 
-    assert response.rule_name == "NewAlert"
-    assert response.rule_data["expr"] == "vector(3)"
-    assert reloads == ["TEST-PROM-CREATE"]
+    assert response.status == "accepted"
+    assert response.message == "PrometheusRule create order accepted"
+    assert response.order_id == 102
+    assert response.order_req_id == "TEST-PROM-CREATE"
     assert len(action_orders) == 1
     assert action_orders[0]["recipe_name"] == "operator-action:k8s:prometheus-rule-apply"
     assert action_orders[0]["service_type"] == "k8s"
     assert action_orders[0]["service_exec"] == "prometheus_rule"
+    assert action_orders[0]["service_payload"] == {
+        "crd_name": "demo-rules",
+        "group_name": "demo",
+        "rule_name": "NewAlert",
+        "rule_data": {"alert": "NewAlert", "expr": "vector(3)"},
+        "namespace": "monitoring",
+    }
 
 
 @pytest.mark.asyncio
@@ -1032,18 +1087,15 @@ async def test_plugin_api_reloads_prometheus_rule_state(monkeypatch) -> None:
     ) -> tuple[object, object, object]:
         return row, object(), _ConnectionTestAdapter(url="https://prom.example.test")
 
-    async def fake_reload_prometheus_rules(**kwargs: object) -> ExecutionResult:
+    async def fake_reload_prometheus_rules(**kwargs: object) -> SimpleNamespace:
         assert kwargs["req_id"] == "TEST-PROM-MANUAL-RELOAD"
         assert kwargs["operator_config"] == {"url": "https://prom.example.test"}
-        return ExecutionResult(
+        return SimpleNamespace(
+            order_id=103,
+            order_req_id=str(kwargs["req_id"]),
             service_type="prometheus",
-            status="succeeded",
-            result={
-                "success": True,
-                "status": "success",
-                "message": "Prometheus configuration reloaded",
-            },
-            raw={"success": True},
+            service_exec="reload_config",
+            submitted_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
         )
 
     monkeypatch.setattr(
@@ -1067,13 +1119,14 @@ async def test_plugin_api_reloads_prometheus_rule_state(monkeypatch) -> None:
     response = await reload_prometheus_plugin_rule_state(
         request=request,
         db=object(),
-        orchestrator=object(),  # type: ignore[arg-type]
         _context=object(),
     )
 
     assert response.service_type == "prometheus"
-    assert response.status == "success"
-    assert response.message == "Prometheus configuration reloaded"
+    assert response.service_exec == "reload_config"
+    assert response.status == "accepted"
+    assert response.message == "prometheus reload order accepted"
+    assert response.order_id == 103
 
 
 class _ExportAdapter(_PrometheusRuleAdapter):
@@ -1123,25 +1176,19 @@ async def test_plugin_api_exports_genestack_alert_updates_through_order_workflow
     )
     action_orders: list[dict[str, object]] = []
 
-    async def fake_run_operator_action_order(**kwargs: object) -> SimpleNamespace:
+    async def fake_submit_operator_action_order(**kwargs: object) -> SimpleNamespace:
         action_orders.append(dict(kwargs))
         return SimpleNamespace(
-            status="succeeded",
-            outcome={
-                "status": "succeeded",
-                "message": "Prepared Genestack alert update.",
-                "branch": "poundcake/demo",
-                "pull_request": {"number": 12, "url": "https://example.test/pr/12"},
-                "exported": {"files": 1, "rule_name": "DemoAlert"},
-                "skipped": {"missing_source_metadata": 0},
-                "warnings": [],
-            },
-            error=None,
+            order_id=104,
+            order_req_id=str(kwargs["req_id"]),
+            service_type=str(kwargs["service_type"]),
+            service_exec=str(kwargs["service_exec"]),
+            submitted_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
         )
 
     monkeypatch.setattr(
-        "api.api.plugins.run_operator_action_order",
-        fake_run_operator_action_order,
+        "api.api.plugins.submit_operator_action_order",
+        fake_submit_operator_action_order,
     )
 
     response = await export_genestack_alert_updates(
@@ -1153,12 +1200,14 @@ async def test_plugin_api_exports_genestack_alert_updates_through_order_workflow
         ),
         request=type("Request", (), {"state": type("State", (), {"req_id": "req-1"})()})(),
         db=object(),
-        orchestrator=object(),  # type: ignore[arg-type]
         _context=object(),
     )
 
-    assert response.branch == "poundcake/demo"
-    assert response.pull_request is not None
+    assert response.status == "accepted"
+    assert response.message == "Genestack alert export order accepted"
+    assert response.order_id == 104
+    assert response.service_type == "genestack_monitoring"
+    assert response.service_exec == "repo_sync"
     assert len(action_orders) == 1
     assert action_orders[0]["recipe_name"] == (
         "operator-action:genestack-monitoring:export-alert-updates"

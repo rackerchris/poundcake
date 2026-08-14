@@ -23,8 +23,15 @@ from api.plugins.internal_services import INTERNAL_WORKER_SERVICE_TYPES
 from api.services.service_identity import _read_internal_hmac_payload
 from shared.internal_hmac import build_internal_hmac_headers
 
-_RUNTIME_CONFIG_CACHE: dict[str, dict[str, Any]] = {}
 _INTERNAL_HMAC_SECRET_CACHE: dict[str, str] = {}
+
+
+class InternalControlPlaneAuthError(RuntimeError):
+    """Raised when an internal worker cannot sign control-plane requests."""
+
+
+class WorkerRuntimeConfigError(RuntimeError):
+    """Raised when worker runtime config cannot be loaded from the control plane."""
 
 
 def _internal_hmac_service_type() -> str:
@@ -63,13 +70,20 @@ def _internal_hmac_secret() -> str:
                 credential_key_id=key_id,
             )
         )
-    except Exception:
-        return ""
+    except Exception as exc:
+        raise InternalControlPlaneAuthError(
+            f"internal HMAC credential lookup failed for {service_type}"
+        ) from exc
     if not payload:
-        return ""
+        raise InternalControlPlaneAuthError(
+            f"internal HMAC credential not found for {service_type}"
+        )
     secret = str(payload.get("hmac_secret") or "").strip()
-    if secret:
-        _INTERNAL_HMAC_SECRET_CACHE[key_id] = secret
+    if not secret:
+        raise InternalControlPlaneAuthError(
+            f"internal HMAC credential payload is missing hmac_secret for {service_type}"
+        )
+    _INTERNAL_HMAC_SECRET_CACHE[key_id] = secret
     return secret
 
 
@@ -196,18 +210,8 @@ def get_worker_runtime_config(
     default_query_limit: int | None = None,
     logger: Any,
 ) -> dict[str, Any]:
-    """Return runtime config for an internal worker with resilient fallback."""
+    """Return runtime config for an internal worker from the control plane."""
     normalized = service_type.strip().lower()
-    default_config = {
-        "enabled": True,
-        "run_interval_seconds": max(1, int(default_interval)),
-        "source": "env_default",
-    }
-    if default_query_limit is not None:
-        default_config["query_limit"] = max(1, int(default_query_limit))
-    fallback = dict(_RUNTIME_CONFIG_CACHE.get(normalized, default_config))
-    if default_query_limit is not None and "query_limit" not in fallback:
-        fallback["query_limit"] = max(1, int(default_query_limit))
     try:
         resp = request_control_plane_sync(
             "GET",
@@ -223,7 +227,7 @@ def get_worker_runtime_config(
             raise RuntimeError("runtime config lookup returned non-object payload")
         interval = payload.get("run_interval_seconds")
         if not isinstance(interval, int) or interval < 1:
-            interval = max(1, int(default_interval))
+            raise RuntimeError("runtime config missing positive run_interval_seconds")
         config = {
             "enabled": bool(payload.get("enabled", True)),
             "run_interval_seconds": interval,
@@ -232,13 +236,14 @@ def get_worker_runtime_config(
         if default_query_limit is not None:
             query_limit = payload.get("query_limit")
             if not isinstance(query_limit, int) or query_limit < 1:
-                query_limit = max(1, int(default_query_limit))
+                raise RuntimeError("runtime config missing positive query_limit")
             config["query_limit"] = query_limit
-        _RUNTIME_CONFIG_CACHE[normalized] = config
         return config
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Internal plugin runtime config unavailable; using fallback",
+        logger.error(
+            "Internal plugin runtime config unavailable",
             extra={"req_id": req_id, "service_type": normalized, "error": str(exc)},
         )
-        return fallback
+        raise WorkerRuntimeConfigError(
+            f"runtime config lookup failed for {normalized}: {exc}"
+        ) from exc

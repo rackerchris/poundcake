@@ -33,6 +33,8 @@ class RouteSurfaceEntry:
 
 GUARDED_ROUTE_PREFIXES: tuple[str, ...] = (
     "/api/v1/orders",
+    "/api/v1/cook",
+    "/api/v1/expediter",
     "/api/v1/recipes",
     "/api/v1/dishes",
     "/api/v1/dish-ingredients",
@@ -292,6 +294,15 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
     RouteSurfaceEntry("POST", "/api/v1/orders", RouteSurface.INTERNAL_RUNTIME, "service"),
     RouteSurfaceEntry("GET", "/api/v1/orders/{order_id}", RouteSurface.INTERNAL_RUNTIME, "service"),
     RouteSurfaceEntry("PUT", "/api/v1/orders/{order_id}", RouteSurface.INTERNAL_RUNTIME, "service"),
+    RouteSurfaceEntry(
+        "POST", "/api/v1/cook/orders/{order_id}", RouteSurface.INTERNAL_RUNTIME, "service"
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/cook/dishes/{dish_id}/advance",
+        RouteSurface.INTERNAL_RUNTIME,
+        "service",
+    ),
     RouteSurfaceEntry("GET", "/api/v1/dishes", RouteSurface.INTERNAL_RUNTIME, "service"),
     RouteSurfaceEntry(
         "POST",
@@ -356,6 +367,18 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
     RouteSurfaceEntry(
         "GET",
         "/api/v1/expediter/status/{service_type}/{service_exec_id}",
+        RouteSurface.INTERNAL_RUNTIME,
+        "service",
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/expediter/execute/{dish_ingredient_id}",
+        RouteSurface.INTERNAL_RUNTIME,
+        "service",
+    ),
+    RouteSurfaceEntry(
+        "POST",
+        "/api/v1/expediter/cancel/{service_type}/{service_exec_id}",
         RouteSurface.INTERNAL_RUNTIME,
         "service",
     ),

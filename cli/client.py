@@ -38,6 +38,7 @@ from api.schemas.schemas import (
     ObservabilityActivityRecord,
     ObservabilityActivityStatusRecord,
     ObservabilityOverviewResponse,
+    OperatorActionAcceptedResponse,
     OrderStatusResponse,
     PrometheusRuleDetailResponse,
     PrometheusRuleListResponse,
@@ -54,7 +55,6 @@ from api.schemas.schemas import (
     ScheduledTaskStatusResponse,
     ScheduledTaskUpdate,
     SessionResponse,
-    ServicePluginActionResponse,
     ServicePluginConfigurationResponse,
     ServicePluginConfigurationUpdate,
     ServicePluginConnectionTestRequest,
@@ -70,7 +70,6 @@ from api.schemas.schemas import (
     SuppressionStatsResponse,
     SuppressionStatusResponse,
     SuppressionUpdate,
-    RepoSyncResponse,
 )
 from api.core.http_client import request_with_retry_sync
 from cli.session import SessionStore, StoredSession
@@ -1178,7 +1177,7 @@ class PoundCakeClient:
         *,
         config: JSONObject | None = None,
         credential_key_id: str = "default",
-    ) -> ServicePluginActionResponse:
+    ) -> OperatorActionAcceptedResponse:
         request_payload = self._validate_request_payload(
             {
                 "config": config,
@@ -1194,7 +1193,7 @@ class PoundCakeClient:
         )
         return self._validate_model(
             response,
-            ServicePluginActionResponse,
+            OperatorActionAcceptedResponse,
             "Unexpected plugin test connection response format",
         )
 
@@ -1206,11 +1205,11 @@ class PoundCakeClient:
             "Unexpected plugin health response format",
         )
 
-    def reload_prometheus_config(self) -> ServicePluginActionResponse:
+    def reload_prometheus_config(self) -> OperatorActionAcceptedResponse:
         payload = self._request("POST", "/api/v1/plugins/prometheus/reload")
         return self._validate_model(
             payload,
-            ServicePluginActionResponse,
+            OperatorActionAcceptedResponse,
             "Unexpected Prometheus reload response format",
         )
 
@@ -1330,7 +1329,7 @@ class PoundCakeClient:
         group_name: str,
         rule_name: str,
         namespace: str | None = None,
-    ) -> RepoSyncResponse:
+    ) -> OperatorActionAcceptedResponse:
         payload = self._request(
             "POST",
             "/api/v1/plugins/genestack_monitoring/export-alert-updates",
@@ -1343,7 +1342,7 @@ class PoundCakeClient:
         )
         return self._validate_model(
             payload,
-            RepoSyncResponse,
+            OperatorActionAcceptedResponse,
             "Unexpected Genestack alert export response format",
         )
 

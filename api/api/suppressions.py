@@ -38,6 +38,7 @@ from api.schemas.schemas import (
     ObservabilityQueueSummary,
     ObservabilitySuppressionsSummary,
     ObservabilityTopError,
+    OperatorActionAcceptedResponse,
     SuppressedActivityResponse,
     SuppressionCreate,
     SuppressionDetailResponse,
@@ -63,8 +64,7 @@ from api.services.alertmanager_suppressions import (
     expire_alertmanager_suppression,
     update_alertmanager_suppression,
 )
-from api.services.plugin_orchestrator import ExecutionOrchestrator
-from api.services.plugin_orchestrator import get_execution_orchestrator
+from api.services.order_intake import OperatorActionOrderSubmission
 from api.types import SuppressionMatcherOperator, SuppressionScope, SuppressionStatus
 from api.api.dishes import _sanitize_status_string
 
@@ -141,6 +141,22 @@ def _to_suppression_status_response(item: AlertSuppression) -> SuppressionStatus
     )
 
 
+def _operator_action_accepted_response(
+    submission: OperatorActionOrderSubmission,
+    *,
+    message: str,
+) -> OperatorActionAcceptedResponse:
+    return OperatorActionAcceptedResponse(
+        status="accepted",
+        message=message,
+        order_id=submission.order_id,
+        order_req_id=submission.order_req_id,
+        service_type=submission.service_type,
+        service_exec=submission.service_exec,
+        submitted_at=normalize_utc_datetime(submission.submitted_at) or submission.submitted_at,
+    )
+
+
 @router.get("/suppressions", response_model=list[SuppressionResponse])
 @limiter.limit(get_settings().rate_limit_default)
 async def get_suppressions(
@@ -184,14 +200,13 @@ async def get_suppression_statuses(
     return [_to_suppression_status_response(row) for row in rows]
 
 
-@router.post("/suppressions", response_model=SuppressionResponse, status_code=201)
+@router.post("/suppressions", response_model=OperatorActionAcceptedResponse, status_code=202)
 async def create_suppression(
     request: Request,
     payload: SuppressionCreate,
     db: AsyncSession = Depends(get_db),
-    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
     _context: object = Depends(require_operator),
-) -> SuppressionResponse:
+) -> OperatorActionAcceptedResponse:
     req_id = request.state.req_id
     if payload.ends_at <= payload.starts_at:
         raise HTTPException(status_code=400, detail="ends_at must be greater than starts_at")
@@ -199,9 +214,8 @@ async def create_suppression(
         raise HTTPException(status_code=400, detail="matchers are required")
 
     try:
-        refreshed = await create_alertmanager_suppression(
+        submission = await create_alertmanager_suppression(
             db=db,
-            orchestrator=orchestrator,
             req_id=req_id,
             payload=payload,
         )
@@ -212,11 +226,14 @@ async def create_suppression(
         "Created suppression",
         extra={
             "req_id": req_id,
-            "suppression_id": refreshed.id,
-            "suppression_name": refreshed.name,
+            "order_id": submission.order_id,
+            "suppression_name": payload.name,
         },
     )
-    return _to_suppression_response(refreshed)
+    return _operator_action_accepted_response(
+        submission,
+        message="Suppression create order accepted",
+    )
 
 
 @limiter.limit(get_settings().rate_limit_default)
@@ -255,15 +272,18 @@ async def get_suppression_by_id(
     )
 
 
-@router.patch("/suppressions/{suppression_id}", response_model=SuppressionResponse)
+@router.patch(
+    "/suppressions/{suppression_id}",
+    response_model=OperatorActionAcceptedResponse,
+    status_code=202,
+)
 async def patch_suppression(
     request: Request,
     suppression_id: int,
     payload: SuppressionUpdate,
     db: AsyncSession = Depends(get_db),
-    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
     _context: object = Depends(require_operator),
-) -> SuppressionResponse:
+) -> OperatorActionAcceptedResponse:
     req_id = request.state.req_id
     suppression = await get_suppression(db, suppression_id)
     if not suppression:
@@ -284,9 +304,8 @@ async def patch_suppression(
         raise HTTPException(status_code=400, detail="matchers are required")
 
     try:
-        refreshed = await update_alertmanager_suppression(
+        submission = await update_alertmanager_suppression(
             db=db,
-            orchestrator=orchestrator,
             req_id=req_id,
             suppression=suppression,
             payload=payload,
@@ -295,32 +314,40 @@ async def patch_suppression(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     logger.info("Updated suppression", extra={"req_id": req_id, "suppression_id": suppression_id})
-    return _to_suppression_response(refreshed)
+    return _operator_action_accepted_response(
+        submission,
+        message="Suppression update order accepted",
+    )
 
 
-@router.post("/suppressions/{suppression_id}/cancel", response_model=SuppressionResponse)
+@router.post(
+    "/suppressions/{suppression_id}/cancel",
+    response_model=OperatorActionAcceptedResponse,
+    status_code=202,
+)
 async def cancel_suppression(
     request: Request,
     suppression_id: int,
     db: AsyncSession = Depends(get_db),
-    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
     _context: object = Depends(require_operator),
-) -> SuppressionResponse:
+) -> OperatorActionAcceptedResponse:
     req_id = request.state.req_id
     suppression = await get_suppression(db, suppression_id)
     if not suppression:
         raise HTTPException(status_code=404, detail="Suppression not found")
     try:
-        refreshed = await expire_alertmanager_suppression(
+        submission = await expire_alertmanager_suppression(
             db=db,
-            orchestrator=orchestrator,
             req_id=req_id,
             suppression=suppression,
         )
     except SuppressionLifecycleError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     logger.info("Canceled suppression", extra={"req_id": req_id, "suppression_id": suppression_id})
-    return _to_suppression_response(refreshed)
+    return _operator_action_accepted_response(
+        submission,
+        message="Suppression cancel order accepted",
+    )
 
 
 @limiter.limit(get_settings().rate_limit_default)

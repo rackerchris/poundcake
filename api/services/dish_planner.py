@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from api.types import JSONObject
-
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import func, select
@@ -17,9 +16,22 @@ from api.plugins.contract import (
     validate_service_payload_for_operation,
 )
 from api.services.communications import normalize_run_condition, normalize_run_phase
-from api.services.communications_policy import is_communication_step, should_seed_route_step
+from api.services.communications_policy import (
+    get_global_policy_recipe_for_planning,
+    get_recipe_local_routes,
+    is_communication_step,
+    policy_has_enabled_routes,
+    should_seed_route_step,
+)
+from api.types import JSONObject, SCHEDULED_TASK_ORDER_TYPE
 
 TEMPLATE_RE = re.compile(r"\{\{\s*([^}]+?)\s*\}\}")
+
+
+@dataclass(slots=True, frozen=True)
+class DishPlan:
+    recipe: Recipe
+    inherited_recipe_ingredients: list[RecipeIngredient]
 
 
 def is_phase_eligible(step_phase: str | None, target_phase: str) -> bool:
@@ -224,6 +236,37 @@ def resolved_timeout_duration_sec(ri: RecipeIngredient) -> int | None:
     if ri.ingredient is None or getattr(ri.ingredient, "default_timeout", None) is None:
         return None
     return int(ri.ingredient.default_timeout)
+
+
+def _order_skips_inherited_policy(order: Order | None) -> bool:
+    if order is None or not isinstance(order.raw_data, dict):
+        return False
+    if bool(order.raw_data.get("operator_action")):
+        return True
+    order_type = str(order.raw_data.get("order_type") or "").strip().lower()
+    return order_type == SCHEDULED_TASK_ORDER_TYPE
+
+
+async def build_dish_plan(
+    db: AsyncSession,
+    *,
+    recipe: Recipe,
+    order: Order | None,
+) -> DishPlan:
+    if _order_skips_inherited_policy(order):
+        return DishPlan(recipe=recipe, inherited_recipe_ingredients=[])
+
+    local_routes = get_recipe_local_routes(recipe)
+    if policy_has_enabled_routes(local_routes):
+        return DishPlan(recipe=recipe, inherited_recipe_ingredients=[])
+
+    global_policy_recipe = await get_global_policy_recipe_for_planning(db)
+    return DishPlan(
+        recipe=recipe,
+        inherited_recipe_ingredients=(
+            list(global_policy_recipe.recipe_ingredients) if global_policy_recipe else []
+        ),
+    )
 
 
 async def expected_run_secs_for_phase(

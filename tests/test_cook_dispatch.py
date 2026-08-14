@@ -104,14 +104,14 @@ def test_runtime_dispatch_queries_still_lock_rows() -> None:
     assert all("FOR UPDATE" in _compile(statement) for statement in statements)
 
 
-def test_cook_dispatches_provider_work_only_through_expediter() -> None:
+def test_cook_hands_provider_work_to_runner_without_local_dispatch() -> None:
     source = inspect.getsource(cook_api._advance_dish)
     tree = ast.parse(source)
 
-    assert any(
+    assert not any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "expediter_dispatch_from_cook"
+        and node.func.id in {"expediter_dispatch_from_cook", "execute_service_execution"}
         for node in ast.walk(tree)
     )
     assert not any(
@@ -120,6 +120,9 @@ def test_cook_dispatches_provider_work_only_through_expediter() -> None:
         and node.func.attr == "dispatch"
         for node in ast.walk(tree)
     )
+    assert "EXPEDITER_RUNNER_RECEIPT_PREFIX" in source
+    assert '"receipt_owner": EXPEDITER_RUNNER_SERVICE_TYPE' in source
+    assert 'service_exec_status="running"' in source
 
 
 def test_cook_advance_does_not_recursively_drive_recipe_steps() -> None:
@@ -146,8 +149,8 @@ def test_cook_lifecycle_logs_cover_order_to_runtime_handoffs() -> None:
 
     assert "Cook order planned" in source
     assert "Cook dish advance evaluating" in source
-    assert "Cook dispatching execution segment" in source
-    assert "Cook runtime row dispatched" in source
+    assert "Cook marking execution segment ready" in source
+    assert "Cook runtime row marked ready" in source
     assert "Cook dish terminal" in source
     assert "Cook resolving dish planned" in source
 
@@ -230,18 +233,13 @@ def test_alertmanager_guard_false_terminal_state_is_no_remediation_cancel() -> N
 def test_expediter_dispatch_logs_runtime_receipts() -> None:
     source = inspect.getsource(expediter_api)
 
-    assert "Expediter dispatched service execution" in source
+    assert "Expediter executed service workload" in source
     assert "dish_ingredient_id" in source
     assert "service_exec_id" in source
 
 
-def test_expediter_dispatch_from_cook_does_not_make_adapter_health_decisions() -> None:
-    source = inspect.getsource(expediter_api.expediter_dispatch_from_cook)
-
-    assert "_plugin_health_block" not in source
-
-
 def test_expediter_does_not_export_ad_hoc_poll_boundary() -> None:
+    assert not hasattr(expediter_api, "expediter_dispatch_from_cook")
     assert not hasattr(expediter_api, "expediter_poll_from_cook")
 
 
@@ -375,7 +373,7 @@ async def test_dispatch_order_exhausts_retryable_operational_error(
 
 
 @pytest.mark.asyncio
-async def test_dispatch_order_injects_global_comms_when_recipe_has_no_local_comms(
+async def test_dispatch_order_uses_dish_plan_for_inherited_comms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     order = SimpleNamespace(
@@ -399,8 +397,7 @@ async def test_dispatch_order_injects_global_comms_when_recipe_has_no_local_comm
         clear_timeout_sec=None,
         recipe_ingredients=[],
     )
-    global_step = SimpleNamespace(id=701, ingredient=None)
-    global_recipe = SimpleNamespace(recipe_ingredients=[global_step])
+    inherited_step = SimpleNamespace(id=701, ingredient=None)
     db = _DispatchDb([[order], [recipe], [], []])
     captured: dict[str, object] = {}
 
@@ -409,19 +406,20 @@ async def test_dispatch_order_injects_global_comms_when_recipe_has_no_local_comm
         yield
 
     def _seed(**kwargs: Any) -> list[object]:
-        captured["extra_recipe_ingredients"] = kwargs["extra_recipe_ingredients"]
+        captured["extra_recipe_ingredients"] = kwargs.get("extra_recipe_ingredients")
         captured["recipe"] = kwargs["recipe"]
         return []
 
-    async def _global_policy_configured(_db: object) -> bool:
-        return True
-
-    async def _global_policy_recipe(_db: object) -> object:
-        return global_recipe
+    async def _build_plan(_db: object, **kwargs: Any) -> object:
+        captured["plan_recipe"] = kwargs["recipe"]
+        captured["plan_order"] = kwargs["order"]
+        return SimpleNamespace(
+            recipe=kwargs["recipe"],
+            inherited_recipe_ingredients=[inherited_step],
+        )
 
     monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
-    monkeypatch.setattr(orders_api, "global_policy_configured", _global_policy_configured)
-    monkeypatch.setattr(orders_api, "get_global_policy_recipe_for_dispatch", _global_policy_recipe)
+    monkeypatch.setattr(orders_api, "build_dish_plan", _build_plan)
     monkeypatch.setattr(orders_api, "seed_dish_ingredients_for_phase", _seed)
 
     response = await orders_api._dispatch_order_once(
@@ -431,8 +429,10 @@ async def test_dispatch_order_injects_global_comms_when_recipe_has_no_local_comm
     )
 
     assert response.status == "dispatched"
+    assert captured["plan_recipe"] is recipe
+    assert captured["plan_order"] is order
     assert captured["recipe"] is recipe
-    assert captured["extra_recipe_ingredients"] == [global_step]
+    assert captured["extra_recipe_ingredients"] == [inherited_step]
 
 
 @pytest.mark.asyncio
@@ -486,20 +486,14 @@ async def test_dispatch_order_skips_global_comms_when_recipe_has_local_comms(
         yield
 
     def _seed(**kwargs: Any) -> list[object]:
-        captured["extra_recipe_ingredients"] = kwargs["extra_recipe_ingredients"]
+        captured["extra_recipe_ingredients"] = kwargs.get("extra_recipe_ingredients")
         return []
 
-    async def _global_policy_configured(_db: object) -> bool:
-        return True
-
-    async def _unexpected_global_recipe(_db: object) -> object:
-        raise AssertionError("global policy recipe should not be loaded when local comms exist")
+    async def _build_plan(_db: object, **kwargs: Any) -> object:
+        return SimpleNamespace(recipe=kwargs["recipe"], inherited_recipe_ingredients=[])
 
     monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
-    monkeypatch.setattr(orders_api, "global_policy_configured", _global_policy_configured)
-    monkeypatch.setattr(
-        orders_api, "get_global_policy_recipe_for_dispatch", _unexpected_global_recipe
-    )
+    monkeypatch.setattr(orders_api, "build_dish_plan", _build_plan)
     monkeypatch.setattr(orders_api, "seed_dish_ingredients_for_phase", _seed)
 
     response = await orders_api._dispatch_order_once(
@@ -536,20 +530,10 @@ async def test_dispatch_order_skips_when_recipe_is_missing_even_if_global_comms_
     async def _noop_write_transaction(_db: object):
         yield
 
-    async def _unexpected_global_recipe(_db: object) -> object:
-        raise AssertionError("global policy recipe should not be loaded when no recipe exists")
-
     def _unexpected_seed(**_kwargs: Any) -> list[object]:
         raise AssertionError("dish ingredients should not be seeded without a recipe")
 
-    async def _global_policy_configured(_db: object) -> bool:
-        return True
-
     monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
-    monkeypatch.setattr(orders_api, "global_policy_configured", _global_policy_configured)
-    monkeypatch.setattr(
-        orders_api, "get_global_policy_recipe_for_dispatch", _unexpected_global_recipe
-    )
     monkeypatch.setattr(orders_api, "seed_dish_ingredients_for_phase", _unexpected_seed)
 
     response = await orders_api._dispatch_order_once(
@@ -586,20 +570,10 @@ async def test_dispatch_order_without_exact_recipe_does_not_use_fallback_recipe(
     async def _noop_write_transaction(_db: object):
         yield
 
-    async def _unexpected_global_recipe(_db: object) -> object:
-        raise AssertionError("global policy recipe should not be loaded without a recipe")
-
     def _unexpected_seed(**_kwargs: Any) -> list[object]:
         raise AssertionError("dish ingredients should not be seeded without a recipe")
 
-    async def _global_policy_configured(_db: object) -> bool:
-        return True
-
     monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
-    monkeypatch.setattr(orders_api, "global_policy_configured", _global_policy_configured)
-    monkeypatch.setattr(
-        orders_api, "get_global_policy_recipe_for_dispatch", _unexpected_global_recipe
-    )
     monkeypatch.setattr(orders_api, "seed_dish_ingredients_for_phase", _unexpected_seed)
 
     response = await orders_api._dispatch_order_once(
@@ -666,21 +640,15 @@ async def test_dispatch_order_resolving_phase_seeds_local_communication_steps(
 
     def _seed(**kwargs: Any) -> list[object]:
         captured["phase"] = kwargs["phase"]
-        captured["extra_recipe_ingredients"] = kwargs["extra_recipe_ingredients"]
+        captured["extra_recipe_ingredients"] = kwargs.get("extra_recipe_ingredients")
         captured["recipe"] = kwargs["recipe"]
         return []
 
-    async def _global_policy_configured(_db: object) -> bool:
-        return True
-
-    async def _unexpected_global_recipe(_db: object) -> object:
-        raise AssertionError("global policy recipe should not be loaded when local comms exist")
+    async def _build_plan(_db: object, **kwargs: Any) -> object:
+        return SimpleNamespace(recipe=kwargs["recipe"], inherited_recipe_ingredients=[])
 
     monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
-    monkeypatch.setattr(orders_api, "global_policy_configured", _global_policy_configured)
-    monkeypatch.setattr(
-        orders_api, "get_global_policy_recipe_for_dispatch", _unexpected_global_recipe
-    )
+    monkeypatch.setattr(orders_api, "build_dish_plan", _build_plan)
     monkeypatch.setattr(orders_api, "seed_dish_ingredients_for_phase", _seed)
 
     response = await orders_api._dispatch_order_once(
@@ -697,7 +665,7 @@ async def test_dispatch_order_resolving_phase_seeds_local_communication_steps(
 
 
 @pytest.mark.asyncio
-async def test_dispatch_order_resolving_phase_injects_global_communication_steps(
+async def test_dispatch_order_resolving_phase_uses_dish_plan_for_inherited_comms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     order = SimpleNamespace(
@@ -722,8 +690,7 @@ async def test_dispatch_order_resolving_phase_injects_global_communication_steps
         clear_timeout_sec=None,
         recipe_ingredients=[],
     )
-    global_step = SimpleNamespace(id=704, ingredient=None)
-    global_recipe = SimpleNamespace(recipe_ingredients=[global_step])
+    inherited_step = SimpleNamespace(id=704, ingredient=None)
     db = _DispatchDb([[order], [recipe], [], []])
     captured: dict[str, object] = {}
 
@@ -733,18 +700,17 @@ async def test_dispatch_order_resolving_phase_injects_global_communication_steps
 
     def _seed(**kwargs: Any) -> list[object]:
         captured["phase"] = kwargs["phase"]
-        captured["extra_recipe_ingredients"] = kwargs["extra_recipe_ingredients"]
+        captured["extra_recipe_ingredients"] = kwargs.get("extra_recipe_ingredients")
         return []
 
-    async def _global_policy_configured(_db: object) -> bool:
-        return True
-
-    async def _global_policy_recipe(_db: object) -> object:
-        return global_recipe
+    async def _build_plan(_db: object, **kwargs: Any) -> object:
+        return SimpleNamespace(
+            recipe=kwargs["recipe"],
+            inherited_recipe_ingredients=[inherited_step],
+        )
 
     monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
-    monkeypatch.setattr(orders_api, "global_policy_configured", _global_policy_configured)
-    monkeypatch.setattr(orders_api, "get_global_policy_recipe_for_dispatch", _global_policy_recipe)
+    monkeypatch.setattr(orders_api, "build_dish_plan", _build_plan)
     monkeypatch.setattr(orders_api, "seed_dish_ingredients_for_phase", _seed)
 
     response = await orders_api._dispatch_order_once(
@@ -756,4 +722,4 @@ async def test_dispatch_order_resolving_phase_injects_global_communication_steps
     assert response.status == "dispatched"
     assert response.run_phase == "resolving"
     assert captured["phase"] == "resolving"
-    assert captured["extra_recipe_ingredients"] == [global_step]
+    assert captured["extra_recipe_ingredients"] == [inherited_step]

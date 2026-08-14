@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -33,11 +32,14 @@ from api.services.credential_manager import (
     read_adapter_credential_with_policy,
     write_adapter_credential,
 )
-from api.services.plugin_orchestrator import ExecutionOrchestrator, get_execution_orchestrator
-from api.services.operator_action_orders import run_operator_action_order
+from api.services.order_intake import (
+    OperatorActionOrderSubmission,
+    submit_operator_action_order,
+)
 from api.services.prometheus_reload import reload_prometheus_rules
 from api.schemas.schemas import (
     GenestackAlertExportRequest,
+    OperatorActionAcceptedResponse,
     PrometheusRuleDetailResponse,
     PrometheusRuleGroupSummary,
     PrometheusRuleListResponse,
@@ -45,8 +47,6 @@ from api.schemas.schemas import (
     PrometheusRuleRuleResponse,
     PrometheusRuleRuleUpdateRequest,
     PrometheusRuleResourceResponse,
-    RepoSyncResponse,
-    ServicePluginActionResponse,
     ServicePluginConfigurationResponse,
     ServicePluginConfigurationUpdate,
     ServicePluginConnectionTestRequest,
@@ -317,29 +317,6 @@ def _credential_requirement(
     return None
 
 
-async def _reload_prometheus_rule_state(
-    *,
-    db: AsyncSession,
-    orchestrator: ExecutionOrchestrator,
-    req_id: str,
-) -> None:
-    """Reload Prometheus after PrometheusRule CRD mutations."""
-
-    row, _plugin, adapter = await _external_plugin_row_or_404(db, "prometheus")
-    config = _plugin_config_from_row(row, adapter)
-    result = await reload_prometheus_rules(
-        db=db,
-        orchestrator=orchestrator,
-        req_id=req_id,
-        operator_config=config,
-    )
-    if result.status not in {"succeeded"}:
-        raise HTTPException(
-            status_code=502,
-            detail=result.service_exec_error or "Prometheus rule reload failed",
-        )
-
-
 def _configuration_response(
     *,
     row: ServicePlugin,
@@ -463,19 +440,20 @@ def _rule_from_crd(
     return None
 
 
-def _repo_sync_response_from_result(result: dict[str, object]) -> RepoSyncResponse:
-    payload = {
-        "status": str(result.get("status") or "failed"),
-        "message": str(result.get("message") or "Plugin operation failed"),
-        "branch": result.get("branch"),
-        "pull_request": result.get("pull_request"),
-        "exported": result.get("exported"),
-        "imported": result.get("imported"),
-        "skipped": result.get("skipped"),
-        "warnings": result.get("warnings"),
-        "cleared": result.get("cleared"),
-    }
-    return RepoSyncResponse.model_validate(payload)
+def _operator_action_accepted_response(
+    submission: OperatorActionOrderSubmission,
+    *,
+    message: str,
+) -> OperatorActionAcceptedResponse:
+    return OperatorActionAcceptedResponse(
+        status="accepted",
+        message=message,
+        order_id=submission.order_id,
+        order_req_id=submission.order_req_id,
+        service_type=submission.service_type,
+        service_exec=submission.service_exec,
+        submitted_at=submission.submitted_at,
+    )
 
 
 def _resolved_adapter_helper(adapter: ExecutionAdapter) -> object | None:
@@ -623,7 +601,8 @@ async def get_kubernetes_prometheus_rule_rule(
 
 @router.put(
     "/plugins/k8s/prometheus-rules/{crd_name}/rules/{rule_name}",
-    response_model=PrometheusRuleRuleResponse,
+    response_model=OperatorActionAcceptedResponse,
+    status_code=202,
 )
 async def update_kubernetes_prometheus_rule_rule(
     crd_name: str,
@@ -632,9 +611,8 @@ async def update_kubernetes_prometheus_rule_rule(
     request: Request,
     namespace: str | None = Query(default=None, min_length=1, max_length=255),
     db: AsyncSession = Depends(get_db),
-    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
     _context: object = Depends(require_operator),
-) -> PrometheusRuleRuleResponse:
+) -> OperatorActionAcceptedResponse:
     row, _plugin, adapter = await _external_plugin_row_or_404(db, "k8s")
     config = _plugin_config_from_row(row, adapter)
     if namespace is not None:
@@ -664,9 +642,8 @@ async def update_kubernetes_prometheus_rule_rule(
     }
     if namespace is not None:
         service_payload["namespace"] = namespace.strip()
-    result = await run_operator_action_order(
+    submission = await submit_operator_action_order(
         db=db,
-        orchestrator=orchestrator,
         req_id=getattr(request.state, "req_id", "plugin-k8s-prometheus-rule-update"),
         recipe_name="operator-action:k8s:prometheus-rule-apply",
         service_type="k8s",
@@ -674,27 +651,16 @@ async def update_kubernetes_prometheus_rule_rule(
         task_key_template="k8s-prometheus-rule",
         service_payload=service_payload,
     )
-    if result.status != "succeeded":
-        raise HTTPException(status_code=502, detail=result.error or "Rule update failed")
-    await _reload_prometheus_rule_state(
-        db=db,
-        orchestrator=orchestrator,
-        req_id=getattr(request.state, "req_id", "plugin-k8s-prometheus-rule-update"),
+    return _operator_action_accepted_response(
+        submission,
+        message="PrometheusRule update order accepted",
     )
-    crd = await helper.get_prometheus_rule(crd_name.strip())
-    if crd is None or not isinstance(crd, dict):
-        raise HTTPException(status_code=404, detail=f"PrometheusRule CRD not found: {crd_name}")
-    response = _rule_from_crd(
-        crd, group_name=payload.group_name.strip(), rule_name=rule_name.strip()
-    )
-    if response is None:
-        raise HTTPException(status_code=500, detail="Updated rule could not be reloaded")
-    return response
 
 
 @router.post(
     "/plugins/k8s/prometheus-rules/{crd_name}/rules",
-    response_model=PrometheusRuleRuleResponse,
+    response_model=OperatorActionAcceptedResponse,
+    status_code=202,
 )
 async def create_kubernetes_prometheus_rule_rule(
     crd_name: str,
@@ -702,9 +668,8 @@ async def create_kubernetes_prometheus_rule_rule(
     request: Request,
     namespace: str | None = Query(default=None, min_length=1, max_length=255),
     db: AsyncSession = Depends(get_db),
-    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
     _context: object = Depends(require_operator),
-) -> PrometheusRuleRuleResponse:
+) -> OperatorActionAcceptedResponse:
     row, _plugin, adapter = await _external_plugin_row_or_404(db, "k8s")
     config = _plugin_config_from_row(row, adapter)
     if namespace is not None:
@@ -721,9 +686,8 @@ async def create_kubernetes_prometheus_rule_rule(
     }
     if namespace is not None:
         service_payload["namespace"] = namespace.strip()
-    result = await run_operator_action_order(
+    submission = await submit_operator_action_order(
         db=db,
-        orchestrator=orchestrator,
         req_id=getattr(request.state, "req_id", "plugin-k8s-prometheus-rule-create"),
         recipe_name="operator-action:k8s:prometheus-rule-apply",
         service_type="k8s",
@@ -731,42 +695,27 @@ async def create_kubernetes_prometheus_rule_rule(
         task_key_template="k8s-prometheus-rule",
         service_payload=service_payload,
     )
-    if result.status != "succeeded":
-        raise HTTPException(status_code=502, detail=result.error or "Rule create failed")
-    await _reload_prometheus_rule_state(
-        db=db,
-        orchestrator=orchestrator,
-        req_id=getattr(request.state, "req_id", "plugin-k8s-prometheus-rule-create"),
+    return _operator_action_accepted_response(
+        submission,
+        message="PrometheusRule create order accepted",
     )
-    crd = await helper.get_prometheus_rule(crd_name.strip())
-    if crd is None or not isinstance(crd, dict):
-        raise HTTPException(status_code=404, detail=f"PrometheusRule CRD not found: {crd_name}")
-    response = _rule_from_crd(
-        crd,
-        group_name=payload.group_name.strip(),
-        rule_name=payload.rule_name.strip(),
-    )
-    if response is None:
-        raise HTTPException(status_code=500, detail="Created rule could not be reloaded")
-    return response
 
 
 @router.post(
     "/plugins/genestack_monitoring/export-alert-updates",
-    response_model=RepoSyncResponse,
+    response_model=OperatorActionAcceptedResponse,
+    status_code=202,
 )
 async def export_genestack_alert_updates(
     payload: GenestackAlertExportRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
     _context: object = Depends(require_operator),
-) -> RepoSyncResponse:
+) -> OperatorActionAcceptedResponse:
     await _external_plugin_row_or_404(db, "genestack_monitoring")
     req_id = getattr(request.state, "req_id", "plugin-genestack-export")
-    result = await run_operator_action_order(
+    submission = await submit_operator_action_order(
         db=db,
-        orchestrator=orchestrator,
         req_id=req_id,
         recipe_name="operator-action:genestack-monitoring:export-alert-updates",
         service_type="genestack_monitoring",
@@ -774,12 +723,10 @@ async def export_genestack_alert_updates(
         task_key_template="genestack-monitoring-alert-export",
         service_payload=payload.model_dump(exclude_none=True),
     )
-    if result.status != "succeeded" or not isinstance(result.outcome, dict):
-        raise HTTPException(
-            status_code=502,
-            detail=result.error or "Genestack alert export failed",
-        )
-    return _repo_sync_response_from_result(result.outcome)
+    return _operator_action_accepted_response(
+        submission,
+        message="Genestack alert export order accepted",
+    )
 
 
 @router.get("/plugins/{service_type}", response_model=ServicePluginResponse)
@@ -1057,7 +1004,8 @@ async def update_plugin_credential(
 
 @router.post(
     "/plugins/{service_type}/test-connection",
-    response_model=ServicePluginActionResponse,
+    response_model=OperatorActionAcceptedResponse,
+    status_code=202,
 )
 @limiter.limit(get_settings().rate_limit_default)
 async def test_plugin_connection(
@@ -1066,85 +1014,64 @@ async def test_plugin_connection(
     payload: ServicePluginConnectionTestRequest,
     db: AsyncSession = Depends(get_db),
     _context: object = Depends(require_operator),
-) -> ServicePluginActionResponse:
-    """Run an external plugin control-plane connection check."""
-    _ = request.state.req_id
-    row, _plugin, adapter = await _external_plugin_row_or_404(db, service_type)
-    config = _normalize_plugin_config(
-        adapter, payload.config or _plugin_config_from_row(row, adapter)
+) -> OperatorActionAcceptedResponse:
+    """Queue an external plugin connection check through the health-check recipe."""
+    row, _plugin, _adapter = await _external_plugin_row_or_404(db, service_type)
+    if payload.config is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "connection checks run through the stored plugin health-check recipe; "
+                "update plugin configuration before testing"
+            ),
+        )
+    if payload.credential_key_id != "default":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "connection checks run through the stored plugin health-check recipe; "
+                "non-default credential overrides are not supported"
+            ),
+        )
+    normalized = row.service_type.strip().lower()
+    submission = await submit_operator_action_order(
+        db=db,
+        req_id=getattr(request.state, "req_id", f"plugin-{normalized}-test-connection"),
+        recipe_name=f"plugin-health-check:{normalized}",
+        service_type=normalized,
+        service_exec="health_check",
+        task_key_template=f"{normalized}-health-check",
+        service_payload={},
     )
-    configured_adapter = adapter.with_operator_config(config)
-    started = time.monotonic()
-    health = await configured_adapter.test_connection(
-        credential_key_id=payload.credential_key_id,
-    )
-    latency_ms = int((time.monotonic() - started) * 1000)
-    now = utc_now_db()
-    status = str(health.status or "unknown")
-    ok = status == "healthy"
-    row.health_status = status
-    row.health_message = health.message
-    row.health_error_code = health.error_code
-    row.health_latency_ms = health.latency_ms if health.latency_ms is not None else latency_ms
-    row.last_health_check_at = now
-    if ok:
-        row.last_success_at = now
-        row.consecutive_failures = 0
-    else:
-        row.consecutive_failures = int(row.consecutive_failures or 0) + 1
-    row.updated_at = now
-    await db.commit()
-    return ServicePluginActionResponse(
-        service_type=row.service_type,
-        status=status,
-        message=row.health_message or f"{row.service_type} connection checked",
-        details={
-            "latency_ms": row.health_latency_ms,
-            "config": config,
-            **(health.details or {}),
-        },
-        checked_at=now,
+    return _operator_action_accepted_response(
+        submission,
+        message=f"{normalized} connection check order accepted",
     )
 
 
 @router.post(
     "/plugins/prometheus/reload",
-    response_model=ServicePluginActionResponse,
+    response_model=OperatorActionAcceptedResponse,
+    status_code=202,
 )
 @limiter.limit(get_settings().rate_limit_default)
 async def reload_prometheus_plugin_rule_state(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    orchestrator: ExecutionOrchestrator = Depends(get_execution_orchestrator),
     _context: object = Depends(require_operator),
-) -> ServicePluginActionResponse:
+) -> OperatorActionAcceptedResponse:
     """Trigger a manual Prometheus rule/config reload."""
 
     row, _plugin, adapter = await _external_plugin_row_or_404(db, "prometheus")
     config = _plugin_config_from_row(row, adapter)
-    now = utc_now_db()
-    result = await reload_prometheus_rules(
+    submission = await reload_prometheus_rules(
         db=db,
-        orchestrator=orchestrator,
         req_id=getattr(request.state, "req_id", "plugin-prometheus-reload"),
         operator_config=config,
     )
-    if result.status != "succeeded":
-        raise HTTPException(
-            status_code=502,
-            detail=result.service_exec_error or "Prometheus rule reload failed",
-        )
-    outcome = result.result if isinstance(result.result, dict) else {}
-    message = str(outcome.get("message") or "Prometheus rule state reloaded")
-    return ServicePluginActionResponse(
-        service_type=row.service_type,
-        status=str(outcome.get("status") or "success"),
-        message=message,
-        details={
-            "config": config,
-            **outcome,
-        },
-        checked_at=now,
+    return _operator_action_accepted_response(
+        submission,
+        message=f"{row.service_type} reload order accepted",
     )
 
 

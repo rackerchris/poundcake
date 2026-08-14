@@ -6,9 +6,16 @@ from datetime import datetime
 
 from sqlalchemy import or_, select, text
 
-from api.core.database import SessionLocal, dispose_async_engines
+from api.core.database import dispose_async_engines
 from api.models.models import Dish, DishIngredient, Order, ServicePlugin
+from api.services.database_access import (
+    app_database_session,
+    principal_for_internal_service,
+)
 from api.types import JSONObject
+
+
+ADAPTER_RUNTIME_PRINCIPAL = principal_for_internal_service("api")
 
 
 async def dispose_adapter_runtime_resources() -> None:
@@ -20,7 +27,7 @@ async def dispose_adapter_runtime_resources() -> None:
 async def check_database_health() -> JSONObject:
     """Return a minimal database health snapshot for adapter diagnostics."""
 
-    async with SessionLocal() as db:
+    async with app_database_session(ADAPTER_RUNTIME_PRINCIPAL, "app:data-read") as db:
         try:
             await db.execute(text("SELECT 1"))
             return {"status": "healthy", "message": "Connected"}
@@ -31,7 +38,7 @@ async def check_database_health() -> JSONObject:
 async def get_service_plugin_state(service_type: str) -> JSONObject | None:
     """Return the persisted service plugin state for adapter diagnostics."""
 
-    async with SessionLocal() as db:
+    async with app_database_session(ADAPTER_RUNTIME_PRINCIPAL, "app:data-read") as db:
         result = await db.execute(
             select(ServicePlugin).where(ServicePlugin.service_type == service_type)
         )
@@ -74,7 +81,7 @@ async def get_bakery_ticket_context(
         "limit": limit,
     }
 
-    async with SessionLocal() as db:
+    async with app_database_session(ADAPTER_RUNTIME_PRINCIPAL, "app:data-read") as db:
         order_query = select(Order)
         if order_id is not None:
             order_query = order_query.where(Order.id == order_id)
@@ -172,7 +179,7 @@ async def reconcile_bakery_active_orders(*, req_id: str, limit: int) -> JSONObje
 
     from api.plugins.bakery.incident_reconciliation import reconcile_active_orders
 
-    async with SessionLocal() as db:
+    async with app_database_session(ADAPTER_RUNTIME_PRINCIPAL, "app:data-write") as db:
         async with db.begin():
             return await reconcile_active_orders(db, req_id=req_id, limit=limit)
 
@@ -182,7 +189,7 @@ async def check_prometheus_watchdog_heartbeat_once() -> JSONObject:
 
     from api.plugins.prometheus.watchdog import check_watchdog_heartbeat_once
 
-    async with SessionLocal() as db:
+    async with app_database_session(ADAPTER_RUNTIME_PRINCIPAL, "app:data-write") as db:
         async with db.begin():
             return await check_watchdog_heartbeat_once(db)
 
@@ -201,7 +208,7 @@ async def process_release_update_notification(
 
     from api.plugins.release.delivery import process_release_notification
 
-    async with SessionLocal() as db:
+    async with app_database_session(ADAPTER_RUNTIME_PRINCIPAL, "app:data-write") as db:
         async with db.begin():
             return await process_release_notification(
                 db,

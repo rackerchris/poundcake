@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import AsyncGenerator
 from typing import Literal, Protocol
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 DatabaseCapability = Literal[
     "adapter-credential:read",
@@ -195,3 +199,17 @@ def require_database_capability(
             raise DatabaseAccessError(
                 f"database principal {service_type or '<unknown>'!r} cannot read credentials for {target!r}"
             )
+
+
+@asynccontextmanager
+async def app_database_session(
+    principal: DatabasePrincipal,
+    capability: Literal["app:data-read", "app:data-write"],
+) -> AsyncGenerator[AsyncSession, None]:
+    """Yield an application DB session after policy capability validation."""
+
+    from api.core.database import SessionLocal
+
+    require_database_capability(principal, capability)
+    async with SessionLocal() as db:
+        yield db
