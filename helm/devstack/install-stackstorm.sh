@@ -13,7 +13,8 @@ STACKSTORM_VALUES_FILE="${STACKSTORM_VALUES_FILE:-}"
 STACKSTORM_CLIENT_ENABLED="${STACKSTORM_CLIENT_ENABLED:-true}"
 STACKSTORM_WEB_ENABLED="${STACKSTORM_WEB_ENABLED:-false}"
 WAIT="${WAIT:-true}"
-WAIT_TIMEOUT="${STACKSTORM_WAIT_TIMEOUT:-15m}"
+WAIT_TIMEOUT="${STACKSTORM_WAIT_TIMEOUT:-${WAIT_TIMEOUT:-15m}}"
+STACKSTORM_PROGRESS_DEADLINE_SECONDS="${STACKSTORM_PROGRESS_DEADLINE_SECONDS:-1800}"
 
 log() {
     printf '[helm-devstack-stackstorm] %s\n' "$*"
@@ -96,11 +97,6 @@ fi
 
 "$KUBECTL_BIN" create namespace "$STACKSTORM_NAMESPACE" --dry-run=client -o yaml | "$KUBECTL_BIN" apply -f -
 
-helm_wait_args=()
-if [ "$WAIT" = "true" ]; then
-    helm_wait_args+=(--wait --timeout "$WAIT_TIMEOUT")
-fi
-
 values_args=()
 if [ -n "$STACKSTORM_VALUES_FILE" ]; then
     values_args+=(-f "$STACKSTORM_VALUES_FILE")
@@ -115,8 +111,31 @@ fi
 log "installing StackStorm release $STACKSTORM_RELEASE_NAME in namespace $STACKSTORM_NAMESPACE"
 "$HELM_BIN" upgrade --install "$STACKSTORM_RELEASE_NAME" "$chart_dir" \
     --namespace "$STACKSTORM_NAMESPACE" \
-    "${values_args[@]}" \
-    "${helm_wait_args[@]}"
+    "${values_args[@]}"
+
+if [ "$WAIT" = "true" ]; then
+    log "extending StackStorm deployment progress deadline to ${STACKSTORM_PROGRESS_DEADLINE_SECONDS}s"
+    while IFS= read -r deployment; do
+        [ -n "$deployment" ] || continue
+        "$KUBECTL_BIN" -n "$STACKSTORM_NAMESPACE" patch "$deployment" \
+            --type merge \
+            -p "{\"spec\":{\"progressDeadlineSeconds\":$STACKSTORM_PROGRESS_DEADLINE_SECONDS}}"
+    done < <("$KUBECTL_BIN" -n "$STACKSTORM_NAMESPACE" get deployment \
+        -l "app.kubernetes.io/instance=$STACKSTORM_RELEASE_NAME" \
+        -o name)
+
+    log "waiting for StackStorm deployments to become available"
+    "$KUBECTL_BIN" -n "$STACKSTORM_NAMESPACE" wait \
+        --for=condition=Available deployment \
+        -l "app.kubernetes.io/instance=$STACKSTORM_RELEASE_NAME" \
+        --timeout "$WAIT_TIMEOUT"
+
+    log "waiting for StackStorm startup jobs to complete"
+    "$KUBECTL_BIN" -n "$STACKSTORM_NAMESPACE" wait \
+        --for=condition=Complete job \
+        -l "app.kubernetes.io/instance=$STACKSTORM_RELEASE_NAME" \
+        --timeout "$WAIT_TIMEOUT"
+fi
 
 log "StackStorm is ready"
 log "api: http://stackstorm-api.$STACKSTORM_NAMESPACE.svc.cluster.local:9101"

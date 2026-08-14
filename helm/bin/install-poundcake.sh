@@ -666,6 +666,99 @@ verify_rendered_endpoint_contract() {
   fi
 }
 
+verify_rendered_embedded_mariadb_init_env() {
+  local rendered_manifest="$1"
+  if ! awk '
+    function reset_doc() {
+      kind=""
+      name=""
+      inmeta=0
+    }
+    BEGIN { reset_doc(); found=0 }
+    /^---[[:space:]]*$/ { reset_doc(); next }
+    /^kind:[[:space:]]+/ { kind=$2; next }
+    /^metadata:[[:space:]]*$/ { inmeta=1; next }
+    inmeta && /^  name:[[:space:]]+/ {
+      name=$2
+      inmeta=0
+      if (kind=="Deployment" && name=="poundcake-mariadb") {
+        found=1
+        exit 0
+      }
+      next
+    }
+    END { exit(found ? 0 : 1) }
+  ' "${rendered_manifest}"; then
+    return 0
+  fi
+
+  local required_env=(
+    MYSQL_ROOT_PASSWORD
+    MYSQL_DATABASE
+    MYSQL_MIGRATOR_USER
+    MYSQL_MIGRATOR_PASSWORD
+    MYSQL_PLUGIN_REGISTRY_USER
+    MYSQL_PLUGIN_REGISTRY_PASSWORD
+    MYSQL_API_USER
+    MYSQL_API_PASSWORD
+    MYSQL_AUTH_VERIFIER_USER
+    MYSQL_AUTH_VERIFIER_PASSWORD
+    MYSQL_SERVICE_IDENTITY_MANAGER_USER
+    MYSQL_SERVICE_IDENTITY_MANAGER_PASSWORD
+    MYSQL_CREDENTIAL_MANAGER_USER
+    MYSQL_CREDENTIAL_MANAGER_PASSWORD
+    MYSQL_PLUGIN_OPERATION_USER
+    MYSQL_PLUGIN_OPERATION_PASSWORD
+    MYSQL_PREP_CHEF_READER_USER
+    MYSQL_PREP_CHEF_READER_PASSWORD
+    MYSQL_TIMER_READER_USER
+    MYSQL_TIMER_READER_PASSWORD
+    MYSQL_EXPEDITER_RUNNER_READER_USER
+    MYSQL_EXPEDITER_RUNNER_READER_PASSWORD
+    MYSQL_DISHWASHER_READER_USER
+    MYSQL_DISHWASHER_READER_PASSWORD
+    MYSQL_READONLY_USER
+    MYSQL_READONLY_PASSWORD
+  )
+
+  local missing=()
+  local env_name
+  for env_name in "${required_env[@]}"; do
+    if ! awk -v wanted="${env_name}" '
+      function reset_doc() {
+        kind=""
+        name=""
+        inmeta=0
+        in_mariadb=0
+      }
+      BEGIN { reset_doc(); found=0 }
+      /^---[[:space:]]*$/ { reset_doc(); next }
+      /^kind:[[:space:]]+/ { kind=$2; next }
+      /^metadata:[[:space:]]*$/ { inmeta=1; next }
+      inmeta && /^  name:[[:space:]]+/ {
+        name=$2
+        inmeta=0
+        if (kind=="Deployment" && name=="poundcake-mariadb") {
+          in_mariadb=1
+        }
+        next
+      }
+      in_mariadb && $0 ~ "^[[:space:]]*- name:[[:space:]]*" wanted "[[:space:]]*$" {
+        found=1
+        exit 0
+      }
+      END { exit(found ? 0 : 1) }
+    ' "${rendered_manifest}"; then
+      missing+=("${env_name}")
+    fi
+  done
+
+  if (( ${#missing[@]} )); then
+    log_error "Rendered manifest contract failed: embedded poundcake-mariadb is missing init env vars: ${missing[*]}"
+    exit 1
+  fi
+}
+
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   usage
   exit 0
@@ -899,6 +992,7 @@ else
 fi
 
 verify_rendered_endpoint_contract "${RENDERED_MANIFEST}"
+verify_rendered_embedded_mariadb_init_env "${RENDERED_MANIFEST}"
 rm -f "${RENDERED_MANIFEST}"
 
 log_phase "helm install execution"
