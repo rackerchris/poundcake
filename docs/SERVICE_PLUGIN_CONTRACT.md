@@ -341,7 +341,7 @@ Scheduled task controls are bounded operator runtime knobs. Operators may inspec
 
 ## Built-In Bakery Plugin
 
-Bakery is a supported communication plugin for remote provider ticketing and notifications. Production deployments enable it through `config.enabledPlugins`, then configure the remote connection and bootstrap credential through the plugin configuration and credential APIs; see [REMOTE_BAKERY.md](REMOTE_BAKERY.md) and [plugins/bakery.md](plugins/bakery.md).
+Bakery is a supported communication plugin for remote provider ticketing and notifications. Production deployments enable it through `config.enabledPlugins`, apply a Bakery bootstrap HMAC Secret, and set `bakery.client.*` so the plugin can register itself; see [REMOTE_BAKERY.md](REMOTE_BAKERY.md) and [plugins/bakery.md](plugins/bakery.md).
 
 ## Built-In Alertmanager Plugin
 

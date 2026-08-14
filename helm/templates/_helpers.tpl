@@ -70,6 +70,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "poundcake.bakeryEnv" -}}
 {{- if .Values.bakery.client.enabled }}
+- name: POUNDCAKE_BAKERY_ENABLED
+  value: {{ .Values.bakery.client.enabled | quote }}
 - name: POUNDCAKE_BAKERY_BASE_URL
   value: {{ required "bakery.client.baseUrl is required when bakery.client.enabled=true" .Values.bakery.client.baseUrl | quote }}
 - name: POUNDCAKE_BAKERY_TLS_VERIFY
@@ -86,6 +88,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.bakery.client.pluginId | quote }}
 - name: POUNDCAKE_BAKERY_ACTIVE_PROVIDER
   value: {{ .Values.bakery.config.activeProvider | quote }}
+- name: POUNDCAKE_BAKERY_MONITOR_ID
+  value: {{ default (printf "%s/%s" .Release.Namespace .Release.Name) .Values.bakery.client.monitor.id | quote }}
 - name: POUNDCAKE_BAKERY_PLUGIN_ENVIRONMENT_LABEL
   value: {{ .Values.bakery.client.monitor.environmentLabel | quote }}
 - name: POUNDCAKE_BAKERY_PLUGIN_REGION
@@ -98,6 +102,19 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Release.Name | quote }}
 - name: POUNDCAKE_BAKERY_PLUGIN_TAGS
   value: {{ join "," .Values.bakery.client.monitor.tags | quote }}
+{{- $bakeryClientSecretName := required "bakery.client.auth.existingSecret is required when bakery.client.enabled=true" .Values.bakery.client.auth.existingSecret }}
+- name: POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID
+  valueFrom:
+    secretKeyRef:
+      name: {{ $bakeryClientSecretName }}
+      key: {{ .Values.bakery.client.auth.secretKeys.bootstrapKeyId }}
+      optional: true
+- name: POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ $bakeryClientSecretName }}
+      key: {{ .Values.bakery.client.auth.secretKeys.bootstrapKey }}
+      optional: true
 {{- end }}
 {{- end }}
 

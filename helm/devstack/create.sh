@@ -443,12 +443,15 @@ if [ "$INSTALL_CHART" = "true" ]; then
         log "CONFIGURE_GITHUB_PUBLIC_READ=false; skipping GitHub public-read adapter configuration"
     fi
     bakery_env_ready="false"
-    if [ -n "${BAKERY_URL:-}" ] && \
-       [ -n "${BAKERY_MONITOR_ID:-}" ] && \
-       [ -n "${BAKERY_MONITOR_UUID:-}" ] && \
-       [ -n "${BAKERY_MONITOR_HMAC_KEY_ID:-}" ] && \
-       [ -n "${BAKERY_MONITOR_HMAC_SECRET:-}" ]; then
-        bakery_env_ready="true"
+    if [ -n "${BAKERY_URL:-}" ] && [ -n "${BAKERY_MONITOR_ID:-}" ]; then
+        if [ -n "${BAKERY_BOOTSTRAP_HMAC_KEY_ID:-}" ] && \
+           [ -n "${BAKERY_BOOTSTRAP_HMAC_KEY:-}" ]; then
+            bakery_env_ready="true"
+        elif [ -n "${BAKERY_MONITOR_UUID:-}" ] && \
+             [ -n "${BAKERY_MONITOR_HMAC_KEY_ID:-}" ] && \
+             [ -n "${BAKERY_MONITOR_HMAC_SECRET:-}" ]; then
+            bakery_env_ready="true"
+        fi
     fi
     if [ "$CONFIGURE_BAKERY_ADAPTER" = "true" ] || { [ "$CONFIGURE_BAKERY_ADAPTER" = "auto" ] && [ "$bakery_env_ready" = "true" ]; }; then
         log "configuring PoundCake Bakery adapter and disabling dummy comms plugin"

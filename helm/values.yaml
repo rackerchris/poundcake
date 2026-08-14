@@ -316,10 +316,10 @@ stackstorm:
   url: ""
   verifySsl: false
 
-# Remote Bakery adapter configuration. Credentials remain in a Kubernetes
-# Secret and are imported into credential-manager by the startup hook.
-# A Genestack per-cluster override should set client.enabled, client.baseUrl,
-# monitor metadata, and client.auth.existingSecret.
+# Remote Bakery adapter configuration. Point bakery.client.auth.existingSecret
+# at the Secret produced by Bakery's create-monitor-bootstrap.sh. The bakery
+# plugin registers with that bootstrap HMAC and stores the issued monitor HMAC
+# in credential-manager.
 bakery:
   config:
     activeProvider: rackspace_core
@@ -343,10 +343,8 @@ bakery:
     auth:
       existingSecret: ""
       secretKeys:
-        monitorId: "monitor_id"
-        monitorUuid: "monitor_uuid"
-        keyId: "hmac_key_id"
-        secret: "hmac_secret"
+        bootstrapKeyId: "bootstrap-key-id"
+        bootstrapKey: "bootstrap-key"
 
 # Authentication configuration
 auth:

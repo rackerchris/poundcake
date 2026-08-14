@@ -45,7 +45,7 @@ The installer builds Helm input in this order:
 4. sorted files in the PoundCake service override directory
 5. explicit extra Helm args
 
-Keep image repositories, tags, digests, gateway settings, auth settings, and StackStorm bootstrap settings in values files. Configure Bakery adapter connection state from the Plugins UI or plugin configuration API.
+Keep image repositories, tags, digests, gateway settings, auth settings, and StackStorm bootstrap settings in values files. Configure remote Bakery by applying the Bakery bootstrap Secret and setting `bakery.client.*` in the override file. See [REMOTE_BAKERY.md](REMOTE_BAKERY.md).
 
 When browser auth is enabled, set `auth.allowedOrigins` to the explicit UI
 origin(s) that should be allowed to call the API. Do not use `["*"]` for
@@ -75,14 +75,18 @@ auth:
     - https://ui.poundcake.example.com
 ```
 
-After enabling `bakery`, configure the remote HTTPS URL and non-secret adapter metadata from the Plugins UI. Admins configure the Bakery bootstrap credential through the adapter credential contract; PoundCake stores the returned monitor credential as adapter-managed state.
+After enabling `bakery`, apply the Secret printed by Bakery's
+`create-monitor-bootstrap.sh` and point `bakery.client.auth.existingSecret` at
+it. The bakery plugin registers with Bakery and stores the issued monitor HMAC
+as adapter-managed state. See [REMOTE_BAKERY.md](REMOTE_BAKERY.md).
 
 ## Bakery Credential
 
-Admins configure the Bakery-issued bootstrap credential through
-`/api/v1/plugins/bakery/credentials` or the Plugins UI credential controls. The
-UI labels the fields as `bootstrap-key-id` and `bootstrap-key`; the API payload
-uses `hmac_key_id` and `hmac_secret`.
+The normal new-monitor path is a bootstrap Secret with `bootstrap-key-id` and
+`bootstrap-key`. PoundCake calls Bakery's register API and persists the issued
+`hmac_key_id` / `hmac_secret` as `bakery_monitor_hmac/default`. The Plugins UI
+and `/api/v1/plugins/bakery/credentials` remain a recovery path for an already
+issued monitor HMAC.
 
 ## Install Or Upgrade
 

@@ -30,7 +30,13 @@ def test_external_plugins_advertise_credentials_without_db_policy(monkeypatch) -
             "credential_type": "bakery_monitor_hmac",
             "credential_key_id": "default",
             "required": True,
-            "usage": "Bakery monitor HMAC credential provisioned through Credential Manager.",
+            "usage": (
+                "Bakery monitor HMAC issued by remote registration. "
+                "PoundCake registers with a bootstrap HMAC from "
+                "POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID/"
+                "POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY and stores the "
+                "returned bakery_monitor_hmac/default credential."
+            ),
             "credential_schema": {
                 "type": "object",
                 "properties": {

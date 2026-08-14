@@ -14,6 +14,8 @@ BAKERY_MONITOR_ID="${BAKERY_MONITOR_ID:-}"
 BAKERY_MONITOR_UUID="${BAKERY_MONITOR_UUID:-}"
 BAKERY_MONITOR_HMAC_KEY_ID="${BAKERY_MONITOR_HMAC_KEY_ID:-}"
 BAKERY_MONITOR_HMAC_SECRET="${BAKERY_MONITOR_HMAC_SECRET:-}"
+BAKERY_BOOTSTRAP_HMAC_KEY_ID="${BAKERY_BOOTSTRAP_HMAC_KEY_ID:-}"
+BAKERY_BOOTSTRAP_HMAC_KEY="${BAKERY_BOOTSTRAP_HMAC_KEY:-}"
 BAKERY_VERIFY_SSL="${BAKERY_VERIFY_SSL:-true}"
 BAKERY_TIMEOUT_SECONDS="${BAKERY_TIMEOUT_SECONDS:-15}"
 BAKERY_MAX_RETRIES="${BAKERY_MAX_RETRIES:-2}"
@@ -68,9 +70,11 @@ KUBECTL_BIN="$(detect_executable KUBECTL_BIN kubectl /opt/homebrew/bin/kubectl /
 
 [ -n "$BAKERY_URL" ] || fail "BAKERY_URL is required"
 [ -n "$BAKERY_MONITOR_ID" ] || fail "BAKERY_MONITOR_ID is required"
-[ -n "$BAKERY_MONITOR_UUID" ] || fail "BAKERY_MONITOR_UUID is required"
-[ -n "$BAKERY_MONITOR_HMAC_KEY_ID" ] || fail "BAKERY_MONITOR_HMAC_KEY_ID is required"
-[ -n "$BAKERY_MONITOR_HMAC_SECRET" ] || fail "BAKERY_MONITOR_HMAC_SECRET is required"
+if [ -z "$BAKERY_BOOTSTRAP_HMAC_KEY_ID" ] || [ -z "$BAKERY_BOOTSTRAP_HMAC_KEY" ]; then
+    [ -n "$BAKERY_MONITOR_UUID" ] || fail "BAKERY_MONITOR_UUID is required unless bootstrap HMAC is set"
+    [ -n "$BAKERY_MONITOR_HMAC_KEY_ID" ] || fail "BAKERY_MONITOR_HMAC_KEY_ID is required unless bootstrap HMAC is set"
+    [ -n "$BAKERY_MONITOR_HMAC_SECRET" ] || fail "BAKERY_MONITOR_HMAC_SECRET is required unless bootstrap HMAC is set"
+fi
 
 log "waiting for PoundCake API"
 "$KUBECTL_BIN" -n "$POUNDCAKE_NAMESPACE" wait --for=condition=Available deployment/poundcake-api --timeout="$WAIT_TIMEOUT"
@@ -83,6 +87,8 @@ log "writing Bakery adapter configuration and monitor credential through PoundCa
         BAKERY_MONITOR_UUID="$BAKERY_MONITOR_UUID" \
         BAKERY_MONITOR_HMAC_KEY_ID="$BAKERY_MONITOR_HMAC_KEY_ID" \
         BAKERY_MONITOR_HMAC_SECRET="$BAKERY_MONITOR_HMAC_SECRET" \
+        BAKERY_BOOTSTRAP_HMAC_KEY_ID="$BAKERY_BOOTSTRAP_HMAC_KEY_ID" \
+        BAKERY_BOOTSTRAP_HMAC_KEY="$BAKERY_BOOTSTRAP_HMAC_KEY" \
         BAKERY_VERIFY_SSL="$BAKERY_VERIFY_SSL" \
         BAKERY_TIMEOUT_SECONDS="$BAKERY_TIMEOUT_SECONDS" \
         BAKERY_MAX_RETRIES="$BAKERY_MAX_RETRIES" \
@@ -107,6 +113,11 @@ from api.plugins.state import (
     PLUGIN_RUN_STATE_INITIALIZING,
 )
 from api.services.adapter_runtime import dispose_adapter_runtime_resources
+from api.plugins.bakery.client import (
+    BakeryClientConfig,
+    bootstrap_monitor_credential,
+    set_bakery_client_config,
+)
 from api.services.credential_manager import write_adapter_credential
 from api.services.plugin_operations import (
     disable_service_plugin_and_tasks,
@@ -121,19 +132,22 @@ def _bool(value: str) -> bool:
 async def main() -> None:
     url = os.environ["BAKERY_URL"].strip().rstrip("/")
     monitor_id = os.environ["BAKERY_MONITOR_ID"].strip()
-    monitor_uuid = os.environ["BAKERY_MONITOR_UUID"].strip()
-    key_id = os.environ["BAKERY_MONITOR_HMAC_KEY_ID"].strip()
-    secret = os.environ["BAKERY_MONITOR_HMAC_SECRET"].strip()
+    monitor_uuid = os.environ.get("BAKERY_MONITOR_UUID", "").strip()
+    key_id = os.environ.get("BAKERY_MONITOR_HMAC_KEY_ID", "").strip()
+    secret = os.environ.get("BAKERY_MONITOR_HMAC_SECRET", "").strip()
+    bootstrap_key_id = os.environ.get("BAKERY_BOOTSTRAP_HMAC_KEY_ID", "").strip()
+    bootstrap_key = os.environ.get("BAKERY_BOOTSTRAP_HMAC_KEY", "").strip()
     if not url:
         raise SystemExit("BAKERY_URL is empty")
     if not monitor_id:
         raise SystemExit("BAKERY_MONITOR_ID is empty")
-    if not monitor_uuid:
-        raise SystemExit("BAKERY_MONITOR_UUID is empty")
-    if not key_id:
-        raise SystemExit("BAKERY_MONITOR_HMAC_KEY_ID is empty")
-    if not secret:
-        raise SystemExit("BAKERY_MONITOR_HMAC_SECRET is empty")
+    has_issued = bool(monitor_uuid and key_id and secret)
+    has_bootstrap = bool(bootstrap_key_id and bootstrap_key)
+    if not has_issued and not has_bootstrap:
+        raise SystemExit(
+            "provide issued monitor HMAC material or BAKERY_BOOTSTRAP_HMAC_KEY_ID/"
+            "BAKERY_BOOTSTRAP_HMAC_KEY"
+        )
 
     plugin_config = {
         "url": url,
@@ -163,17 +177,40 @@ async def main() -> None:
         )
 
     try:
-        await write_adapter_credential(
-            service_type="bakery",
-            credential_type="bakery_monitor_hmac",
-            credential_key_id="default",
-            payload={
-                "monitor_id": monitor_id,
-                "monitor_uuid": monitor_uuid,
-                "hmac_key_id": key_id,
-                "hmac_secret": secret,
-            },
-        )
+        if has_issued:
+            await write_adapter_credential(
+                service_type="bakery",
+                credential_type="bakery_monitor_hmac",
+                credential_key_id="default",
+                payload={
+                    "monitor_id": monitor_id,
+                    "monitor_uuid": monitor_uuid,
+                    "hmac_key_id": key_id,
+                    "hmac_secret": secret,
+                },
+            )
+        else:
+            os.environ["POUNDCAKE_BAKERY_BASE_URL"] = url
+            os.environ["POUNDCAKE_BAKERY_MONITOR_ID"] = monitor_id
+            os.environ["POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID"] = bootstrap_key_id
+            os.environ["POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY"] = bootstrap_key
+            set_bakery_client_config(
+                BakeryClientConfig(
+                    base_url=url,
+                    plugin_id=os.environ["BAKERY_PLUGIN_ID"].strip(),
+                    environment_label=os.environ["BAKERY_ENVIRONMENT_LABEL"].strip(),
+                    region=os.environ["BAKERY_REGION"].strip(),
+                    cluster_name=os.environ["BAKERY_CLUSTER_NAME"].strip(),
+                    namespace=os.environ["BAKERY_PLUGIN_NAMESPACE"].strip(),
+                    release_name=os.environ["BAKERY_RELEASE_NAME"].strip(),
+                    tags=tuple(
+                        item.strip()
+                        for item in os.environ["BAKERY_TAGS"].split(",")
+                        if item.strip()
+                    ),
+                )
+            )
+            await bootstrap_monitor_credential(force=True)
 
         adapter = BakeryExecutionAdapter().with_operator_config(plugin_config)
         health = await adapter.test_connection(credential_key_id="default")

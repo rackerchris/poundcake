@@ -15,21 +15,21 @@ provider-native ticket and notification behavior.
 ## Requirements
 
 - A reachable Bakery deployment.
-- Non-secret adapter connection settings configured through the plugin
-  configuration contract.
-- Bakery monitor HMAC material configured through the plugin credentials
-  contract.
-- A `bakery_monitor_hmac` credential row with `credential_key_id=default`,
-  created through the credential-manager bootstrap flow.
+- A Bakery-issued bootstrap HMAC Secret applied in the PoundCake namespace.
+- `bakery.client.enabled=true`, `bakery.client.baseUrl`, and
+  `bakery.client.auth.existingSecret` set in Helm values.
+- After registration, a `bakery_monitor_hmac` credential row with
+  `credential_key_id=default` stored by the bakery plugin.
 
 ## Operator configuration
 
 Production Bakery setup is documented in
-[`REMOTE_BAKERY.md`](../REMOTE_BAKERY.md). Operators manage non-secret fields
-such as URL, TLS verification, retry settings, plugin identity, and environment
-metadata through `/api/v1/plugins/bakery/configuration`. Admins manage encrypted
-monitor HMAC fields through `/api/v1/plugins/bakery/credentials`. Do not seed
-Bakery credentials with direct SQL or Helm fixtures.
+[`REMOTE_BAKERY.md`](../REMOTE_BAKERY.md). Mint the bootstrap credential with
+Bakery's `create-monitor-bootstrap.sh`, apply the printed Secret, and enable
+the remote client. The bakery plugin registers with Bakery and writes the
+issued monitor HMAC through credential-manager. Do not seed Bakery credentials
+with direct SQL. The Plugins UI remains a recovery path for an already-issued
+monitor HMAC.
 
 ## Enabled behavior
 

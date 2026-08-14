@@ -20,7 +20,7 @@ from api.plugins.bakery.client import (
     close_ticket_with_key,
     create_ticket_with_key,
     current_bakery_config,
-    ensure_monitor_credential_configured,
+    bootstrap_monitor_credential,
     get_health,
     poll_operation,
     reset_bakery_client_config,
@@ -446,7 +446,13 @@ class BakeryExecutionAdapter(ExecutionAdapter):
                 "credential_type": BAKERY_CREDENTIAL_TYPE,
                 "credential_key_id": "default",
                 "required": True,
-                "usage": ("Bakery monitor HMAC credential provisioned through Credential Manager."),
+                "usage": (
+                    "Bakery monitor HMAC issued by remote registration. "
+                    "PoundCake registers with a bootstrap HMAC from "
+                    "POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID/"
+                    "POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY and stores the "
+                    "returned bakery_monitor_hmac/default credential."
+                ),
                 "credential_schema": {
                     "type": "object",
                     "properties": {
@@ -479,7 +485,7 @@ class BakeryExecutionAdapter(ExecutionAdapter):
     ) -> None:
         token = self._activate_config()
         try:
-            await ensure_monitor_credential_configured()
+            await bootstrap_monitor_credential(force=force)
         finally:
             reset_bakery_client_config(token)
 
@@ -491,13 +497,13 @@ class BakeryExecutionAdapter(ExecutionAdapter):
     ) -> PluginBootstrapResult:
         token = self._activate_config()
         try:
-            credential = await ensure_monitor_credential_configured()
+            credential = await bootstrap_monitor_credential(force=force)
             return PluginBootstrapResult(
                 service_type=self.service_type,
                 status="ready",
-                message="Bakery plugin credentials verified",
+                message="Bakery plugin credentials ready",
                 details={
-                    "bootstrap_status": "not_required",
+                    "bootstrap_status": "registered",
                     "credential_status": "ready",
                     "monitor_uuid_present": bool(credential.monitor_uuid),
                     "hmac_key_id_present": bool(credential.hmac_key_id),
@@ -511,7 +517,7 @@ class BakeryExecutionAdapter(ExecutionAdapter):
                 message="Bakery plugin credential configuration is invalid",
                 error_code=exc.__class__.__name__,
                 details={
-                    "bootstrap_status": "not_required",
+                    "bootstrap_status": "error",
                     "credential_status": "error",
                     "error": _safe_error_message(exc),
                 },
@@ -520,10 +526,10 @@ class BakeryExecutionAdapter(ExecutionAdapter):
             return PluginBootstrapResult(
                 service_type=self.service_type,
                 status="initializing",
-                message="Bakery plugin credential verification is still initializing",
+                message="Bakery plugin credential registration is still initializing",
                 error_code=exc.__class__.__name__,
                 details={
-                    "bootstrap_status": "not_required",
+                    "bootstrap_status": "pending",
                     "credential_status": "pending",
                     "error": _safe_error_message(exc),
                 },

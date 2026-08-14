@@ -26,7 +26,7 @@ Local credentials required for full plugin exercise:
 | `k8s` | `kubernetes_kubeconfig` | `default` | Optional in-cluster; useful when PoundCake manages another cluster. |
 | `prometheus` | `prometheus_http_auth` | `default` | Optional HTTP auth for authenticated Prometheus endpoints. |
 | `alertmanager` | `alertmanager_http_auth` | `default` | Optional HTTP auth for authenticated Alertmanager endpoints. |
-| `bakery` | `bakery_monitor_hmac` | `default` | Required for remote Bakery registration and communication; write through credential-manager/UI. |
+| `bakery` | `bakery_monitor_hmac` | `default` | Issued by remote Bakery registration. Provide a bootstrap HMAC Secret or write the issued monitor HMAC through credential-manager. |
 | `stackstorm` | `stackstorm_api_key` | `default` | Required for StackStorm action/workflow execution. |
 | `genestack_monitoring` | n/a | n/a | Uses the GitHub and Prometheus helpers; no direct credential row. |
 
@@ -45,6 +45,8 @@ When `helm/devstack/configure-bakery-adapter.sh` is used, it also disables the
 active communication provider.
 
 For the current remote devstack integration, the Bakery adapter defaults to the
-explicit monitor identity `rackspace/kronos-poundcake` and region `ord`. If Bakery
-minted the bootstrap credential for another monitor ID, override
-`BAKERY_PLUGIN_ID` before running the configurator.
+explicit monitor identity `rackspace/kronos-poundcake` and region `ord`. Prefer
+`BAKERY_BOOTSTRAP_HMAC_KEY_ID` and `BAKERY_BOOTSTRAP_HMAC_KEY` so the bakery
+plugin can register itself. Issued monitor HMAC env vars remain a recovery
+path. If Bakery minted the bootstrap credential for another monitor ID,
+override `BAKERY_MONITOR_ID` before running the configurator.

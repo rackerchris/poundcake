@@ -16,6 +16,9 @@ export STACKSTORM_API_KEY=""
 # Optional remote Bakery monitor credential
 export BAKERY_URL=""
 export BAKERY_MONITOR_ID=""
+export BAKERY_BOOTSTRAP_HMAC_KEY_ID=""
+export BAKERY_BOOTSTRAP_HMAC_KEY=""
+# Issued monitor HMAC is only needed as a recovery path.
 export BAKERY_MONITOR_UUID=""
 export BAKERY_MONITOR_HMAC_KEY_ID=""
 export BAKERY_MONITOR_HMAC_SECRET=""

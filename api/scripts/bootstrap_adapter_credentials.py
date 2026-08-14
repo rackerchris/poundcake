@@ -24,13 +24,16 @@ async def main() -> None:
     bakery_key_id = os.getenv("POUNDCAKE_BAKERY_MONITOR_HMAC_KEY_ID", "").strip()
     bakery_secret = os.getenv("POUNDCAKE_BAKERY_MONITOR_HMAC_SECRET", "").strip()
     bakery_values = (bakery_monitor_id, bakery_monitor_uuid, bakery_key_id, bakery_secret)
-    if any(bakery_values) and not all(bakery_values):
+    bakery_bootstrap_key_id = os.getenv("POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID", "").strip()
+    bakery_bootstrap_key = os.getenv("POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY", "").strip()
+    has_bootstrap = bool(bakery_bootstrap_key_id and bakery_bootstrap_key)
+    if any(bakery_values) and not all(bakery_values) and not has_bootstrap:
         raise RuntimeError(
             "Bakery monitor credential requires POUNDCAKE_BAKERY_MONITOR_ID, "
             "POUNDCAKE_BAKERY_MONITOR_UUID, POUNDCAKE_BAKERY_MONITOR_HMAC_KEY_ID, "
-            "and POUNDCAKE_BAKERY_MONITOR_HMAC_SECRET"
+            "and POUNDCAKE_BAKERY_MONITOR_HMAC_SECRET, or a complete bootstrap HMAC"
         )
-    if bakery_key_id:
+    if all(bakery_values):
         await write_adapter_credential(
             service_type="bakery",
             credential_type="bakery_monitor_hmac",

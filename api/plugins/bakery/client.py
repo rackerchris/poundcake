@@ -32,6 +32,7 @@ from api.services.credential_manager import (
     ServicePluginCredentialError,
     mark_adapter_credential_error,
     read_adapter_credential_payload,
+    write_adapter_credential,
 )
 from shared.hmac import build_hmac_signing_payload, canonical_json_body, hmac_sha256_hex
 
@@ -51,10 +52,14 @@ TERMINAL_OPERATION_STATUSES = {
 }
 BAKERY_CREDENTIAL_TYPE = "bakery_monitor_hmac"
 BAKERY_CREDENTIAL_KEY_ID = "default"
+MONITOR_REGISTER_PATH = "/api/v1/monitors/register"
 MISSING_BAKERY_CREDENTIAL_MESSAGE = (
-    "Bakery monitor HMAC credential is not configured; configure "
+    "Bakery monitor HMAC credential is not configured; provide a Bakery "
+    "bootstrap HMAC via POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID and "
+    "POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY, or configure "
     "bakery_monitor_hmac/default through Credential Manager"
 )
+_REGISTER_LOCK = asyncio.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +160,63 @@ def _bakery_tls_verify() -> bool | str:
     return current_bakery_config().verify_ssl
 
 
+def _bakery_account_number() -> str:
+    return os.getenv("POUNDCAKE_BAKERY_ACCOUNT_NUMBER", "").strip()
+
+
+def _bakery_queue() -> str:
+    return os.getenv("POUNDCAKE_BAKERY_QUEUE", "").strip()
+
+
+def _bakery_subcategory() -> str:
+    return os.getenv("POUNDCAKE_BAKERY_SUBCATEGORY", "").strip()
+
+
+def _bootstrap_hmac_key_id() -> str:
+    return os.getenv("POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID", "").strip()
+
+
+def _bootstrap_hmac_key() -> str:
+    return os.getenv("POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY", "").strip()
+
+
+def _monitor_id() -> str:
+    explicit = os.getenv("POUNDCAKE_BAKERY_MONITOR_ID", "").strip()
+    if explicit:
+        return explicit
+    config = current_bakery_config()
+    namespace = config.namespace.strip()
+    release_name = config.release_name.strip()
+    if namespace and release_name:
+        return f"{namespace}/{release_name}"
+    plugin_id = _bakery_plugin_id()
+    if plugin_id:
+        return plugin_id
+    raise RuntimeError("POUNDCAKE_BAKERY_MONITOR_ID is required for Bakery registration")
+
+
+def _monitor_registration_payload() -> JSONObject:
+    config = current_bakery_config()
+    payload: JSONObject = {"monitor_id": _monitor_id()}
+    installation_id = os.getenv("POUNDCAKE_INSTANCE_ID", "").strip()
+    app_version = os.getenv("POUNDCAKE_APP_VERSION", "").strip()
+    optional_fields: JSONObject = {
+        "installation_id": installation_id,
+        "app_version": app_version,
+        "environment_label": config.environment_label.strip(),
+        "region": config.region.strip(),
+        "cluster_name": config.cluster_name.strip(),
+        "namespace": config.namespace.strip(),
+        "release_name": config.release_name.strip(),
+    }
+    for key, value in optional_fields.items():
+        if value:
+            payload[key] = value
+    if config.tags:
+        payload["tags"] = list(config.tags)
+    return payload
+
+
 def validate_transport_config() -> str | None:
     base_url = _bakery_base_url().rstrip("/")
     if not base_url:
@@ -171,7 +233,15 @@ def validate_transport_config() -> str | None:
 
 def validate_bootstrap_config() -> str | None:
     config_error = validate_transport_config()
-    return config_error
+    if config_error:
+        return config_error
+    if _bootstrap_hmac_key_id() and _bootstrap_hmac_key():
+        try:
+            _monitor_id()
+        except RuntimeError as exc:
+            return str(exc)
+        return None
+    return None
 
 
 class _BakeryTicketModel(BaseModel):
@@ -412,22 +482,103 @@ async def _prepare_managed_request_payload(payload: JSONObject) -> JSONObject:
     return normalized
 
 
-async def ensure_monitor_credential_configured() -> BakeryMonitorCredential:
+def _normalize_monitor_credential_payload(payload: JSONObject) -> JSONObject:
+    normalized = dict(payload)
+    if "hmac_key_id" not in normalized and "key_id" in normalized:
+        normalized["hmac_key_id"] = normalized["key_id"]
+    return normalized
+
+
+async def _read_configured_monitor_credential() -> BakeryMonitorCredential | None:
     payload = await read_adapter_credential_payload(
         service_type="bakery",
         credential_type=BAKERY_CREDENTIAL_TYPE,
         credential_key_id=BAKERY_CREDENTIAL_KEY_ID,
     )
     if payload is None:
-        await mark_adapter_credential_error(
-            service_type="bakery",
-            error=MISSING_BAKERY_CREDENTIAL_MESSAGE,
-        )
+        return None
+    return BakeryMonitorCredential.model_validate(_normalize_monitor_credential_payload(payload))
+
+
+async def _register_monitor_with_bootstrap() -> BakeryMonitorCredential:
+    config_error = validate_transport_config()
+    if config_error:
+        raise RuntimeError(config_error)
+
+    key_id = _bootstrap_hmac_key_id()
+    secret = _bootstrap_hmac_key()
+    if not key_id or not secret:
         raise ServicePluginCredentialError(MISSING_BAKERY_CREDENTIAL_MESSAGE)
-    normalized = dict(payload)
-    if "hmac_key_id" not in normalized and "key_id" in normalized:
-        normalized["hmac_key_id"] = normalized["key_id"]
-    return BakeryMonitorCredential.model_validate(normalized)
+
+    request_payload = _monitor_registration_payload()
+    body = _canonical_body(request_payload)
+    headers = {
+        "Content-Type": "application/json",
+        **_signed_headers(
+            method="POST",
+            path=MONITOR_REGISTER_PATH,
+            payload=request_payload,
+            key_id=key_id,
+            secret=secret,
+        ),
+    }
+    url = f"{_bakery_base_url().rstrip('/')}{MONITOR_REGISTER_PATH}"
+    try:
+        response = await request_with_retry(
+            "POST",
+            url,
+            headers=headers,
+            content=body.encode("utf-8") if body else None,
+            timeout=_bakery_request_timeout_seconds(),
+            retries=_bakery_max_retries(),
+            verify=_bakery_tls_verify(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        record_bakery_request_failure("register_monitor", "transport_exception")
+        logger.error(
+            "Bakery monitor registration transport failure",
+            extra={"path": MONITOR_REGISTER_PATH, "error": str(exc)},
+        )
+        raise
+
+    if response.status_code >= 400:
+        record_bakery_request_failure("register_monitor", f"http_{response.status_code}")
+        logger.error(
+            "Bakery monitor registration failed",
+            extra={
+                "path": MONITOR_REGISTER_PATH,
+                "status_code": response.status_code,
+                "response": response.text,
+            },
+        )
+        response.raise_for_status()
+
+    credential = BakeryMonitorCredential.model_validate(response.json())
+    await write_adapter_credential(
+        service_type="bakery",
+        credential_type=BAKERY_CREDENTIAL_TYPE,
+        credential_key_id=BAKERY_CREDENTIAL_KEY_ID,
+        payload={
+            "monitor_id": credential.monitor_id,
+            "monitor_uuid": credential.monitor_uuid,
+            "hmac_key_id": credential.hmac_key_id,
+            "hmac_secret": credential.hmac_secret,
+        },
+        rotated=True,
+    )
+    logger.info(
+        "Registered PoundCake monitor with remote Bakery",
+        extra={
+            "monitor_id": credential.monitor_id,
+            "monitor_uuid": credential.monitor_uuid,
+            "hmac_key_id": credential.hmac_key_id,
+        },
+    )
+    return credential
+
+
+async def ensure_monitor_credential_configured() -> BakeryMonitorCredential:
+    return await bootstrap_monitor_credential(force=False)
 
 
 async def bootstrap_monitor_credential(
@@ -435,11 +586,32 @@ async def bootstrap_monitor_credential(
     force: bool = False,
     db: object | None = None,
 ) -> BakeryMonitorCredential:
-    if force:
-        logger.info(
-            "Bakery credential bootstrap requested; verifying configured credential instead"
-        )
-    return await ensure_monitor_credential_configured()
+    _ = db
+    async with _REGISTER_LOCK:
+        existing = await _read_configured_monitor_credential()
+        if existing is not None and not force:
+            return existing
+        has_bootstrap = bool(_bootstrap_hmac_key_id() and _bootstrap_hmac_key())
+        if existing is not None and force and not has_bootstrap:
+            logger.info(
+                "Bakery credential re-register requested without bootstrap HMAC; "
+                "reusing configured monitor credential"
+            )
+            return existing
+        try:
+            return await _register_monitor_with_bootstrap()
+        except ServicePluginCredentialError as exc:
+            await mark_adapter_credential_error(
+                service_type="bakery",
+                error=str(exc),
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001
+            await mark_adapter_credential_error(
+                service_type="bakery",
+                error=str(exc),
+            )
+            raise
 
 
 async def _ensure_monitor_credential() -> BakeryMonitorCredential:

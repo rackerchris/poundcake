@@ -56,8 +56,9 @@ PoundCake now installs only PoundCake:
 ```
 
 If you need communications, deploy Bakery separately from its standalone repo,
-enable the `bakery` plugin, and configure the remote Bakery URL and monitor
-HMAC credential through PoundCake's Plugins UI/API:
+enable the `bakery` plugin, apply the Bakery bootstrap Secret, and point
+`bakery.client.*` at the remote Bakery URL. See
+[docs/REMOTE_BAKERY.md](docs/REMOTE_BAKERY.md):
 
 ```yaml
 config:

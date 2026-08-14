@@ -688,28 +688,6 @@ spec:
             {{- include "poundcake.monitoringEnv" . | nindent 12 }}
             {{- include "poundcake.stackstormEnv" . | nindent 12 }}
             {{- include "poundcake.bakeryEnv" . | nindent 12 }}
-            {{- if .Values.bakery.client.enabled }}
-            - name: POUNDCAKE_BAKERY_MONITOR_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ required "bakery.client.auth.existingSecret is required when bakery.client.enabled=true" .Values.bakery.client.auth.existingSecret }}
-                  key: {{ .Values.bakery.client.auth.secretKeys.monitorId }}
-            - name: POUNDCAKE_BAKERY_MONITOR_UUID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.bakery.client.auth.existingSecret }}
-                  key: {{ .Values.bakery.client.auth.secretKeys.monitorUuid }}
-            - name: POUNDCAKE_BAKERY_MONITOR_HMAC_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.bakery.client.auth.existingSecret }}
-                  key: {{ .Values.bakery.client.auth.secretKeys.keyId }}
-            - name: POUNDCAKE_BAKERY_MONITOR_HMAC_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.bakery.client.auth.existingSecret }}
-                  key: {{ .Values.bakery.client.auth.secretKeys.secret }}
-            {{- end }}
             - name: POUNDCAKE_AUTH_ENABLED
               value: {{ .Values.auth.enabled | quote }}
             - name: POUNDCAKE_PLUGIN_CREDENTIAL_ENCRYPTION_KEY

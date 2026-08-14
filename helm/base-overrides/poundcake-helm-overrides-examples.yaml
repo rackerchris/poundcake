@@ -40,9 +40,10 @@ gateway:
       protocol: HTTP
       pathPrefix: /
 
-# Configure Bakery only in a cluster override. The bootstrap HMAC secret must
-# use the key names configured below; the startup hook imports it into PoundCake
-# credential-manager and then registers the monitor remotely.
+# Configure Bakery only in a cluster override. Apply the Secret printed by
+# bakery/bin/create-monitor-bootstrap.sh (bootstrap-key-id / bootstrap-key)
+# before enabling the client. The bakery plugin then registers remotely and
+# stores the issued monitor HMAC in credential-manager.
 bakery:
   client:
     enabled: false
@@ -58,7 +59,5 @@ bakery:
     auth:
       existingSecret: bakery-monitor-bootstrap
       secretKeys:
-        monitorId: monitor_id
-        monitorUuid: monitor_uuid
-        keyId: hmac_key_id
-        secret: hmac_secret
+        bootstrapKeyId: bootstrap-key-id
+        bootstrapKey: bootstrap-key

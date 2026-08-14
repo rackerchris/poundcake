@@ -109,11 +109,13 @@ async def _read_internal_hmac_payload(
     )
     async with worker_reader_db_session(normalized_service_type) as db:
         result = await db.execute(
-            text(f"""
+            text(
+                f"""
                 SELECT encrypted_payload
                 FROM {view_name}
                 WHERE credential_key_id = :credential_key_id
-                """),
+                """
+            ),
             {"credential_key_id": credential_key_id},
         )
         encrypted_payload = result.scalar_one_or_none()
