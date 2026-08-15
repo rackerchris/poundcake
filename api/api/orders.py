@@ -19,6 +19,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import selectinload
 
 from api.api.auth import require_reader, require_service
+from api.core.config import get_settings
 from api.core.database import get_db
 from api.core.logging import get_logger
 from api.core.time import utc_now_db
@@ -40,6 +41,7 @@ from api.schemas.schemas import (
     OrderUpdate,
 )
 from api.schemas.query_params import OrderQueryParams, validate_query_params
+from api.services.communications_policy import ensure_fallback_recipe
 from api.services.dish_planner import (
     build_dish_plan,
     expected_run_secs_from_recipe_snapshot,
@@ -564,6 +566,15 @@ async def _dispatch_order_once(
 
         recipe_result = await db.execute(_active_recipe_query(order.alert_group_name))
         recipe = recipe_result.unique().scalars().first()
+
+        if not recipe:
+            catch_all_name = (get_settings().catch_all_recipe_name or "").strip()
+            if catch_all_name and (
+                run_phase == "firing" or (order.remediation_outcome or "").lower() == "none"
+            ):
+                await ensure_fallback_recipe(db, req_id=order.req_id)
+                fallback_result = await db.execute(_active_recipe_query(catch_all_name))
+                recipe = fallback_result.unique().scalars().first()
 
         if not recipe:
             order.processing_status = "resolving"

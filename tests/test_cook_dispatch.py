@@ -507,7 +507,7 @@ async def test_dispatch_order_skips_global_comms_when_recipe_has_local_comms(
 
 
 @pytest.mark.asyncio
-async def test_dispatch_order_skips_when_recipe_is_missing_even_if_global_comms_exist(
+async def test_dispatch_order_skips_when_no_recipe_and_no_fallback_recipe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     order = SimpleNamespace(
@@ -524,7 +524,7 @@ async def test_dispatch_order_skips_when_recipe_is_missing_even_if_global_comms_
         is_active=False,
         updated_at=None,
     )
-    db = _DispatchDb([[order], []])
+    db = _DispatchDb([[order], [], []])
 
     @asynccontextmanager
     async def _noop_write_transaction(_db: object):
@@ -533,8 +533,12 @@ async def test_dispatch_order_skips_when_recipe_is_missing_even_if_global_comms_
     def _unexpected_seed(**_kwargs: Any) -> list[object]:
         raise AssertionError("dish ingredients should not be seeded without a recipe")
 
+    async def _noop_ensure_fallback(_db: object, *, req_id: str) -> object:
+        return None
+
     monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
     monkeypatch.setattr(orders_api, "seed_dish_ingredients_for_phase", _unexpected_seed)
+    monkeypatch.setattr(orders_api, "ensure_fallback_recipe", _noop_ensure_fallback)
 
     response = await orders_api._dispatch_order_once(
         request=SimpleNamespace(state=SimpleNamespace(req_id="req-no-recipe")),
@@ -544,47 +548,74 @@ async def test_dispatch_order_skips_when_recipe_is_missing_even_if_global_comms_
 
     assert response.status == "skipped"
     assert response.reason == "No recipe for missing-recipe"
+    assert order.processing_status == "resolving"
 
 
 @pytest.mark.asyncio
-async def test_dispatch_order_without_exact_recipe_does_not_use_fallback_recipe(
+async def test_dispatch_order_uses_fallback_recipe_when_no_exact_recipe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     order = SimpleNamespace(
         id=225,
-        req_id="req-no-exact-recipe",
+        req_id="req-catch-all",
         processing_status="new",
         alert_group_name="missing-recipe-with-catch-all",
         remediation_outcome=None,
         raw_data={},
-        clear_timeout_sec=30,
-        clear_deadline_at="deadline",
-        clear_timed_out_at="timed-out",
-        auto_close_eligible=True,
-        is_active=False,
+        clear_timeout_sec=None,
+        clear_deadline_at=None,
+        clear_timed_out_at=None,
+        auto_close_eligible=False,
+        is_active=True,
         updated_at=None,
     )
-    db = _DispatchDb([[order], []])
+    fallback_recipe = SimpleNamespace(
+        id=601,
+        name="fallback-recipe",
+        enabled=True,
+        clear_timeout_sec=None,
+        recipe_ingredients=[],
+    )
+    # [order], [no exact recipe], [fallback recipe], [no active phase dish], [no seed rows]
+    db = _DispatchDb([[order], [], [fallback_recipe], [], []])
+    captured: dict[str, object] = {}
+    ensure_calls = 0
 
     @asynccontextmanager
     async def _noop_write_transaction(_db: object):
         yield
 
-    def _unexpected_seed(**_kwargs: Any) -> list[object]:
-        raise AssertionError("dish ingredients should not be seeded without a recipe")
+    async def _record_ensure_fallback(_db: object, *, req_id: str) -> object:
+        nonlocal ensure_calls
+        ensure_calls += 1
+        captured["ensure_req_id"] = req_id
+        return fallback_recipe
+
+    async def _build_plan(_db: object, **kwargs: Any) -> object:
+        captured["plan_recipe"] = kwargs["recipe"]
+        return SimpleNamespace(recipe=kwargs["recipe"], inherited_recipe_ingredients=[])
+
+    def _seed(**kwargs: Any) -> list[object]:
+        captured["recipe"] = kwargs["recipe"]
+        return []
 
     monkeypatch.setattr(orders_api, "_write_transaction", _noop_write_transaction)
-    monkeypatch.setattr(orders_api, "seed_dish_ingredients_for_phase", _unexpected_seed)
+    monkeypatch.setattr(orders_api, "ensure_fallback_recipe", _record_ensure_fallback)
+    monkeypatch.setattr(orders_api, "build_dish_plan", _build_plan)
+    monkeypatch.setattr(orders_api, "seed_dish_ingredients_for_phase", _seed)
 
     response = await orders_api._dispatch_order_once(
-        request=SimpleNamespace(state=SimpleNamespace(req_id="req-no-exact-recipe")),
+        request=SimpleNamespace(state=SimpleNamespace(req_id="req-catch-all")),
         order_id=225,
         db=db,  # type: ignore[arg-type]
     )
 
-    assert response.status == "skipped"
-    assert response.reason == "No recipe for missing-recipe-with-catch-all"
-    assert order.processing_status == "resolving"
+    assert response.status == "dispatched"
+    assert response.recipe_name == "fallback-recipe"
+    assert ensure_calls == 1
+    assert captured["ensure_req_id"] == "req-catch-all"
+    assert captured["plan_recipe"] is fallback_recipe
+    assert captured["recipe"] is fallback_recipe
 
 
 @pytest.mark.asyncio

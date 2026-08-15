@@ -27,7 +27,10 @@ from api.services.communications import (
     normalize_route_provider_config,
 )
 from api.core.config import get_settings
+from api.core.logging import get_logger
 from api.services.recipe_ingredient_cleanup import detach_recipe_ingredient_ids_safely
+
+logger = get_logger(__name__)
 
 MANAGED_TASK_PREFIX = "pcmcomms."
 MANAGED_RECIPE_NAME_GLOBAL = "pcm-policy-global"
@@ -795,6 +798,30 @@ async def sync_fallback_policy_recipe(
             owner_key="fallback",
             fallback=True,
         ),
+    )
+    return recipe
+
+
+async def ensure_fallback_recipe(
+    db: AsyncSession,
+    *,
+    req_id: str,
+) -> Recipe | None:
+    """Ensure the catch-all fallback recipe matches the effective global policy.
+
+    Called at order dispatch when no recipe matches the alert group so unmatched
+    alerts still open the configured fallback communication routes.
+    """
+    routes = await get_global_policy_routes(db)
+    recipe = await sync_fallback_policy_recipe(db, routes=routes)
+    logger.info(
+        "Ensured fallback recipe from communications policy",
+        extra={
+            "req_id": req_id,
+            "recipe_name": recipe.name if recipe is not None else None,
+            "recipe_id": recipe.id if recipe is not None else None,
+            "route_count": len(routes),
+        },
     )
     return recipe
 
