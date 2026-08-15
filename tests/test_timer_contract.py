@@ -729,3 +729,58 @@ def test_cancel_blocked_future_rows_cancels_all_future_pending_rows_once(monkeyp
     timer._cancel_blocked_future_rows(blocking, "req-1", reason="first step failed")
 
     assert reconciled == [(2, "canceled"), (3, "canceled"), (4, "canceled")]
+
+
+def test_timer_suppression_lifecycle_throttles_within_interval(monkeypatch) -> None:
+    monkeypatch.setattr(timer, "LAST_SUPPRESSION_LIFECYCLE_RUN", 1000.0)
+    monkeypatch.setattr(timer, "SUPPRESSION_LIFECYCLE_INTERVAL", 30)
+
+    class _Time:
+        @staticmethod
+        def time() -> float:
+            return 1010.0
+
+    monkeypatch.setattr(timer, "time", _Time)
+
+    calls: list[dict] = []
+
+    def request(*_args, **kwargs) -> object:
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(timer, "request_control_plane_sync", request)
+
+    timer.run_suppression_lifecycle()
+
+    assert calls == []
+
+
+def test_timer_suppression_lifecycle_posts_when_due(monkeypatch) -> None:
+    monkeypatch.setattr(timer, "LAST_SUPPRESSION_LIFECYCLE_RUN", 0.0)
+    monkeypatch.setattr(timer, "SUPPRESSION_LIFECYCLE_INTERVAL", 30)
+
+    class _Time:
+        @staticmethod
+        def time() -> float:
+            return 1000.0
+
+    monkeypatch.setattr(timer, "time", _Time)
+
+    calls: list[tuple[str, str]] = []
+
+    class Response:
+        status_code = 200
+
+        def json(self) -> dict[str, int]:
+            return {"status": "ok", "finalized": 2}
+
+    def request(method: str, url: str, **_kwargs) -> Response:
+        calls.append((method, url))
+        return Response()
+
+    monkeypatch.setattr(timer, "request_control_plane_sync", request)
+
+    timer.run_suppression_lifecycle()
+
+    assert calls == [("POST", f"{timer.API_BASE_URL}/suppressions/run-lifecycle")]
+    assert timer.LAST_SUPPRESSION_LIFECYCLE_RUN == 1000.0

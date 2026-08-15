@@ -27,6 +27,8 @@ TIMER_INTERVAL = int(os.getenv("TIMER_INTERVAL", "10"))
 POLL_LIMIT = int(os.getenv("TIMER_LIMIT", "100"))
 SYSTEM_REQ_ID = os.getenv("TIMER_WORKER_ID", f"SYSTEM-TIMER-{os.getpid()}")
 POLLER_RETRIES = get_settings().poller_http_retries
+SUPPRESSION_LIFECYCLE_INTERVAL = int(os.getenv("SUPPRESSION_LIFECYCLE_INTERVAL", "30"))
+LAST_SUPPRESSION_LIFECYCLE_RUN = 0.0
 EXPEDITER_STATUS_POLL_TIMEOUT_MIN = 10
 EXPEDITER_STATUS_POLL_TIMEOUT_MAX = max(
     EXPEDITER_STATUS_POLL_TIMEOUT_MIN,
@@ -631,6 +633,33 @@ def _poll_row(row: JSONObject, req_id: str) -> JSONObject:
     )
 
 
+def run_suppression_lifecycle() -> None:
+    """Run the suppression summary lifecycle sweep on a slower cadence."""
+    global LAST_SUPPRESSION_LIFECYCLE_RUN
+    now = time.time()
+    if now - LAST_SUPPRESSION_LIFECYCLE_RUN < SUPPRESSION_LIFECYCLE_INTERVAL:
+        return
+    LAST_SUPPRESSION_LIFECYCLE_RUN = now
+    response = request_control_plane_sync(
+        "POST",
+        f"{API_BASE_URL}/suppressions/run-lifecycle",
+        req_id=SYSTEM_REQ_ID,
+        timeout=10,
+        retries=POLLER_RETRIES,
+    )
+    if response.status_code != 200:
+        logger.warning(
+            "Suppression lifecycle run returned non-200",
+            extra={"req_id": SYSTEM_REQ_ID, "status_code": response.status_code},
+        )
+        return
+    payload = response.json()
+    logger.debug(
+        "Suppression lifecycle completed",
+        extra={"req_id": SYSTEM_REQ_ID, "finalized": payload.get("finalized", 0)},
+    )
+
+
 def monitor_cancel_requested(query_limit: int = POLL_LIMIT) -> None:
     response = request_control_plane_sync(
         "GET",
@@ -821,4 +850,5 @@ if __name__ == "__main__":
         _run_monitor("cancel_requested", lambda: monitor_cancel_requested(loop_limit))
         _run_monitor("in_flight", lambda: monitor_in_flight(loop_limit))
         _run_monitor("advance_ready", lambda: monitor_advance_ready(loop_limit))
+        _run_monitor("suppression_lifecycle", run_suppression_lifecycle)
         time.sleep(loop_interval)

@@ -1215,6 +1215,13 @@ class SuppressionStatsResponse(BaseModel):
     last_seen_at: Optional[datetime] = None
 
 
+class SuppressionLifecycleResponse(BaseModel):
+    """Result of a suppression lifecycle sweep."""
+
+    status: str
+    finalized: int
+
+
 class SuppressedActivityResponse(BaseModel):
     id: int
     suppression_id: int

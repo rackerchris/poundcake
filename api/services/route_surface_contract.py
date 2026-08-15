@@ -383,6 +383,12 @@ ROUTE_SURFACE_ENTRIES: tuple[RouteSurfaceEntry, ...] = (
         "service",
     ),
     RouteSurfaceEntry(
+        "POST",
+        "/api/v1/suppressions/run-lifecycle",
+        RouteSurface.INTERNAL_RUNTIME,
+        "service",
+    ),
+    RouteSurfaceEntry(
         "POST", "/api/v1/ui/operator-actions", RouteSurface.CONFIGURATION_EDITOR, "operator"
     ),
 )

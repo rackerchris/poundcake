@@ -784,6 +784,7 @@ def test_scoped_internal_services_allow_expected_workflow_routes() -> None:
         (timer, "POST", "/api/v1/cook/dishes/1/advance"),
         (timer, "GET", "/api/v1/expediter/status/dummy/abc"),
         (timer, "POST", "/api/v1/expediter/cancel/dummy/abc"),
+        (timer, "POST", "/api/v1/suppressions/run-lifecycle"),
         (expediter_runner, "GET", "/api/v1/dish-ingredients/execution-pending"),
         (expediter_runner, "POST", "/api/v1/dish-ingredients/1/execution-claim"),
         (expediter_runner, "POST", "/api/v1/dish-ingredients/1/execution-release"),

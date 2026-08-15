@@ -8,7 +8,12 @@ from types import SimpleNamespace
 import pytest
 from starlette.requests import Request
 
-from api.api.suppressions import cancel_suppression, create_suppression, patch_suppression
+from api.api.suppressions import (
+    cancel_suppression,
+    create_suppression,
+    patch_suppression,
+    run_suppression_lifecycle,
+)
 from api.models.models import AlertSuppression, AlertSuppressionMatcher
 from api.schemas.schemas import SuppressionCreate, SuppressionUpdate
 
@@ -203,3 +208,27 @@ async def test_update_suppression_route_updates_alertmanager_backed_suppression(
     assert response.status == "accepted"
     assert response.message == "Suppression update order accepted"
     assert response.order_id == 203
+
+
+@pytest.mark.asyncio
+async def test_run_lifecycle_route_finalizes_expired_suppressions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_finalize(db: object, *, req_id: str) -> int:
+        captured["db"] = db
+        captured["req_id"] = req_id
+        return 3
+
+    monkeypatch.setattr("api.api.suppressions.finalize_expired_suppressions", _fake_finalize)
+
+    response = await run_suppression_lifecycle(
+        request=_request("/api/v1/suppressions/run-lifecycle"),
+        db=_Db(),  # type: ignore[arg-type]
+        _context=object(),
+    )
+
+    assert captured["req_id"] == "test-suppression-route"
+    assert response.status == "ok"
+    assert response.finalized == 3

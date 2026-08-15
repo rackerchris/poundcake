@@ -1517,6 +1517,8 @@ def _timer_runtime_path(path: str, method: str) -> bool:
         return True
     if path.startswith("/api/v1/expediter/cancel/") and method == "POST":
         return True
+    if path == "/api/v1/suppressions/run-lifecycle" and method == "POST":
+        return True
     return False
 
 

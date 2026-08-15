@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.api.auth import require_operator, require_reader
+from api.api.auth import require_operator, require_reader, require_service
 from api.core.database import get_db
 from api.core.logging import get_logger
 from api.core.rate_limit import limiter
@@ -43,6 +43,7 @@ from api.schemas.schemas import (
     SuppressionCreate,
     SuppressionDetailResponse,
     SuppressionMatcher,
+    SuppressionLifecycleResponse,
     SuppressionResponse,
     SuppressionStatusResponse,
     SuppressionSummaryResponse,
@@ -52,6 +53,7 @@ from api.schemas.schemas import (
 from api.services.suppression_service import (
     compute_suppression_stats,
     count_active_suppressions,
+    finalize_expired_suppressions,
     get_suppression,
     list_suppression_activity,
     list_suppressions,
@@ -198,6 +200,25 @@ async def get_suppression_statuses(
     )
     logger.debug("Fetched suppression statuses", extra={"req_id": req_id, "count": len(rows)})
     return [_to_suppression_status_response(row) for row in rows]
+
+
+@router.post("/suppressions/run-lifecycle", response_model=SuppressionLifecycleResponse)
+async def run_suppression_lifecycle(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _context: object = Depends(require_service),
+) -> SuppressionLifecycleResponse:
+    """Sweep expired suppression windows and finalize their summaries.
+
+    Invoked by the timer worker on a slower cadence so suppression summaries
+    close and still-firing events are requeued without operator action.
+    """
+    req_id = request.state.req_id
+    finalized = await finalize_expired_suppressions(db, req_id=req_id)
+    logger.info(
+        "Suppression lifecycle sweep completed", extra={"req_id": req_id, "finalized": finalized}
+    )
+    return SuppressionLifecycleResponse(status="ok", finalized=finalized)
 
 
 @router.post("/suppressions", response_model=OperatorActionAcceptedResponse, status_code=202)
