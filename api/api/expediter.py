@@ -353,6 +353,7 @@ async def _dish_execution_context(
 ) -> dict:
     result = await db.execute(select(Dish).where(Dish.id == row.dish_id))
     dish = result.scalars().first()
+    order_id = dish.order_id if dish is not None else None
     result = await db.execute(
         select(DishIngredient)
         .where(
@@ -371,11 +372,26 @@ async def _dish_execution_context(
     completed_rows = list(result.scalars().all())
     entries = [_runtime_context_entry(item) for item in completed_rows]
     context_updates: dict = {}
+    if order_id is not None:
+        prior_result = await db.execute(
+            select(DishIngredient)
+            .join(Dish, Dish.id == DishIngredient.dish_id)
+            .where(
+                Dish.order_id == order_id,
+                Dish.id != row.dish_id,
+                DishIngredient.deleted.is_(False),
+                DishIngredient.id != row.id,
+                DishIngredient.service_exec_status.in_(TERMINAL_EXECUTION_STATUSES),
+            )
+            .order_by(DishIngredient.id.asc())
+        )
+        for item in prior_result.scalars().all():
+            context_updates.update(_stored_context_updates(item.service_exec_actual_outcome))
     for item in completed_rows:
         context_updates.update(_stored_context_updates(item.service_exec_actual_outcome))
     return {
         "id": row.dish_id,
-        "order_id": dish.order_id if dish is not None else None,
+        "order_id": order_id,
         "run_phase": dish.run_phase if dish is not None else None,
         "ingredients": entries,
         "evidence": [

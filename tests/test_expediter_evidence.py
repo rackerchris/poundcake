@@ -34,11 +34,18 @@ class _ExecuteResult:
 
 
 class _FakeDb:
-    def __init__(self, dish, completed_rows):
+    """Returns queued results in call order: dish, same-dish rows, prior-dish rows."""
+
+    def __init__(self, dish, completed_rows, prior_rows=None):
         self._results = [dish, completed_rows]
+        if prior_rows is not None:
+            self._results.append(prior_rows)
+        self.calls = 0
 
     async def execute(self, _statement):
-        return _ExecuteResult(self._results.pop(0))
+        result = self._results[self.calls] if self.calls < len(self._results) else []
+        self.calls += 1
+        return _ExecuteResult(result)
 
 
 def test_is_evidence_runtime_row_accepts_specialized_gather_roles() -> None:
@@ -136,3 +143,62 @@ async def test_dish_execution_context_collects_specialized_evidence_rows() -> No
         "alertmanager",
         "stackstorm",
     ]
+
+
+@pytest.mark.asyncio
+async def test_dish_execution_context_propagates_prior_dish_context_updates() -> None:
+    """A ticket id created in the firing dish must reach the resolving dish's close step."""
+    resolving_dish = Dish(
+        id=3611,
+        order_id=1374,
+        run_phase="resolving",
+        created_at=datetime(2026, 1, 1),
+        updated_at=datetime(2026, 1, 1),
+    )
+    close_row = DishIngredient(
+        id=1371,
+        req_id="unit-test",
+        dish_id=3611,
+        recipe_ingredient_id=12,
+        task_key="bakery-comms-close",
+        step_order=20,
+        parallel_group=0,
+        depth=0,
+        service_type="bakery",
+        service_exec="communication",
+        service_exec_status="running",
+        deleted=False,
+        created_at=datetime(2026, 1, 1),
+        updated_at=datetime(2026, 1, 1),
+    )
+    firing_create_row = DishIngredient(
+        id=1356,
+        req_id="unit-test",
+        dish_id=3596,
+        recipe_ingredient_id=11,
+        task_key="bakery-comms-open",
+        step_order=10,
+        parallel_group=0,
+        depth=0,
+        service_type="bakery",
+        service_exec="communication",
+        service_exec_status="succeeded",
+        service_exec_actual_outcome={
+            "success": True,
+            "status": "succeeded",
+            "ticket_id": "b610e349-02c6-4e85-b1be-ad14c5ef0b02",
+            "_context_updates": {"bakery_comms_id": "b610e349-02c6-4e85-b1be-ad14c5ef0b02"},
+        },
+        deleted=False,
+        created_at=datetime(2026, 1, 1),
+        updated_at=datetime(2026, 1, 1),
+    )
+
+    context = await expediter._dish_execution_context(
+        db=_FakeDb(resolving_dish, [], [firing_create_row]),
+        row=close_row,
+    )
+
+    assert context["order_id"] == 1374
+    assert context["context_updates"] == {"bakery_comms_id": "b610e349-02c6-4e85-b1be-ad14c5ef0b02"}
+    assert context["ingredients"] == []
