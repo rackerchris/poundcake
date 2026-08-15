@@ -1015,13 +1015,14 @@ class BakeryExecutionAdapter(ExecutionAdapter):
             operation = await poll_operation(service_exec_id)
             raw = operation.model_dump(mode="json")
             status = _map_bakery_status(operation.status)
+            outcome = {**raw, "success": status == "succeeded"}
             return ExecutionResult(
                 service_type=self.service_type,
                 status=status,
                 service_exec_id=service_exec_id,
                 service_exec_error=operation.last_error,
-                result=raw,
-                raw=raw,
+                result=outcome,
+                raw=outcome,
                 retryable=status in {"dispatched", "running"},
             )
         except Exception as exc:  # noqa: BLE001

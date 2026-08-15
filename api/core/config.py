@@ -238,6 +238,12 @@ class Settings(BaseSettings):
     watchdog_heartbeat_check_interval_seconds: int = 30
 
     # ==========================================================================
+    # Bakery Monitor Heartbeat Settings
+    # ==========================================================================
+    bakery_monitor_heartbeat_enabled: bool = True
+    bakery_monitor_heartbeat_interval_seconds: int = 30
+
+    # ==========================================================================
     # Incident Reconciliation Settings
     # ==========================================================================
     incident_reconcile_enabled: bool = True

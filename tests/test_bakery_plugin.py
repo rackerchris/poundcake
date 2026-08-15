@@ -6,12 +6,19 @@ import json
 import time
 from copy import deepcopy
 
+import httpx
 import pytest
 
 from api.plugins.bakery.adapter import BakeryExecutionAdapter, _payload_with_dish_evidence
 from api.plugins.bakery import client
-from api.plugins.bakery.client import BakeryClientConfig, BakeryHealth, BakeryMonitorCredential
-from api.plugins.bakery.contract import CommunicationOpenRequest
+from api.plugins.bakery import heartbeat as bakery_heartbeat
+from api.plugins.bakery.client import (
+    BakeryClientConfig,
+    BakeryHealth,
+    BakeryMonitorCredential,
+    BakeryTicketOperation,
+)
+from api.plugins.bakery.contract import CommunicationOpenRequest, MonitorHeartbeatResponse
 from api.plugins.bakery.templates import (
     BAKERY_SCHEDULED_TASKS,
     communication_routes,
@@ -22,6 +29,7 @@ from api.plugins.bakery.capabilities import load_bakery_capability_templates
 from api.plugins.catalog import get_enabled_plugins
 from api.plugins.contract import (
     ServicePluginContractError,
+    expected_outcome_matches,
     validate_payload_schema,
     validate_service_payload_for_operation,
 )
@@ -656,3 +664,216 @@ async def test_bakery_credential_failure_is_initializing_and_redacted(monkeypatc
     assert "HMAC" not in details
     assert "hmac_secret" not in details
     assert "encrypted_payload" not in details
+
+
+def _heartbeat_response_payload() -> dict[str, object]:
+    return {
+        "monitor_uuid": "monitor-uuid",
+        "monitor_id": "rackspace/poundcake",
+        "status": "healthy",
+        "route_sync_required": False,
+        "heartbeat_interval_sec": 30,
+        "miss_threshold": 5,
+        "recorded_at": "2026-08-14T12:00:00Z",
+    }
+
+
+def _heartbeat_credential() -> BakeryMonitorCredential:
+    return BakeryMonitorCredential(
+        monitor_uuid="monitor-uuid",
+        monitor_id="rackspace/poundcake",
+        hmac_key_id="active-id",
+        hmac_secret="active-secret",
+    )
+
+
+async def _heartbeat_credential_provider() -> BakeryMonitorCredential:
+    return _heartbeat_credential()
+
+
+@pytest.mark.asyncio
+async def test_bakery_send_heartbeat_posts_signed_payload(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def request_with_retry(method: str, url: str, **kwargs: object) -> _FakeBakeryResponse:
+        captured["method"] = method
+        captured["url"] = url
+        captured["headers"] = kwargs["headers"]
+        captured["content"] = kwargs["content"]
+        return _FakeBakeryResponse(_heartbeat_response_payload())
+
+    monkeypatch.setattr(client, "request_with_retry", request_with_retry)
+    monkeypatch.setattr(
+        client, "ensure_monitor_credential_configured", _heartbeat_credential_provider
+    )
+    token = client.set_bakery_client_config(
+        BakeryClientConfig(base_url="https://bakery.example.com", plugin_id="rackspace/poundcake")
+    )
+    try:
+        response = await client.send_heartbeat({"installation_id": "instance-1"})
+    finally:
+        client.reset_bakery_client_config(token)
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://bakery.example.com/api/v1/monitors/heartbeat"
+    headers = captured["headers"]
+    assert str(headers["Authorization"]).startswith("HMAC active-id:")
+    assert headers["X-Timestamp"]
+    assert headers["X-Bakery-Monitor-UUID"] == "monitor-uuid"
+    assert json.loads(captured["content"].decode("utf-8")) == {"installation_id": "instance-1"}
+    assert isinstance(response, MonitorHeartbeatResponse)
+    assert response.heartbeat_interval_sec == 30
+
+
+@pytest.mark.asyncio
+async def test_bakery_heartbeat_once_re_registers_on_401(monkeypatch) -> None:
+    calls = {"request": 0, "bootstrap": 0}
+    bootstrap_force: list[bool] = []
+
+    async def request_with_retry(method: str, url: str, **kwargs: object) -> _FakeBakeryResponse:
+        calls["request"] += 1
+        if calls["request"] == 1:
+            raise httpx.HTTPStatusError(
+                "unauthorized", request=httpx.Request("POST", url), response=httpx.Response(401)
+            )
+        return _FakeBakeryResponse(_heartbeat_response_payload())
+
+    async def bootstrap_monitor_credential(*, force: bool = False) -> BakeryMonitorCredential:
+        calls["bootstrap"] += 1
+        bootstrap_force.append(force)
+        return _heartbeat_credential()
+
+    monkeypatch.setattr(client, "request_with_retry", request_with_retry)
+    monkeypatch.setattr(
+        client, "ensure_monitor_credential_configured", _heartbeat_credential_provider
+    )
+    monkeypatch.setattr(
+        bakery_heartbeat, "bootstrap_monitor_credential", bootstrap_monitor_credential
+    )
+    token = client.set_bakery_client_config(
+        BakeryClientConfig(base_url="https://bakery.example.com", plugin_id="rackspace/poundcake")
+    )
+    try:
+        response = await bakery_heartbeat.heartbeat_once()
+    finally:
+        client.reset_bakery_client_config(token)
+
+    assert calls["request"] == 2
+    assert calls["bootstrap"] == 1
+    assert bootstrap_force == [True]
+    assert response.monitor_id == "rackspace/poundcake"
+
+
+@pytest.mark.asyncio
+async def test_bakery_heartbeat_once_propagates_non_401(monkeypatch) -> None:
+    async def request_with_retry(method: str, url: str, **kwargs: object) -> _FakeBakeryResponse:
+        raise httpx.HTTPStatusError(
+            "boom", request=httpx.Request("POST", url), response=httpx.Response(500)
+        )
+
+    async def unexpected_bootstrap(*, force: bool = False) -> object:
+        raise AssertionError("non-401 heartbeat failure must not re-register")
+
+    monkeypatch.setattr(client, "request_with_retry", request_with_retry)
+    monkeypatch.setattr(
+        client, "ensure_monitor_credential_configured", _heartbeat_credential_provider
+    )
+    monkeypatch.setattr(bakery_heartbeat, "bootstrap_monitor_credential", unexpected_bootstrap)
+    token = client.set_bakery_client_config(
+        BakeryClientConfig(base_url="https://bakery.example.com", plugin_id="rackspace/poundcake")
+    )
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await bakery_heartbeat.heartbeat_once()
+    finally:
+        client.reset_bakery_client_config(token)
+
+
+def test_bakery_heartbeat_enabled_requires_plugin_and_transport(monkeypatch) -> None:
+    monkeypatch.setenv("POUNDCAKE_ENABLED_PLUGINS", "bakery")
+    monkeypatch.setenv("POUNDCAKE_BAKERY_BASE_URL", "https://bakery.example.com")
+    assert bakery_heartbeat.heartbeat_enabled() is True
+
+    monkeypatch.delenv("POUNDCAKE_BAKERY_BASE_URL", raising=False)
+    assert bakery_heartbeat.heartbeat_enabled() is False
+
+    monkeypatch.setenv("POUNDCAKE_BAKERY_BASE_URL", "https://bakery.example.com")
+    monkeypatch.setenv("POUNDCAKE_ENABLED_PLUGINS", "dummy")
+    assert bakery_heartbeat.heartbeat_enabled() is False
+
+
+def _succeeded_operation() -> BakeryTicketOperation:
+    return BakeryTicketOperation(
+        operation_id="op-1",
+        ticket_id="260814-03355",
+        action="create",
+        status="succeeded",
+        attempt_count=1,
+        max_attempts=3,
+        created_at="2026-08-14T12:00:00Z",
+        updated_at="2026-08-14T12:00:05Z",
+    )
+
+
+@pytest.mark.asyncio
+async def test_bakery_poll_outcome_carries_success_flag(monkeypatch) -> None:
+    async def poll_operation(operation_id: str) -> BakeryTicketOperation:
+        assert operation_id == "bakery:communication:op-1"
+        return _succeeded_operation()
+
+    monkeypatch.setattr("api.plugins.bakery.adapter.poll_operation", poll_operation)
+    adapter = BakeryExecutionAdapter(
+        BakeryClientConfig(base_url="https://bakery.example.com", plugin_id="rackspace/poundcake")
+    )
+    ctx = ExecutionContext(service_type="bakery", service_exec="communication", req_id="unit-test")
+
+    result = await adapter.poll(ctx, "bakery:communication:op-1")
+
+    assert result.status == "succeeded"
+    assert result.result
+    assert result.result["success"] is True
+    # ticket_id must stay top-level for observability consumers
+    assert result.result["ticket_id"] == "260814-03355"
+    assert (
+        expected_outcome_matches(
+            expected={"success": True}, actual=result.result, status=result.status
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_bakery_poll_outcome_marks_failure(monkeypatch) -> None:
+    def _failed_operation() -> BakeryTicketOperation:
+        return BakeryTicketOperation(
+            operation_id="op-1",
+            ticket_id="260814-03355",
+            action="create",
+            status="failed",
+            attempt_count=3,
+            max_attempts=3,
+            last_error="provider rejected",
+            created_at="2026-08-14T12:00:00Z",
+            updated_at="2026-08-14T12:00:05Z",
+        )
+
+    async def poll_operation(operation_id: str) -> BakeryTicketOperation:
+        return _failed_operation()
+
+    monkeypatch.setattr("api.plugins.bakery.adapter.poll_operation", poll_operation)
+    adapter = BakeryExecutionAdapter(
+        BakeryClientConfig(base_url="https://bakery.example.com", plugin_id="rackspace/poundcake")
+    )
+    ctx = ExecutionContext(service_type="bakery", service_exec="communication", req_id="unit-test")
+
+    result = await adapter.poll(ctx, "bakery:communication:op-1")
+
+    assert result.status == "failed"
+    assert result.result
+    assert result.result["success"] is False
+    assert (
+        expected_outcome_matches(
+            expected={"success": True}, actual=result.result, status=result.status
+        )
+        is False
+    )

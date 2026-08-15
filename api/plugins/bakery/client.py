@@ -26,6 +26,7 @@ from api.plugins.bakery.contract import (
     CommunicationOperationResponse,
     CommunicationResponse,
     CommunicationUpdateRequest,
+    MonitorHeartbeatResponse,
 )
 from api.plugins.transport import is_secure_plugin_transport
 from api.services.credential_manager import (
@@ -53,6 +54,7 @@ TERMINAL_OPERATION_STATUSES = {
 BAKERY_CREDENTIAL_TYPE = "bakery_monitor_hmac"
 BAKERY_CREDENTIAL_KEY_ID = "default"
 MONITOR_REGISTER_PATH = "/api/v1/monitors/register"
+MONITOR_HEARTBEAT_PATH = "/api/v1/monitors/heartbeat"
 MISSING_BAKERY_CREDENTIAL_MESSAGE = (
     "Bakery monitor HMAC credential is not configured; provide a Bakery "
     "bootstrap HMAC via POUNDCAKE_BAKERY_BOOTSTRAP_HMAC_KEY_ID and "
@@ -635,6 +637,19 @@ async def get_health() -> BakeryHealth:
     if response.status_code >= 400:
         response.raise_for_status()
     return BakeryHealth.model_validate(response.json())
+
+
+async def send_heartbeat(payload: JSONObject) -> MonitorHeartbeatResponse:
+    config_error = validate_transport_config()
+    if config_error:
+        raise RuntimeError(config_error)
+    response_payload = await _request(
+        "monitor_heartbeat",
+        "POST",
+        MONITOR_HEARTBEAT_PATH,
+        payload=payload,
+    )
+    return MonitorHeartbeatResponse.model_validate(response_payload)
 
 
 def _ticket_accepted_from_communication(

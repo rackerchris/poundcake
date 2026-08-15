@@ -113,3 +113,30 @@ class CommunicationOperationResponse(_BakeryContractModel):
     provider_response: JSONObject | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class MonitorHeartbeatRequest(_BakeryContractModel):
+    """Liveness heartbeat sent by PoundCake to Bakery."""
+
+    catalog_hash: str | None = Field(default=None, max_length=64)
+    installation_id: str | None = Field(default=None, max_length=255)
+    app_version: str | None = Field(default=None, max_length=100)
+    environment_label: str | None = Field(default=None, max_length=255)
+    region: str | None = Field(default=None, max_length=100)
+    cluster_name: str | None = Field(default=None, max_length=255)
+    namespace: str | None = Field(default=None, max_length=255)
+    release_name: str | None = Field(default=None, max_length=255)
+    tags: list[str] = Field(default_factory=list)
+    details: JSONObject = Field(default_factory=dict)
+
+
+class MonitorHeartbeatResponse(_BakeryContractModel):
+    """Heartbeat acknowledgement and route sync hint."""
+
+    monitor_uuid: str
+    monitor_id: str
+    status: str
+    route_sync_required: bool
+    heartbeat_interval_sec: int
+    miss_threshold: int
+    recorded_at: datetime

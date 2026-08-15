@@ -39,6 +39,10 @@ from api.api.observability import router as observability_router
 from api.api.suppressions import router as suppressions_router
 from api.api.ui_operator_actions import router as ui_operator_actions_router
 from api.schemas.schemas import HealthResponse, LivenessResponse
+from api.plugins.bakery.heartbeat import (
+    start_bakery_monitor_heartbeat,
+    stop_bakery_monitor_heartbeat,
+)
 from datetime import datetime, timezone
 import os
 import socket
@@ -51,7 +55,9 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("PoundCake API is starting up", extra={"req_id": "SYSTEM-STARTUP"})
+    start_bakery_monitor_heartbeat()
     yield
+    stop_bakery_monitor_heartbeat()
     await close_async_http_client()
     close_sync_http_client()
     logger.info("Powering down PoundCake", extra={"req_id": "SYSTEM-SHUTDOWN"})
