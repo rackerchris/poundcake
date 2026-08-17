@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.models.models import DishIngredient, Ingredient, Order, Recipe, RecipeIngredient
 from api.plugins.contract import (
     ServicePluginContractError,
+    operation_payload_schema,
     validate_service_operation,
     validate_service_payload_for_operation,
 )
@@ -236,7 +237,9 @@ def build_step_payload(ri: RecipeIngredient, *, order: Order | None = None) -> J
     if runtime_override:
         base.update(runtime_override)
     payload_schema = ri.ingredient.payload_schema if ri.ingredient else None
-    base = _enrich_managed_comms_payload(base, order, payload_schema)
+    operation_schema = operation_payload_schema(build_step_parameters(ri))
+    enrichment_schema = operation_schema if operation_schema is not None else payload_schema
+    base = _enrich_managed_comms_payload(base, order, enrichment_schema)
     return base or None
 
 

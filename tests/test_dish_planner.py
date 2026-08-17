@@ -7,7 +7,12 @@ from types import SimpleNamespace
 import pytest
 
 from api.models.models import DishIngredient, Ingredient, Recipe, RecipeIngredient
-from api.plugins.contract import ServicePluginContractError, validate_service_payload
+from api.plugins.bakery.templates import ingredient_templates as bakery_ingredient_templates
+from api.plugins.contract import (
+    ServicePluginContractError,
+    validate_service_payload,
+    validate_service_payload_for_operation,
+)
 import api.services.dish_planner as dish_planner
 from api.services.dish_planner import (
     build_dish_plan,
@@ -343,6 +348,94 @@ def test_build_step_payload_omits_severity_when_schema_disallows_it() -> None:
     assert payload["context"]["order_id"] == 613
     assert payload["context"]["req_id"] == "req-restrictive"
     validate_service_payload(payload, restrictive_ingredient.payload_schema)
+
+
+def _bakery_comms_template() -> dict:
+    return next(
+        template
+        for template in bakery_ingredient_templates()
+        if template["service_exec"] == "communication"
+    )
+
+
+@pytest.mark.parametrize("operation", ["close", "notify"])
+def test_build_step_payload_omits_severity_for_bakery_close_and_notify(operation: str) -> None:
+    template = _bakery_comms_template()
+    ingredient = Ingredient(
+        service_type="bakery",
+        service_exec="communication",
+        destination_target="rackspace_core",
+        task_key_template="bakery-comms",
+        service_payload_template=template["service_payload_template"],
+        payload_schema=template["payload_schema"],
+        service_exec_parameters=template["service_exec_parameters"],
+        default_expected_secs=5,
+        default_timeout=120,
+        service_exec_expected_outcome_default={"success": True},
+        ingredient_purpose="comms",
+        is_blocking=False,
+        retry_count=1,
+        retry_delay=5,
+        on_failure="continue",
+    )
+    recipe_ingredient = RecipeIngredient(
+        id=125,
+        ingredient=ingredient,
+        step_order=2001,
+        parallel_group=0,
+        depth=2001,
+        run_phase="resolving",
+        run_condition="resolved_after_no_remediation",
+        service_payload={
+            "message": "Closing the existing communication because the alert has cleared.",
+            "source": "poundcake",
+            "context": {
+                "source": "poundcake",
+                "route_label": "Bakery Rackspace Core",
+                "destination_target": "rackspace_core",
+                "poundcake_policy": {
+                    "managed": True,
+                    "route_id": "bakery-rackspace-core-1",
+                    "event": "fallback_close",
+                },
+            },
+        },
+        service_exec_parameters_override={"operation": operation},
+    )
+    order = SimpleNamespace(
+        id=614,
+        req_id="req-close",
+        alert_group_name="host-down",
+        alert_status="resolved",
+        severity="critical",
+        labels={"alertname": "HostDown"},
+        annotations={},
+        raw_data={},
+    )
+
+    payload = build_step_payload(recipe_ingredient, order=order)
+
+    assert payload is not None
+    assert "severity" not in payload
+    assert payload["context"]["order_id"] == 614
+    assert payload["context"]["alert_name"] == "HostDown"
+    validate_service_payload_for_operation(
+        payload,
+        ingredient.payload_schema,
+        dish_planner.build_step_parameters(recipe_ingredient),
+    )
+
+
+def test_bakery_operation_schemas_match_communication_contracts() -> None:
+    template = _bakery_comms_template()
+    metadata = template["service_exec_parameters"]["operation_metadata"]
+    assert "severity" not in metadata["close"]["payload_schema"]["properties"]
+    assert "severity" not in metadata["notify"]["payload_schema"]["properties"]
+    assert "severity" in metadata["open"]["payload_schema"]["properties"]
+    assert "severity" in metadata["update"]["payload_schema"]["properties"]
+    assert "comment" not in metadata["close"]["payload_schema"]["properties"]
+    assert "visibility" in metadata["notify"]["payload_schema"]["properties"]
+    assert "resolution_code" in metadata["close"]["payload_schema"]["properties"]
 
 
 def test_build_step_payload_leaves_non_managed_comms_context_unchanged() -> None:

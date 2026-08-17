@@ -76,24 +76,32 @@ def _ticket_context_schema(*, require_ticket_id: bool = False) -> JSONObject:
     return schema
 
 
-def _comms_schema(*, required: list[str] | None = None) -> JSONObject:
+_COMMS_PROPERTY_SCHEMAS: dict[str, JSONObject] = {
+    "title": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "message": {"type": "string", "minLength": 1},
+    "comment": {"type": "string", "minLength": 1},
+    "severity": {"type": "string"},
+    "category": {"type": "string"},
+    "source": {"type": "string", "minLength": 1},
+    "state": {"type": "string"},
+    "resolution_code": {"type": "string"},
+    "resolution_notes": {"type": "string"},
+    "visibility": {"type": "string"},
+    "ticket_id": {"type": "string", "minLength": 1},
+    "context": _ticket_context_schema(),
+}
+
+
+def _comms_schema(
+    *,
+    properties: tuple[str, ...] | None = None,
+    required: list[str] | None = None,
+) -> JSONObject:
+    keys = properties or tuple(_COMMS_PROPERTY_SCHEMAS)
     return {
         "type": "object",
-        "properties": {
-            "title": {"type": "string", "minLength": 1},
-            "description": {"type": "string", "minLength": 1},
-            "message": {"type": "string", "minLength": 1},
-            "comment": {"type": "string", "minLength": 1},
-            "severity": {"type": "string"},
-            "category": {"type": "string"},
-            "source": {"type": "string", "minLength": 1},
-            "state": {"type": "string"},
-            "resolution_code": {"type": "string"},
-            "resolution_notes": {"type": "string"},
-            "visibility": {"type": "string"},
-            "ticket_id": {"type": "string", "minLength": 1},
-            "context": _ticket_context_schema(),
-        },
+        "properties": {key: _COMMS_PROPERTY_SCHEMAS[key] for key in keys},
         "required": ["source", "context"] if required is None else required,
         "additionalProperties": False,
     }
@@ -113,8 +121,11 @@ def _collect_schema() -> JSONObject:
     }
 
 
-def _ticket_mutation_schema() -> JSONObject:
-    schema = _comms_schema(required=[])
+def _ticket_mutation_schema(
+    *,
+    properties: tuple[str, ...] | None = None,
+) -> JSONObject:
+    schema = _comms_schema(properties=properties, required=[])
     schema["anyOf"] = [
         {"required": ["ticket_id"]},
         {
@@ -136,9 +147,43 @@ def _ticket_mutation_schema() -> JSONObject:
     return schema
 
 
+_TICKET_NOTIFY_PROPERTIES = (
+    "title",
+    "description",
+    "message",
+    "comment",
+    "source",
+    "visibility",
+    "ticket_id",
+    "context",
+)
+_TICKET_UPDATE_PROPERTIES = (
+    "title",
+    "description",
+    "severity",
+    "category",
+    "state",
+    "ticket_id",
+    "context",
+)
+_TICKET_CLOSE_PROPERTIES = (
+    "title",
+    "description",
+    "message",
+    "source",
+    "resolution_code",
+    "resolution_notes",
+    "state",
+    "ticket_id",
+    "context",
+)
+
+
 def _comms_template(provider: str) -> JSONObject:
     ticket_create_schema = _comms_schema(required=["title", "description", "source", "context"])
-    ticket_mutation_schema = _ticket_mutation_schema()
+    ticket_notify_schema = _ticket_mutation_schema(properties=_TICKET_NOTIFY_PROPERTIES)
+    ticket_update_schema = _ticket_mutation_schema(properties=_TICKET_UPDATE_PROPERTIES)
+    ticket_close_schema = _ticket_mutation_schema(properties=_TICKET_CLOSE_PROPERTIES)
     ticket_create_payload = {
         "title": "PoundCake communication",
         "description": "PoundCake opened a Bakery communication.",
@@ -164,17 +209,17 @@ def _comms_template(provider: str) -> JSONObject:
                 "notify": {
                     "label": "Notify",
                     "description": "Add a comment or notification.",
-                    "payload_schema": ticket_mutation_schema,
+                    "payload_schema": ticket_notify_schema,
                 },
                 "update": {
                     "label": "Update",
                     "description": "Update an existing ticket.",
-                    "payload_schema": ticket_mutation_schema,
+                    "payload_schema": ticket_update_schema,
                 },
                 "close": {
                     "label": "Close",
                     "description": "Close an existing ticket.",
-                    "payload_schema": ticket_mutation_schema,
+                    "payload_schema": ticket_close_schema,
                 },
             },
         },
