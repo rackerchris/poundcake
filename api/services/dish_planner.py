@@ -17,6 +17,7 @@ from api.plugins.contract import (
 )
 from api.services.communications import normalize_run_condition, normalize_run_phase
 from api.services.communications_policy import (
+    POLICY_METADATA_KEY,
     get_global_policy_recipe_for_planning,
     get_recipe_local_routes,
     is_communication_step,
@@ -182,6 +183,30 @@ def _hydrate_value(value: Any, context: JSONObject) -> Any:
     return TEMPLATE_RE.sub(replace, value)
 
 
+def _enrich_managed_comms_payload(payload: JSONObject, order: Order | None) -> JSONObject:
+    if order is None or not isinstance(payload, dict):
+        return payload
+    context = payload.get("context")
+    if not isinstance(context, dict) or POLICY_METADATA_KEY not in context:
+        return payload
+    labels = dict(order.labels or {})
+    annotations = dict(order.annotations or {})
+    context.setdefault("labels", labels)
+    context.setdefault("annotations", annotations)
+    alert_name = str(labels.get("alertname") or order.alert_group_name or "").strip()
+    if alert_name:
+        context.setdefault("alert_name", alert_name)
+    if order.alert_group_name:
+        context.setdefault("alert_group_name", str(order.alert_group_name))
+    if order.id is not None:
+        context.setdefault("order_id", int(order.id))
+    if order.req_id:
+        context.setdefault("req_id", str(order.req_id))
+    if order.severity and not payload.get("severity"):
+        payload["severity"] = str(order.severity)
+    return payload
+
+
 def build_step_payload(ri: RecipeIngredient, *, order: Order | None = None) -> JSONObject | None:
     base = dict((ri.ingredient.service_payload_template if ri.ingredient else None) or {})
     overrides = getattr(ri, "service_payload", None)
@@ -193,6 +218,7 @@ def build_step_payload(ri: RecipeIngredient, *, order: Order | None = None) -> J
     runtime_override = _runtime_payload_override(ri, order)
     if runtime_override:
         base.update(runtime_override)
+    base = _enrich_managed_comms_payload(base, order)
     return base or None
 
 

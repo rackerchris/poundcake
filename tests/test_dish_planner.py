@@ -11,6 +11,7 @@ from api.plugins.contract import ServicePluginContractError
 import api.services.dish_planner as dish_planner
 from api.services.dish_planner import (
     build_dish_plan,
+    build_step_payload,
     expected_run_secs_from_recipe_snapshot,
     seed_dish_ingredients_for_phase,
 )
@@ -219,6 +220,120 @@ def test_seed_dish_ingredients_hydrates_payload_from_order_context() -> None:
         "labels": {"instance": "compute-1", "severity": "critical"},
     }
     assert rows[0].service_exec_expected_outcome == {"success": True}
+
+
+def test_build_step_payload_enriches_managed_comms_context_with_order_alert_data() -> None:
+    ingredient = _comms_ingredient()
+    recipe_ingredient = RecipeIngredient(
+        id=121,
+        ingredient=ingredient,
+        step_order=1000,
+        parallel_group=0,
+        depth=1000,
+        run_phase="firing",
+        run_condition="always",
+        service_payload={
+            "title": "Alert requires attention",
+            "description": "No matching workflow is configured for this alert.",
+            "source": "poundcake",
+            "context": {
+                "source": "poundcake",
+                "route_label": "Bakery Rackspace Core",
+                "destination_target": "rackspace_core",
+                "poundcake_policy": {
+                    "managed": True,
+                    "route_id": "bakery-rackspace-core-1",
+                    "event": "fallback_open",
+                },
+            },
+        },
+    )
+    order = SimpleNamespace(
+        id=611,
+        req_id="req-managed",
+        alert_group_name="host-down",
+        alert_status="firing",
+        severity="critical",
+        labels={"alertname": "HostDown", "instance": "compute-1"},
+        annotations={"summary": "compute-1 is unreachable"},
+        raw_data={},
+    )
+
+    payload = build_step_payload(recipe_ingredient, order=order)
+
+    assert payload is not None
+    context = payload["context"]
+    assert context["labels"] == {"alertname": "HostDown", "instance": "compute-1"}
+    assert context["annotations"] == {"summary": "compute-1 is unreachable"}
+    assert context["alert_name"] == "HostDown"
+    assert context["alert_group_name"] == "host-down"
+    assert context["order_id"] == 611
+    assert context["req_id"] == "req-managed"
+    assert payload["severity"] == "critical"
+    assert context["poundcake_policy"]["route_id"] == "bakery-rackspace-core-1"
+
+
+def test_build_step_payload_leaves_non_managed_comms_context_unchanged() -> None:
+    ingredient = _comms_ingredient()
+    recipe_ingredient = RecipeIngredient(
+        id=122,
+        ingredient=ingredient,
+        step_order=1,
+        parallel_group=0,
+        depth=0,
+        run_phase="firing",
+        run_condition="always",
+        service_payload={
+            "title": "Manual comms",
+            "source": "poundcake",
+            "context": {"route_label": "Bakery Rackspace Core"},
+        },
+    )
+    order = SimpleNamespace(
+        id=612,
+        req_id="req-nonmanaged",
+        alert_group_name="host-down",
+        alert_status="firing",
+        severity="critical",
+        labels={"alertname": "HostDown"},
+        annotations={},
+        raw_data={},
+    )
+
+    payload = build_step_payload(recipe_ingredient, order=order)
+
+    assert payload is not None
+    assert "labels" not in payload["context"]
+    assert "order_id" not in payload["context"]
+    assert "severity" not in payload
+
+
+def test_build_step_payload_managed_comms_without_order_is_unchanged() -> None:
+    ingredient = _comms_ingredient()
+    recipe_ingredient = RecipeIngredient(
+        id=123,
+        ingredient=ingredient,
+        step_order=1000,
+        parallel_group=0,
+        depth=1000,
+        run_phase="firing",
+        run_condition="always",
+        service_payload={
+            "title": "Alert requires attention",
+            "source": "poundcake",
+            "context": {
+                "source": "poundcake",
+                "poundcake_policy": {"managed": True, "route_id": "bakery-rackspace-core-1"},
+            },
+        },
+    )
+
+    payload = build_step_payload(recipe_ingredient, order=None)
+
+    assert payload is not None
+    assert "labels" not in payload["context"]
+    assert "order_id" not in payload["context"]
+    assert "severity" not in payload
 
 
 def test_seed_dish_ingredients_uses_operator_action_order_payload() -> None:
