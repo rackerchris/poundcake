@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from api.models.models import DishIngredient, Ingredient, Recipe, RecipeIngredient
-from api.plugins.contract import ServicePluginContractError
+from api.plugins.contract import ServicePluginContractError, validate_service_payload
 import api.services.dish_planner as dish_planner
 from api.services.dish_planner import (
     build_dish_plan,
@@ -271,6 +271,78 @@ def test_build_step_payload_enriches_managed_comms_context_with_order_alert_data
     assert context["req_id"] == "req-managed"
     assert payload["severity"] == "critical"
     assert context["poundcake_policy"]["route_id"] == "bakery-rackspace-core-1"
+
+
+def test_build_step_payload_omits_severity_when_schema_disallows_it() -> None:
+    restrictive_ingredient = Ingredient(
+        service_type="dummy",
+        service_exec="communication",
+        destination_target="dummy",
+        task_key_template="dummy-communication",
+        service_payload_template={},
+        payload_schema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "message": {"type": "string"},
+                "source": {"type": "string"},
+                "context": {"type": "object"},
+            },
+            "required": ["title", "description", "message", "source", "context"],
+            "additionalProperties": False,
+        },
+        service_exec_parameters={"operation": "open"},
+        default_expected_secs=1,
+        default_timeout=30,
+        service_exec_expected_outcome_default={"success": True},
+        ingredient_purpose="comms",
+        is_blocking=False,
+        retry_count=0,
+        retry_delay=0,
+        on_failure="continue",
+    )
+    recipe_ingredient = RecipeIngredient(
+        id=124,
+        ingredient=restrictive_ingredient,
+        step_order=1000,
+        parallel_group=0,
+        depth=1000,
+        run_phase="firing",
+        run_condition="always",
+        service_payload={
+            "title": "Alert requires attention",
+            "description": "No matching workflow is configured for this alert.",
+            "message": "detail",
+            "source": "poundcake",
+            "context": {
+                "source": "poundcake",
+                "route_label": "Dummy Global Comms",
+                "destination_target": "dummy",
+                "poundcake_policy": {"managed": True, "route_id": "dummy-global-comms"},
+            },
+        },
+    )
+    order = SimpleNamespace(
+        id=613,
+        req_id="req-restrictive",
+        alert_group_name="host-down",
+        alert_status="firing",
+        severity="critical",
+        labels={"alertname": "HostDown"},
+        annotations={},
+        raw_data={},
+    )
+
+    payload = build_step_payload(recipe_ingredient, order=order)
+
+    assert payload is not None
+    assert "severity" not in payload
+    assert payload["context"]["labels"] == {"alertname": "HostDown"}
+    assert payload["context"]["alert_name"] == "HostDown"
+    assert payload["context"]["order_id"] == 613
+    assert payload["context"]["req_id"] == "req-restrictive"
+    validate_service_payload(payload, restrictive_ingredient.payload_schema)
 
 
 def test_build_step_payload_leaves_non_managed_comms_context_unchanged() -> None:

@@ -183,7 +183,11 @@ def _hydrate_value(value: Any, context: JSONObject) -> Any:
     return TEMPLATE_RE.sub(replace, value)
 
 
-def _enrich_managed_comms_payload(payload: JSONObject, order: Order | None) -> JSONObject:
+def _enrich_managed_comms_payload(
+    payload: JSONObject,
+    order: Order | None,
+    payload_schema: JSONObject | None,
+) -> JSONObject:
     if order is None or not isinstance(payload, dict):
         return payload
     context = payload.get("context")
@@ -202,9 +206,22 @@ def _enrich_managed_comms_payload(payload: JSONObject, order: Order | None) -> J
         context.setdefault("order_id", int(order.id))
     if order.req_id:
         context.setdefault("req_id", str(order.req_id))
-    if order.severity and not payload.get("severity"):
+    if (
+        order.severity
+        and not payload.get("severity")
+        and _schema_allows_key(payload_schema, "severity")
+    ):
         payload["severity"] = str(order.severity)
     return payload
+
+
+def _schema_allows_key(payload_schema: JSONObject | None, key: str) -> bool:
+    if not isinstance(payload_schema, dict):
+        return False
+    if payload_schema.get("additionalProperties") is False:
+        properties = payload_schema.get("properties")
+        return isinstance(properties, dict) and key in properties
+    return True
 
 
 def build_step_payload(ri: RecipeIngredient, *, order: Order | None = None) -> JSONObject | None:
@@ -218,7 +235,8 @@ def build_step_payload(ri: RecipeIngredient, *, order: Order | None = None) -> J
     runtime_override = _runtime_payload_override(ri, order)
     if runtime_override:
         base.update(runtime_override)
-    base = _enrich_managed_comms_payload(base, order)
+    payload_schema = ri.ingredient.payload_schema if ri.ingredient else None
+    base = _enrich_managed_comms_payload(base, order, payload_schema)
     return base or None
 
 
