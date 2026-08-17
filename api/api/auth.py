@@ -309,8 +309,7 @@ async def _check_nonce_in_session(db: AsyncSession, nonce_key: str, ttl_seconds:
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=ttl_seconds)
     result = await db.execute(
-        text(
-            """
+        text("""
             INSERT INTO hmac_nonces (kind, `key`, created_at, expires_at)
             SELECT :kind, :key, :created_at, :expires_at
             FROM DUAL
@@ -318,8 +317,7 @@ async def _check_nonce_in_session(db: AsyncSession, nonce_key: str, ttl_seconds:
                 SELECT 1 FROM hmac_nonces
                 WHERE kind = :kind AND `key` = :key AND expires_at > :now
             )
-        """
-        ),
+        """),
         {
             "kind": _HMAC_NONCE_STATE_KIND,
             "key": nonce_key,
