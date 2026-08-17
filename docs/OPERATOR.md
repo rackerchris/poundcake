@@ -80,6 +80,71 @@ After enabling `bakery`, apply the Secret printed by Bakery's
 it. The bakery plugin registers with Bakery and stores the issued monitor HMAC
 as adapter-managed state. See [REMOTE_BAKERY.md](REMOTE_BAKERY.md).
 
+## Feature Toggles
+
+PoundCake behavior is controlled by two layers. Helm values wire a fixed set of
+deployment-facing settings into workload environment variables. A larger set of
+runtime subsystem toggles are read directly from `POUNDCAKE_*` environment
+variables and are not exposed as Helm values; the chart runs them at their
+defaults unless you inject the variable on the `poundcake-api` deployment.
+
+### Helm-wired values
+
+| Area | Helm value | Effect |
+|---|---|---|
+| Plugins | `config.enabledPlugins` | Comma-separated plugin list enabled at bootstrap. `bakery` is appended automatically when `bakery.client.enabled=true`. Default `dummy`. |
+| Logging | `config.logLevel` | `POUNDCAKE_LOG_LEVEL` for API/UI/workers. |
+| Monitoring | `monitoring.enabled`, `monitoring.prometheus.url`, `monitoring.prometheus.crdNamespace`, `monitoring.alertmanager.url` | Sets `POUNDCAKE_PROMETHEUS_URL`, `POUNDCAKE_PROMETHEUS_CRD_NAMESPACE`, `POUNDCAKE_ALERTMANAGER_URL` when `monitoring.enabled=true`. |
+| StackStorm | `stackstorm.url`, `stackstorm.verifySsl` | Sets `POUNDCAKE_STACKSTORM_URL`, `POUNDCAKE_STACKSTORM_VERIFY_SSL` when `stackstorm.url` is set. |
+| Remote Bakery | `bakery.client.*`, `bakery.config.activeProvider` | See [REMOTE_BAKERY.md](REMOTE_BAKERY.md). |
+| Auth | `auth.*` | See [AUTH_RBAC.md](AUTH_RBAC.md). |
+| Database | `database.mode`, `database.sharedOperator.*` | See [DATABASE.md](DATABASE.md). |
+| Plugin RBAC | `servicePluginRbac.prometheusRules`, `servicePluginRbac.podActions`, `servicePluginRbac.workloadTriage`, `servicePluginRbac.nodeTriage` | Grants the PoundCake service account bounded cluster API access for the k8s/prometheus plugins. |
+
+### Env-only runtime toggles
+
+These are read from `POUNDCAKE_*` environment variables (defaults from
+`api/core/config.py`). The Helm chart does not set them, so they run at their
+defaults unless you inject the variable.
+
+| Subsystem | Env var(s) | Default(s) |
+|---|---|---|
+| Suppressions | `POUNDCAKE_SUPPRESSIONS_ENABLED` | `true` |
+| Suppression lifecycle | `POUNDCAKE_SUPPRESSION_LIFECYCLE_ENABLED`, `POUNDCAKE_SUPPRESSION_LIFECYCLE_BATCH_LIMIT` | `true`, `25` |
+| Watchdog heartbeat | `POUNDCAKE_WATCHDOG_HEARTBEAT_ENABLED`, `POUNDCAKE_WATCHDOG_HEARTBEAT_MISSING_THRESHOLD_SECONDS`, `POUNDCAKE_WATCHDOG_HEARTBEAT_CHECK_INTERVAL_SECONDS` | `true`, `300`, `30` |
+| Bakery monitor heartbeat | `POUNDCAKE_BAKERY_MONITOR_HEARTBEAT_ENABLED`, `POUNDCAKE_BAKERY_MONITOR_HEARTBEAT_INTERVAL_SECONDS` | `true`, `30` |
+| Incident reconciliation | `POUNDCAKE_INCIDENT_RECONCILE_ENABLED`, `POUNDCAKE_INCIDENT_RECONCILE_INTERVAL_SECONDS`, `POUNDCAKE_INCIDENT_RECONCILE_LIMIT` | `true`, `60`, `25` |
+| Release update check | `POUNDCAKE_RELEASE_UPDATE_ENABLED`, `POUNDCAKE_RELEASE_UPDATE_CHECK_INTERVAL_SECONDS`, `POUNDCAKE_RELEASE_UPDATE_OCI_REPOSITORY`, `POUNDCAKE_RELEASE_UPDATE_INCLUDE_PRERELEASES` | `true`, `21600`, `oci://ghcr.io/rackerlabs/charts/poundcake`, `false` |
+| Metrics | `POUNDCAKE_METRICS_ENABLED` | `true` |
+| Prometheus reload | `POUNDCAKE_PROMETHEUS_RELOAD_ENABLED`, `POUNDCAKE_PROMETHEUS_RELOAD_URL` | `true`, `""` |
+| Prometheus CRDs | `POUNDCAKE_PROMETHEUS_USE_CRDS`, `POUNDCAKE_PROMETHEUS_CRD_NAMESPACE` | `true`, `prometheus` |
+| Local kubeconfig | `POUNDCAKE_K8S_ALLOW_LOCAL_KUBECONFIG` | `false` |
+| RBAC enforcement | `POUNDCAKE_AUTH_RBAC_ENABLED` | `true` |
+| Secure cookie | `POUNDCAKE_FORCE_SECURE_COOKIE` | `true` |
+| Fallback recipe | `POUNDCAKE_CATCH_ALL_RECIPE_NAME` | `fallback-recipe` |
+
+Git plugin deployment defaults. Per-credential operator config set through the
+UI or credentials API overrides these:
+
+| Env var | Default |
+|---|---|
+| `POUNDCAKE_GIT_REPO_URL` | `""` |
+| `POUNDCAKE_GIT_BRANCH` | `main` |
+| `POUNDCAKE_GIT_RULES_PATH` | `prometheus/rules` |
+| `POUNDCAKE_GIT_WORKFLOWS_PATH` | `poundcake/workflows` |
+| `POUNDCAKE_GIT_ACTIONS_PATH` | `poundcake/actions` |
+| `POUNDCAKE_GIT_USER_NAME` | `PoundCake` |
+| `POUNDCAKE_GIT_USER_EMAIL` | `poundcake@localhost` |
+| `POUNDCAKE_GIT_PROVIDER` | `github` |
+
+### Legacy values keys
+
+`config.metricsEnabled`, `config.defaultTimeout`, `config.maxConcurrentRemediations`,
+`suppressions.*`, `mappings.*`, and `bootstrap.*` (including `remoteSyncEnabled`,
+`rulesRepoUrl`, and `rulesPath`) remain in `helm/values.yaml` for compatibility
+but are not consumed by the chart templates. Do not rely on them; use the
+Helm-wired or env-only settings above.
+
 ## Bakery Credential
 
 The normal new-monitor path is a bootstrap Secret with `bootstrap-key-id` and

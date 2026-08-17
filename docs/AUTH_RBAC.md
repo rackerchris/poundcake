@@ -15,6 +15,128 @@ This doc describes the current auth shape after the PoundCake 2.0 service plugin
 
 The global dependency is `require_auth_if_enabled`, mounted on the FastAPI app. It authenticates the request, resolves an `AuthContext`, and calls `ensure_request_authorized`.
 
+## Provider Enablement
+
+Auth providers are enabled at deploy time through Helm values under `auth.*`.
+`local` is the bootstrap/recovery account and stays on by default. The
+directory and OIDC providers are disabled by default; enable only what you use.
+All provider values are wired to `POUNDCAKE_AUTH_*` environment variables on the
+API deployment.
+
+| Provider | Helm key | Default | Notes |
+|---|---|---|---|
+| Global auth | `auth.enabled` | `true` | Master switch for the global auth dependency. |
+| RBAC enforcement | `POUNDCAKE_AUTH_RBAC_ENABLED` (env-only) | `true` | Role checks on guarded routes. |
+| Local bootstrap | `auth.local.enabled` | `true` | Username/password from the `<release>-admin` secret. Keep as recovery account. |
+| Active Directory / LDAP | `auth.activeDirectory.enabled` | `false` | See required fields below. |
+| Auth0 (OIDC) | `auth.auth0.enabled` | `false` | See required fields below. |
+| Azure AD / Entra ID (OIDC) | `auth.azureAd.enabled` | `false` | See required fields below. |
+| Allowed browser origins | `auth.allowedOrigins` | local dev origins | Must be explicit; `["*"]` is rejected when browser OIDC is enabled. |
+
+### Active Directory / LDAP
+
+`helm/templates/poundcake-required.yaml` fails the install when
+`auth.activeDirectory.enabled=true` without `auth.activeDirectory.serverUri` and
+`auth.activeDirectory.userBaseDn`.
+
+```yaml
+auth:
+  activeDirectory:
+    enabled: true
+    serverUri: "ldap://ad.example.com:389"
+    userBaseDn: "OU=People,DC=example,DC=com"
+    bindDn: ""
+    userFilter: "(&(objectClass=user)(sAMAccountName={username}))"
+    groupAttribute: "memberOf"
+    displayNameAttribute: "displayName"
+    usernameAttribute: "sAMAccountName"
+    subjectAttribute: "distinguishedName"
+    useSsl: true
+    validateTls: true
+    groupNameRegex: "CN=([^,]+)"
+    existingSecret: "poundcake-ad-bind"   # Secret with the bind password
+    secretKeys:
+      bindPassword: "bind-password"
+    caBundle:
+      existingSecret: ""                  # Optional CA bundle Secret
+      key: "ca.crt"
+      mountPath: "/run/secrets/poundcake-ad"
+      fileName: "ca.crt"
+```
+
+### Auth0 (OIDC)
+
+Fails the install when `auth.auth0.enabled=true` without
+`auth.auth0.shared.domain`, and when neither `auth.auth0.ui.enabled` nor
+`auth.auth0.cli.enabled` is set. UI login additionally requires
+`auth.auth0.ui.clientId` and explicit `auth.allowedOrigins`; CLI login requires
+`auth.auth0.cli.clientId`.
+
+```yaml
+auth:
+  allowedOrigins:
+    - https://poundcake.example.com
+  auth0:
+    enabled: true
+    shared:
+      domain: "example.auth0.com"
+      audience: ""
+      scope: "openid profile email"
+      organization: ""
+      connection: ""
+      usernameClaim: "email"
+      displayNameClaim: "name"
+      groupsClaim: "groups"
+      subjectClaim: "sub"
+    ui:
+      enabled: true
+      clientId: ""
+      callbackUrl: ""
+      existingSecret: "poundcake-auth0-ui"
+      secretKeys:
+        clientSecret: "client-secret"
+    cli:
+      enabled: true
+      clientId: ""
+      existingSecret: "poundcake-auth0-cli"
+      secretKeys:
+        clientSecret: "client-secret"
+```
+
+### Azure AD / Microsoft Entra ID (OIDC)
+
+Same shape as Auth0, keyed under `auth.azureAd.*`, with
+`auth.azureAd.shared.tenant` instead of a domain and
+`auth.azureAd.shared.usernameClaim` defaulting to `preferred_username`.
+
+```yaml
+auth:
+  allowedOrigins:
+    - https://poundcake.example.com
+  azureAd:
+    enabled: true
+    shared:
+      tenant: "00000000-0000-0000-0000-000000000000"
+      scope: "openid profile email"
+      usernameClaim: "preferred_username"
+      displayNameClaim: "name"
+      groupsClaim: "groups"
+      subjectClaim: "sub"
+    ui:
+      enabled: true
+      clientId: ""
+      callbackUrl: ""
+      existingSecret: "poundcake-azuread-ui"
+      secretKeys:
+        clientSecret: "client-secret"
+    cli:
+      enabled: true
+      clientId: ""
+      existingSecret: "poundcake-azuread-cli"
+      secretKeys:
+        clientSecret: "client-secret"
+```
+
 ## Public Paths
 
 Public paths bypass authentication even when auth is enabled:
