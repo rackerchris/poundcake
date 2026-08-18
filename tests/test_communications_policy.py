@@ -15,12 +15,14 @@ from api.plugins.dummy.templates import DUMMY_INGREDIENT_TEMPLATES
 from api.schemas.schemas import CommunicationPolicyUpdate
 from api.services.capability_resolution import ResolvedCapabilityIngredient
 from api.services.communications_policy import (
+    CommunicationRoute,
     _apply_step_spec,
     _group_routes_from_steps,
     _managed_step_key_from_recipe_ingredient,
     _step_matches_spec,
     build_recipe_local_policy_step_specs,
     replace_recipe_communication_steps,
+    sync_fallback_policy_recipe,
 )
 from kitchen.execution_segments import next_pending_execution_segment
 
@@ -584,3 +586,93 @@ async def test_replace_recipe_communication_steps_requires_enabled_comms_capabil
             await replace_recipe_communication_steps(session, recipe=recipe, step_specs=specs)
     finally:
         monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_sync_fallback_policy_recipe_repairs_stale_steps_on_matching_routes() -> None:
+    """The fallback recipe must be re-reconciled even when its route targets already
+    match the global policy, so steps bound to a retired ingredient get repointed to
+    the active corrected ingredient on the next dishwasher sync."""
+    stale_step = SimpleNamespace(
+        id=11,
+        ingredient_id=368,
+        step_order=1010,
+        on_success="continue",
+        parallel_group=0,
+        depth=1010,
+        service_payload={},
+        service_exec_parameters_override={"operation": "open"},
+        service_exec_expected_secs=5,
+        service_exec_timeout=120,
+        service_exec_expected_outcome={"success": True},
+        run_phase="firing",
+        run_condition="always",
+        ingredient=SimpleNamespace(
+            id=368,
+            ingredient_purpose="comms",
+            is_active=False,
+            service_payload_template={},
+        ),
+    )
+    recipe = SimpleNamespace(
+        id=2013,
+        name="fallback-recipe",
+        description="stale",
+        enabled=True,
+        deleted=False,
+        deleted_at=None,
+        clear_timeout_sec=None,
+        updated_at=None,
+        recipe_ingredients=[stale_step],
+    )
+
+    class _ScalarResult:
+        def first(self) -> SimpleNamespace:
+            return recipe
+
+    class _ExecuteResult:
+        def scalars(self) -> _ScalarResult:
+            return _ScalarResult()
+
+        def unique(self) -> "_ExecuteResult":
+            return self
+
+    class _Session:
+        async def execute(self, _statement: object) -> _ExecuteResult:
+            return _ExecuteResult()
+
+        def add(self, _item: object) -> None:
+            raise AssertionError("recipe already exists; no new recipe should be added")
+
+    session = _Session()
+    monkeypatch = pytest.MonkeyPatch()
+    captured: dict[str, object] = {}
+
+    async def fake_replace(
+        _db: object, *, recipe: object, step_specs: list[dict[str, object]]
+    ) -> None:
+        captured["recipe"] = recipe
+        captured["step_specs"] = step_specs
+
+    monkeypatch.setattr(
+        "api.services.communications_policy.replace_recipe_communication_steps",
+        fake_replace,
+    )
+    try:
+        route = CommunicationRoute(
+            id="bakery-global-comms",
+            label="Rackspace Core - rackspace_core",
+            service_type="bakery",
+            destination_target="rackspace_core",
+            provider_config={},
+            enabled=True,
+            position=1,
+        )
+        result = await sync_fallback_policy_recipe(session, routes=[route])
+    finally:
+        monkeypatch.undo()
+
+    assert result is recipe
+    step_specs = captured["step_specs"]
+    assert captured["recipe"] is recipe
+    assert {spec["service_exec"] for spec in step_specs} == {"open", "close"}

@@ -722,16 +722,6 @@ async def clear_recipe_local_policy(db: AsyncSession, *, recipe: Recipe) -> None
     recipe.updated_at = _now()
 
 
-def _route_lists_match(
-    existing: list[CommunicationRoute], desired: list[CommunicationRoute]
-) -> bool:
-    if len(existing) != len(desired):
-        return False
-    existing_targets = {r.destination_target for r in existing if r.enabled}
-    desired_targets = {r.destination_target for r in desired if r.enabled}
-    return existing_targets == desired_targets
-
-
 async def sync_fallback_policy_recipe(
     db: AsyncSession,
     *,
@@ -782,10 +772,6 @@ async def sync_fallback_policy_recipe(
             return recipe
         recipe.enabled = False
         await replace_recipe_communication_steps(db, recipe=recipe, step_specs=[])
-        return recipe
-
-    existing_routes = get_recipe_local_routes(recipe)
-    if recipe.enabled and _route_lists_match(existing_routes, enabled_routes):
         return recipe
 
     recipe.enabled = True

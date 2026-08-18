@@ -86,6 +86,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.bakery.client.pollTimeoutSeconds | quote }}
 - name: POUNDCAKE_BAKERY_PLUGIN_ID
   value: {{ .Values.bakery.client.pluginId | quote }}
+{{- if .Values.bakery.client.accountNumber }}
+- name: POUNDCAKE_BAKERY_ACCOUNT_NUMBER
+  value: {{ .Values.bakery.client.accountNumber | quote }}
+{{- end }}
 - name: POUNDCAKE_BAKERY_ACTIVE_PROVIDER
   value: {{ .Values.bakery.config.activeProvider | quote }}
 - name: POUNDCAKE_BAKERY_MONITOR_ID

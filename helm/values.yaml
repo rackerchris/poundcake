@@ -334,6 +334,9 @@ bakery:
     pollIntervalSeconds: 2
     pollTimeoutSeconds: 60
     pluginId: "poundcake/bakery-plugin"
+    # Default Rackspace Core account number applied to communications when a
+    # route's provider_config does not already specify one.
+    accountNumber: ""
     monitor:
       id: ""
       environmentLabel: ""
