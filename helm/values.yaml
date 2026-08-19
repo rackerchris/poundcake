@@ -16,8 +16,6 @@
 # - PoundCake API + UI + workers
 # - PoundCake DB can be embedded or shared-operator backed
 
-replicaCount: 1
-
 # Service selection:
 # - poundcake.enabled=true renders PoundCake resources
 poundcake:
@@ -32,58 +30,11 @@ serviceAccount:
   annotations: {}
   name: ""
 
-podAnnotations: {}
-
 podSecurityContext:
   fsGroup: 1000
   runAsNonRoot: true
   seccompProfile:
     type: RuntimeDefault
-
-securityContext:
-  capabilities:
-    drop:
-      - ALL
-  readOnlyRootFilesystem: true
-  runAsNonRoot: true
-  runAsUser: 1000
-
-service:
-  type: ClusterIP
-  port: 8080
-
-# UI configuration
-# The UI is a separate container built and stored independently in GitHub container registry.
-# It connects to the API service in the same namespace.
-ui:
-  enabled: true
-  service:
-    type: ClusterIP
-    port: 80
-  resources:
-    limits:
-      cpu: 100m
-      memory: 64Mi
-    requests:
-      cpu: 50m
-      memory: 32Mi
-
-ingress:
-  enabled: false
-  className: ""
-  annotations: {}
-  # Example:
-  #   kubernetes.io/ingress.class: nginx
-  #   kubernetes.io/tls-acme: "true"
-  hosts:
-    - host: poundcake.local
-      paths:
-        - path: /
-          pathType: ImplementationSpecific
-  tls: []
-  #  - secretName: poundcake-tls
-  #    hosts:
-  #      - poundcake.local
 
 # Gateway API route attachment configuration.
 # When enabled, PoundCake renders HTTPRoutes that attach to an existing Gateway.
@@ -144,29 +95,6 @@ gateway:
         secretName: ""
       pathPrefix: /
 
-  # Session persistence configuration
-  sessionPersistence:
-    enabled: true
-    timeout: "300s"
-    cookieLifetimeType: "Permanent"  # or "Session"
-    cookieName: "PoundcakeSession"
-    uiCookieName: "PoundcakeUISession"
-
-resources:
-  limits:
-    cpu: 500m
-    memory: 256Mi
-  requests:
-    cpu: 100m
-    memory: 128Mi
-
-autoscaling:
-  enabled: false
-  minReplicas: 1
-  maxReplicas: 5
-  targetCPUUtilizationPercentage: 80
-  # targetMemoryUtilizationPercentage: 80
-
 nodeSelector:
   # Set to {} to disable worker-only scheduling or override with your cluster's worker label/value.
   node-role.kubernetes.io/worker: "worker"
@@ -177,102 +105,19 @@ affinity: {}
 
 # PoundCake configuration
 config:
-  # Server settings
-  host: "0.0.0.0"
-  port: 8080
-  debug: false
-
   # Logging
   logLevel: INFO
-  logFormat: console
 
-  # Metrics
-  metricsEnabled: false
-
-  # Remediation settings
-  defaultTimeout: 300
-  maxConcurrentRemediations: 10
   # Service plugins enabled at bootstrap. Enable external adapters only when
   # their endpoint and credential settings are provided by an override layer.
   enabledPlugins: "dummy"
 
-# Alert suppression behavior in PoundCake API
-suppressions:
-  enabled: true
-  lifecycleEnabled: true
-  lifecycleIntervalSeconds: 30
-  lifecycleBatchLimit: 25
-
-# Alert-to-action mappings
-# These will be mounted as ConfigMap
-mappings:
-  common.yaml: |
-    orders:
-      HighCPUUsage:
-        description: "Remediate high CPU usage"
-        handler: yaml_config
-        actions:
-          - name: identify_cpu_process
-            action: core.remote
-            description: "Identify CPU-intensive processes"
-            parameters:
-              hosts: "{{instance}}"
-              cmd: "ps aux --sort=-%cpu | head -10"
-            timeout: 60
-
-      LowDiskSpace:
-        description: "Clean up disk space"
-        handler: yaml_config
-        actions:
-          - name: cleanup_logs
-            action: core.remote
-            description: "Clean up old log files"
-            parameters:
-              hosts: "{{instance}}"
-              cmd: "find /var/log -name '*.gz' -mtime +7 -delete"
-            timeout: 120
-
-      ServiceDown:
-        description: "Restart down services"
-        handler: yaml_config
-        actions:
-          - name: restart_service
-            action: linux.service
-            parameters:
-              host: "{{instance}}"
-              service: "{{labels.service}}"
-              action: restart
-            timeout: 120
-
-# ServiceMonitor for Prometheus Operator
-serviceMonitor:
-  enabled: true
-  namespace: prometheus
-  interval: 30s
-  scrapeTimeout: 10s
-  labels:
-    release: kube-prometheus-stack
-
-# Pod Disruption Budget
-podDisruptionBudget:
-  enabled: false
-  minAvailable: 1
-  # maxUnavailable: 1
-
-# Persistence for writable mappings (required for web UI edits)
+# Persistence for the embedded MariaDB volume.
 persistence:
-  enabled: false
-  storageClass: ""
-  accessMode: ReadWriteOnce
-  size: 100Mi
   storageClassName: ""
   mariadb:
     size: 10Gi
     accessMode: ReadWriteOnce
-    storageClassName: ""
-  config:
-    size: 1Gi
-    accessMode: ReadWriteMany
     storageClassName: ""
 longhorn:
   rwxStorageClass:
@@ -459,13 +304,6 @@ database:
     # Create PoundCake Database/User/Grant CR resources against shared server.
     provisionResources: true
 
-  # Database connection URL
-  # Format: mysql+pymysql://user:password@host:port/database
-  url: ""
-  # Reference to existing secret containing database URL
-  existingSecret: ""
-  secretKey: "database-url"
-
 # MariaDB Operator integration
 # When enabled, PoundCake will create MariaDB resources using the mariadb-operator CRDs
 # Requires mariadb-operator to be installed: https://github.com/mariadb-operator/mariadb-operator
@@ -474,120 +312,22 @@ mariadbOperator:
   # When true, the chart will check for the operator and create MariaDB CRDs
   enabled: true
 
-  # Namespace to deploy MariaDB resources (defaults to release namespace)
-  namespace: ""
-
-  # MariaDB server configuration
-  server:
-    # Name of the MariaDB instance (defaults to release name)
-    name: ""
-    # MariaDB version
-    image:
-      repository: mariadb
-      tag: "11.4"
-      pullPolicy: IfNotPresent
-    # Root password (auto-generated if not provided)
-    rootPassword: ""
-    # Use existing secret for root password
-    rootPasswordSecret: ""
-    rootPasswordSecretKey: "password"
-    # Storage configuration
-    storage:
-      size: 10Gi
-      storageClassName: ""
-    # Resource limits
-    resources:
-      requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        cpu: 500m
-        memory: 512Mi
-    # Number of replicas (1 for standalone, 3+ for Galera)
-    replicas: 1
-
-  # Database configuration
-  database:
-    # Database name to create
-    name: poundcake
-
   # User configuration
   user:
     # Max connections for this user
     maxUserConnections: 20
 
-# Prep chef service configuration
-# Polls API and converts new orders into dishes.
+# Worker replica counts. Worker poll cadence is configured under `intervals.*`.
+# The dishwasher Deployment runs a single replica (not configurable).
 prepChef:
-  enabled: true
   replicaCount: 1
-  interval: 5
-  resources:
-    limits:
-      cpu: 200m
-      memory: 128Mi
-    requests:
-      cpu: 50m
-      memory: 64Mi
 
-# Timer service configuration
-# Monitoring service that tracks dish execution status
 timer:
-  enabled: true
   replicaCount: 1
-  interval: 10
-  resources:
-    limits:
-      cpu: 200m
-      memory: 128Mi
-    requests:
-      cpu: 50m
-      memory: 64Mi
 
-# Expediter Runner service configuration
-# Performs workload execution for runner-dispatched dish ingredients.
 expediterRunner:
-  enabled: true
   replicaCount: 1
-  interval: 2
   limit: 50
-  resources:
-    limits:
-      cpu: 200m
-      memory: 128Mi
-    requests:
-      cpu: 50m
-      memory: 64Mi
-
-# Dishwasher service configuration
-# Periodic sync job that reconciles PoundCake content/state.
-dishwasher:
-  enabled: true
-  replicaCount: 1
-  interval: 300
-  resources:
-    limits:
-      cpu: 200m
-      memory: 128Mi
-    requests:
-      cpu: 50m
-      memory: 64Mi
-
-# Bootstrap runtime configuration
-# Startup orchestration jobs are defined in poundcake-startup-jobs.yaml.
-bootstrap:
-  ingredientsDir: /app/bootstrap/ingredients
-  recipesDir: /app/bootstrap/recipes
-  remoteSyncEnabled: true
-  # Remote sync only runs when a repo URL is explicitly configured.
-  rulesRepoUrl: ""
-  rulesBranch: main
-  rulesPath: alerts
-  # Legacy local bootstrap tuning; production startup now uses split jobs.
-  poundcakeBootstrap:
-    defaultDuration: 60
-    defaultTimeout: 300
-    pruneMissing: false
 
 poundcakeImage:
   repository: ghcr.io/rackerlabs/poundcake
@@ -633,7 +373,6 @@ utilitySecurityContext:
 
 images:
   mariadb: mariadb:11.6
-  alpine: alpine:3.19
   busybox: busybox:1.36
   kubectl: bitnami/kubectl:latest
 
@@ -648,8 +387,6 @@ poundcakeApi:
     periodSeconds: 10
     timeoutSeconds: 5
     failureThreshold: 6
-  ticketing:
-    rackspaceConfirmedSolvedStatus: "confirmed solved"
 
 secrets:
   # REQUIRED: Provide these values or they will be randomly generated on install
@@ -695,18 +432,8 @@ intervals:
   prepChef: "5"
   expediterRunner: "2"
   timer: "10"
-  prepInterval: "5"
 
 logFormat: console
-
-# Default resource requests and limits (can be overridden per component)
-defaultResources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
-    cpu: 500m
-    memory: 512Mi
 
 # Container security context for infrastructure services.
 # Stateful images may need writable root filesystem for sockets/temp files.

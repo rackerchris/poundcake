@@ -180,15 +180,6 @@
         "mariadb": {
           "type": "string"
         },
-        "mongodb": {
-          "type": "string"
-        },
-        "rabbitmq": {
-          "type": "string"
-        },
-        "alpine": {
-          "type": "string"
-        },
         "busybox": {
           "type": "string"
         },
@@ -383,48 +374,6 @@
           "description": "Default storage class for all PVCs"
         },
         "mariadb": {
-          "type": "object",
-          "properties": {
-            "size": {
-              "type": "string"
-            },
-            "accessMode": {
-              "type": "string"
-            },
-            "storageClassName": {
-              "type": "string"
-            }
-          }
-        },
-        "mongo": {
-          "type": "object",
-          "properties": {
-            "size": {
-              "type": "string"
-            },
-            "accessMode": {
-              "type": "string"
-            },
-            "storageClassName": {
-              "type": "string"
-            }
-          }
-        },
-        "rabbitmq": {
-          "type": "object",
-          "properties": {
-            "size": {
-              "type": "string"
-            },
-            "accessMode": {
-              "type": "string"
-            },
-            "storageClassName": {
-              "type": "string"
-            }
-          }
-        },
-        "config": {
           "type": "object",
           "properties": {
             "size": {
@@ -806,127 +755,35 @@
     "prepChef": {
       "type": "object",
       "properties": {
-        "enabled": {
-          "type": "boolean",
-          "default": true
-        },
         "replicaCount": {
           "type": "integer",
           "default": 1,
           "minimum": 0
-        },
-        "interval": {
-          "type": "integer",
-          "default": 5,
-          "minimum": 1
         }
       }
     },
     "timer": {
       "type": "object",
       "properties": {
-        "enabled": {
-          "type": "boolean",
-          "default": true
-        },
         "replicaCount": {
           "type": "integer",
           "default": 1,
           "minimum": 0
-        },
-        "interval": {
-          "type": "integer",
-          "default": 10,
-          "minimum": 1
         }
       }
     },
     "expediterRunner": {
       "type": "object",
       "properties": {
-        "enabled": {
-          "type": "boolean",
-          "default": true
-        },
         "replicaCount": {
           "type": "integer",
           "default": 1,
           "minimum": 0
-        },
-        "interval": {
-          "type": "integer",
-          "default": 2,
-          "minimum": 1
         },
         "limit": {
           "type": "integer",
           "default": 50,
           "minimum": 1
-        }
-      }
-    },
-    "dishwasher": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "default": true
-        },
-        "replicaCount": {
-          "type": "integer",
-          "default": 1,
-          "minimum": 0
-        },
-        "interval": {
-          "type": "integer",
-          "default": 300,
-          "minimum": 1
-        }
-      }
-    },
-    "bootstrap": {
-      "type": "object",
-      "properties": {
-        "ingredientsDir": {
-          "type": "string",
-          "default": "/app/bootstrap/ingredients"
-        },
-        "recipesDir": {
-          "type": "string",
-          "default": "/app/bootstrap/recipes"
-        },
-        "remoteSyncEnabled": {
-          "type": "boolean",
-          "default": true
-        },
-        "rulesRepoUrl": {
-          "type": "string",
-          "default": ""
-        },
-        "rulesBranch": {
-          "type": "string",
-          "default": "main"
-        },
-        "rulesPath": {
-          "type": "string",
-          "default": "alerts"
-        },
-        "poundcakeBootstrap": {
-          "type": "object",
-          "properties": {
-            "defaultDuration": {
-              "type": "integer",
-              "default": 60
-            },
-            "defaultTimeout": {
-              "type": "integer",
-              "default": 300
-            },
-            "pruneMissing": {
-              "type": "boolean",
-              "default": false
-            }
-          }
         }
       }
     },
@@ -940,9 +797,6 @@
           "type": "string"
         },
         "timer": {
-          "type": "string"
-        },
-        "prepInterval": {
           "type": "string"
         }
       }
@@ -972,33 +826,6 @@
     "affinity": {
       "type": "object",
       "description": "Affinity rules for pod placement"
-    },
-    "defaultResources": {
-      "type": "object",
-      "properties": {
-        "requests": {
-          "type": "object",
-          "properties": {
-            "cpu": {
-              "type": "string"
-            },
-            "memory": {
-              "type": "string"
-            }
-          }
-        },
-        "limits": {
-          "type": "object",
-          "properties": {
-            "cpu": {
-              "type": "string"
-            },
-            "memory": {
-              "type": "string"
-            }
-          }
-        }
-      }
     },
     "podSecurityContext": {
       "type": "object",
@@ -1040,64 +867,6 @@
       "description": "Container security contexts for infrastructure services",
       "properties": {
         "mariadb": {
-          "type": "object",
-          "properties": {
-            "runAsNonRoot": {
-              "type": "boolean"
-            },
-            "runAsUser": {
-              "type": "integer",
-              "default": 1000
-            },
-            "allowPrivilegeEscalation": {
-              "type": "boolean"
-            },
-            "readOnlyRootFilesystem": {
-              "type": "boolean"
-            },
-            "capabilities": {
-              "type": "object",
-              "properties": {
-                "drop": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "mongodb": {
-          "type": "object",
-          "properties": {
-            "runAsNonRoot": {
-              "type": "boolean"
-            },
-            "runAsUser": {
-              "type": "integer",
-              "default": 1000
-            },
-            "allowPrivilegeEscalation": {
-              "type": "boolean"
-            },
-            "readOnlyRootFilesystem": {
-              "type": "boolean"
-            },
-            "capabilities": {
-              "type": "object",
-              "properties": {
-                "drop": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "rabbitmq": {
           "type": "object",
           "properties": {
             "runAsNonRoot": {
