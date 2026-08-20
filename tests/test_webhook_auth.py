@@ -2,8 +2,10 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from api.api import webhook
+from api.main import app
 from api.services.auth_service import AccessDeniedError, ensure_request_authorized
 
 
@@ -73,3 +75,44 @@ async def test_webhook_bearer_rejects_invalid_token(monkeypatch: pytest.MonkeyPa
         await webhook.require_webhook_bearer(request, "Bearer wrong")
 
     assert exc.value.status_code == 403
+
+
+def test_webhook_validation_error_serializes_to_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A payload missing required label fields must return a JSON 422, not 500.
+
+    Regression: the validation handler used ``exc.errors()`` directly, whose
+    ``ctx`` holds a raw ``ValueError`` that is not JSON-serializable, so the
+    response crashed with ``TypeError: Object of type ValueError is not JSON
+    serializable`` and Alertmanager saw a 500 instead of a 422.
+    """
+    monkeypatch.setattr(
+        webhook,
+        "get_settings",
+        lambda: SimpleNamespace(webhook_bearer_token="secret-token"),
+    )
+
+    payload = {
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {"alertname": "Watchdog", "severity": "critical"},
+                "annotations": {},
+                "startsAt": "2026-08-20T00:00:00Z",
+                "fingerprint": "test-fingerprint-1",
+            }
+        ],
+    }
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/v1/webhook",
+            json=payload,
+            headers={"Authorization": "Bearer secret-token"},
+        )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"] == "validation_error"
+    detail = body["detail"]
+    assert any("group_name" in str(item.get("msg", "")) for item in detail)

@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -166,7 +167,7 @@ async def validation_exception_handler(
         status_code=422,
         content={
             "error": "validation_error",
-            "detail": exc.errors(),
+            "detail": jsonable_encoder(exc.errors()),
             "req_id": req_id,
         },
     )
