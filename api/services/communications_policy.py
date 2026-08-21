@@ -48,7 +48,7 @@ MATCHED_ROUTE_EVENTS = (
 
 FALLBACK_ROUTE_EVENTS = (
     ("fallback_open", "open", "firing", "always", 1000),
-    ("fallback_close", "close", "resolving", "resolved_after_no_remediation", 2000),
+    ("fallback_notify", "notify", "resolving", "resolved_after_no_remediation", 2000),
 )
 
 
@@ -354,11 +354,11 @@ def _managed_payload(
             "detail": "No matching workflow is configured for this alert.",
             "resolution": "",
         },
-        "fallback_close": {
+        "fallback_notify": {
             "headline": "Alert cleared",
-            "summary": "The unmatched alert has cleared and PoundCake is closing the fallback communication.",
-            "detail": "Closing the existing communication because the alert has cleared.",
-            "resolution": "Closing communication.",
+            "summary": "The unmatched alert has cleared. Leaving the communication open for the responder to review and close.",
+            "detail": "The alert cleared after a human responder addressed it; the communication is left open for manual closure.",
+            "resolution": "",
         },
     }[event_name]
     metadata = {
@@ -731,7 +731,10 @@ async def sync_fallback_policy_recipe(
 
     When no enabled routes are configured the fallback recipe is disabled.
     When routes exist the fallback recipe is enabled with ``fallback_open``
-    and ``fallback_close`` steps for each enabled route.
+    and ``fallback_notify`` steps for each enabled route. The clear step
+    notifies (comments) rather than closes: PoundCake only closes
+    communications it auto-remediated, so a human-responder ticket stays
+    open for manual closure.
     """
     settings = get_settings()
     recipe_name = str(settings.catch_all_recipe_name or "").strip()
@@ -847,7 +850,7 @@ def lifecycle_summary() -> dict[str, str]:
     return {
         "success": "When an alert clears after successful auto-remediation, PoundCake opens and then closes each configured route.",
         "failure": "When remediation fails, PoundCake opens each configured route and leaves it open.",
-        "unmatched_alert": "When no matching workflow exists, PoundCake opens each configured fallback route immediately.",
+        "unmatched_alert": "When no matching workflow exists, PoundCake opens each configured fallback route immediately and, once the alert clears, comments the clear on the route but leaves it open for manual closure.",
         "clear_after_failure": "When an alert clears after remediation failed, PoundCake leaves failure routes open for the responder.",
     }
 

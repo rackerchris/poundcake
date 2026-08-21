@@ -17,6 +17,7 @@ from api.services.capability_resolution import ResolvedCapabilityIngredient
 from api.services.communications_policy import (
     CommunicationRoute,
     _apply_step_spec,
+    _build_route_step_specs,
     _group_routes_from_steps,
     _managed_step_key_from_recipe_ingredient,
     _step_matches_spec,
@@ -78,6 +79,35 @@ def test_managed_comms_steps_are_late_isolated_execution_buckets() -> None:
     assert all(int(spec["step_order"]) >= 1000 for spec in specs)
     assert all(spec["depth"] == spec["step_order"] for spec in specs)
     assert all(spec["parallel_group"] == 0 for spec in specs)
+
+
+def test_fallback_recipe_never_closes_but_matched_recipe_can() -> None:
+    """PoundCake may only close a communication it auto-remediated.
+
+    The catch-all fallback recipe (used when no workflow matches) must never
+    emit a ``close`` step, so a human-responder ticket stays open for manual
+    closure. The matched-workflow recipe may still close on
+    ``resolved_after_success`` (a real auto-remediation).
+    """
+    route = CommunicationRoute(
+        id="dummy-default",
+        label="Dummy comms",
+        service_type="dummy",
+        destination_target="dummy",
+        provider_config={},
+        enabled=True,
+        position=1,
+    )
+    fallback_specs = _build_route_step_specs(
+        routes=[route], scope="fallback", owner_key="fallback", fallback=True
+    )
+    matched_specs = _build_route_step_specs(
+        routes=[route], scope="recipe", owner_key="1", fallback=False
+    )
+
+    assert "close" not in {spec["service_exec"] for spec in fallback_specs}
+    assert "notify" in {spec["service_exec"] for spec in fallback_specs}
+    assert "close" in {spec["service_exec"] for spec in matched_specs}
 
 
 def test_group_routes_reads_managed_metadata_from_recipe_step_payload() -> None:
@@ -675,4 +705,4 @@ async def test_sync_fallback_policy_recipe_repairs_stale_steps_on_matching_route
     assert result is recipe
     step_specs = captured["step_specs"]
     assert captured["recipe"] is recipe
-    assert {spec["service_exec"] for spec in step_specs} == {"open", "close"}
+    assert {spec["service_exec"] for spec in step_specs} == {"open", "notify"}

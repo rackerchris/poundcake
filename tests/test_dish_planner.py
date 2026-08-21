@@ -387,7 +387,7 @@ def test_build_step_payload_omits_severity_for_bakery_close_and_notify(operation
         run_phase="resolving",
         run_condition="resolved_after_no_remediation",
         service_payload={
-            "message": "Closing the existing communication because the alert has cleared.",
+            "message": "The alert cleared; leaving the communication open for manual closure.",
             "source": "poundcake",
             "context": {
                 "source": "poundcake",
@@ -396,7 +396,7 @@ def test_build_step_payload_omits_severity_for_bakery_close_and_notify(operation
                 "poundcake_policy": {
                     "managed": True,
                     "route_id": "bakery-rackspace-core-1",
-                    "event": "fallback_close",
+                    "event": "fallback_notify",
                 },
             },
         },
