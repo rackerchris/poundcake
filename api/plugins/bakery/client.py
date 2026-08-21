@@ -421,7 +421,9 @@ async def _request(
     return response.json()
 
 
-async def _prepare_managed_request_payload(payload: JSONObject) -> JSONObject:
+async def _prepare_managed_request_payload(
+    payload: JSONObject, *, include_source: bool = True
+) -> JSONObject:
     normalized = dict(payload)
     context = normalized.get("context") if isinstance(normalized.get("context"), dict) else {}
     context = dict(context)
@@ -462,7 +464,8 @@ async def _prepare_managed_request_payload(payload: JSONObject) -> JSONObject:
         context["execution_target"] = execution_target
         context["provider_type"] = execution_target
     context["source"] = "poundcake_system"
-    normalized["source"] = normalized.get("source") or "poundcake"
+    if include_source:
+        normalized["source"] = normalized.get("source") or "poundcake"
 
     provider_config = (
         context.get("provider_config") if isinstance(context.get("provider_config"), dict) else {}
@@ -766,7 +769,9 @@ async def update_communication_with_key(
     idempotency_key: str | None,
 ) -> CommunicationAcceptedResponse:
     request_payload = CommunicationUpdateRequest.model_validate(payload)
-    request_payload_dict = await _prepare_managed_request_payload(_model_payload(request_payload))
+    request_payload_dict = await _prepare_managed_request_payload(
+        _model_payload(request_payload), include_source=False
+    )
     response_payload = await _request(
         "update",
         "PATCH",

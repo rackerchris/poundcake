@@ -424,6 +424,17 @@ def test_incident_reconciliation_treats_confirmed_solved_as_reopenable() -> None
     assert "confirmed_solved" not in incident_reconciliation.TICKET_TERMINAL_STATES
 
 
+@pytest.mark.asyncio
+async def test_prepare_managed_request_payload_omits_source_for_update() -> None:
+    base = {"title": "Alert requires attention", "context": {"execution_target": "rackspace_core"}}
+    with_source = await client._prepare_managed_request_payload(base)
+    assert with_source.get("source") == "poundcake"
+    assert with_source["context"].get("source") == "poundcake_system"
+    without_source = await client._prepare_managed_request_payload(base, include_source=False)
+    assert "source" not in without_source
+    assert without_source["context"].get("source") == "poundcake_system"
+
+
 def _accepted(action: str, ticket_id: str = "TICKET-1") -> BakeryTicketAccepted:
     return BakeryTicketAccepted(
         ticket_id=ticket_id,
