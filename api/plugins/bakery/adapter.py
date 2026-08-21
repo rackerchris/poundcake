@@ -407,7 +407,7 @@ class BakeryExecutionAdapter(ExecutionAdapter):
     @staticmethod
     def _reopen_payload(target: str) -> JSONObject:
         if target == "rackspace_core":
-            return {"context": {"attributes": {"status": "New"}}}
+            return {"context": {"attributes": {"status": "Feedback Received"}}}
         return {"state": "open"}
 
     def validate(self, ctx: ExecutionContext) -> str | None:
@@ -893,6 +893,7 @@ class BakeryExecutionAdapter(ExecutionAdapter):
                         payload={"comment": self._payload_comment(payload)},
                         idempotency_key=idem_key,
                     )
+                    context_updates["bakery_comms_id"] = ticket_id
                 else:
                     accepted = await create_ticket_with_key(
                         req_id=ctx.req_id,

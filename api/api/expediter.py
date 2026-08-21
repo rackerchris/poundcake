@@ -13,7 +13,7 @@ from api.api.auth import require_service
 from api.core.database import get_db
 from api.core.logging import get_logger
 from api.core.time import align_datetime_pair
-from api.models.models import Dish, DishIngredient, ServicePlugin
+from api.models.models import Dish, DishIngredient, Order, ServicePlugin
 from api.schemas.schemas import (
     ExecutionEnvelopeResponse,
 )
@@ -29,6 +29,8 @@ from api.plugins.types import ExecutionContext, ExecutionResult
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+_TICKET_CAPABLE_TARGETS = {"rackspace_core"}
 
 
 @router.post(
@@ -107,6 +109,9 @@ async def execute_service_execution(
         "dish": dish_context,
     }
     context.update(dish_context.get("context_updates") or {})
+    await _inject_prior_bakery_ticket_reuse(
+        db=db, row=row, order_id=dish_context.get("order_id"), context=context
+    )
     if operator_config:
         context["operator_config"] = operator_config
     try:
@@ -399,6 +404,100 @@ async def _dish_execution_context(
         ],
         "context_updates": context_updates,
     }
+
+
+def _is_bakery_open_step(row: DishIngredient) -> bool:
+    if str(row.service_type or "").strip().lower() != "bakery":
+        return False
+    if str(row.service_exec or "").strip().lower() != "communication":
+        return False
+    params = row.service_exec_parameters if isinstance(row.service_exec_parameters, dict) else {}
+    operation = str(params.get("operation") or "").strip().lower()
+    return operation in {"open", "ticket_create", ""}
+
+
+def _context_has_ticket_id(context: dict) -> bool:
+    for key in ("ticket_id", "bakery_ticket_id", "bakery_comms_id", "communication_id"):
+        value = context.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+        if isinstance(value, int):
+            return True
+    dish_context = context.get("dish")
+    if isinstance(dish_context, dict):
+        updates = dish_context.get("context_updates")
+        if isinstance(updates, dict) and any(
+            isinstance(updates.get(key), (str, int)) and str(updates.get(key)).strip()
+            for key in ("ticket_id", "bakery_ticket_id", "bakery_comms_id", "communication_id")
+        ):
+            return True
+    return False
+
+
+async def _prior_bakery_ticket_id(
+    *,
+    db: AsyncSession,
+    order_id: int | None,
+) -> str | None:
+    if order_id is None:
+        return None
+    result = await db.execute(select(Order.fingerprint).where(Order.id == order_id))
+    fingerprint = result.scalars().first()
+    if not fingerprint:
+        return None
+    rows = await db.execute(
+        select(DishIngredient)
+        .join(Dish, Dish.id == DishIngredient.dish_id)
+        .join(Order, Order.id == Dish.order_id)
+        .where(
+            Order.fingerprint == fingerprint,
+            Order.id != order_id,
+            DishIngredient.deleted.is_(False),
+            DishIngredient.service_type == "bakery",
+            DishIngredient.service_exec_status.in_(TERMINAL_EXECUTION_STATUSES),
+        )
+        .order_by(Order.created_at.desc(), DishIngredient.id.desc())
+    )
+    for item in rows.scalars().all():
+        ticket_id = _stored_context_updates(item.service_exec_actual_outcome).get("bakery_comms_id")
+        if isinstance(ticket_id, str) and ticket_id.strip():
+            return ticket_id.strip()
+        payload = item.service_payload
+        if isinstance(payload, dict):
+            tid = payload.get("ticket_id")
+            if isinstance(tid, str) and tid.strip():
+                return tid.strip()
+    return None
+
+
+async def _inject_prior_bakery_ticket_reuse(
+    *,
+    db: AsyncSession,
+    row: DishIngredient,
+    order_id: int | None,
+    context: dict,
+) -> None:
+    if not _is_bakery_open_step(row):
+        return
+    if _context_has_ticket_id(context):
+        return
+    destination_target = str(row.destination_target or "").strip().lower()
+    if destination_target not in _TICKET_CAPABLE_TARGETS:
+        return
+    ticket_id = await _prior_bakery_ticket_id(db=db, order_id=order_id)
+    if not ticket_id:
+        return
+    context["ticket_id"] = ticket_id
+    context["communication_reuse_mode"] = "reopen"
+    logger.info(
+        "Expediter reusing prior bakery ticket for refired alert",
+        extra={
+            "req_id": row.req_id,
+            "dish_ingredient_id": row.id,
+            "order_id": order_id,
+            "ticket_id": ticket_id,
+        },
+    )
 
 
 def _runner_row_timed_out(row: DishIngredient, now: datetime) -> bool:

@@ -16,6 +16,7 @@ from api.plugins.bakery.client import (
     BakeryClientConfig,
     BakeryHealth,
     BakeryMonitorCredential,
+    BakeryTicketAccepted,
     BakeryTicketOperation,
 )
 from api.plugins.bakery.contract import CommunicationOpenRequest, MonitorHeartbeatResponse
@@ -396,6 +397,93 @@ def test_bakery_adapter_resolves_ticket_id_from_supported_context_keys(monkeypat
     )
 
     assert adapter.validate(ctx) is None
+
+
+def test_bakery_reopen_payload_uses_feedback_received_for_core() -> None:
+    adapter = BakeryExecutionAdapter()
+
+    assert adapter._reopen_payload("rackspace_core") == {
+        "context": {"attributes": {"status": "Feedback Received"}}
+    }
+    assert adapter._reopen_payload("discord") == {"state": "open"}
+
+
+def test_incident_reconciliation_reopen_payload_uses_feedback_received() -> None:
+    from api.plugins.bakery import incident_reconciliation
+
+    assert incident_reconciliation._reopen_payload("rackspace_core") == {
+        "context": {"attributes": {"status": "Feedback Received"}}
+    }
+    assert incident_reconciliation._reopen_payload("discord") == {"state": "open"}
+
+
+def test_incident_reconciliation_treats_confirmed_solved_as_reopenable() -> None:
+    from api.plugins.bakery import incident_reconciliation
+
+    assert "confirmed_solved" in incident_reconciliation.TICKET_REOPENABLE_STATES
+    assert "confirmed_solved" not in incident_reconciliation.TICKET_TERMINAL_STATES
+
+
+def _accepted(action: str, ticket_id: str = "TICKET-1") -> BakeryTicketAccepted:
+    return BakeryTicketAccepted(
+        ticket_id=ticket_id,
+        operation_id=f"op-{action}",
+        action=action,
+        status="accepted",
+        created_at="2026-08-21T00:00:00Z",
+    )
+
+
+@pytest.mark.asyncio
+async def test_bakery_open_reuses_prior_ticket_without_creating_new(monkeypatch) -> None:
+    monkeypatch.setattr("api.plugins.bakery.adapter.validate_transport_config", lambda: None)
+    updates: list[dict] = []
+    comments: list[dict] = []
+
+    async def update_ticket_with_key(*, req_id, ticket_id, payload, idempotency_key):
+        updates.append({"ticket_id": ticket_id, "payload": payload})
+        return _accepted("update", ticket_id)
+
+    async def add_ticket_comment_with_key(*, req_id, ticket_id, payload, idempotency_key):
+        comments.append({"ticket_id": ticket_id, "payload": payload})
+        return _accepted("comment", ticket_id)
+
+    async def create_ticket_with_key(*, req_id, payload, idempotency_key):
+        raise AssertionError("open with a prior ticket id must not create a new ticket")
+
+    monkeypatch.setattr("api.plugins.bakery.adapter.update_ticket_with_key", update_ticket_with_key)
+    monkeypatch.setattr(
+        "api.plugins.bakery.adapter.add_ticket_comment_with_key", add_ticket_comment_with_key
+    )
+    monkeypatch.setattr("api.plugins.bakery.adapter.create_ticket_with_key", create_ticket_with_key)
+
+    adapter = BakeryExecutionAdapter()
+    ctx = ExecutionContext(
+        service_type="bakery",
+        service_exec="communication",
+        req_id="unit-test",
+        service_payload={
+            "title": "Refired alert",
+            "description": "Alert fired again.",
+            "source": "poundcake",
+            "context": {"order_id": 348},
+        },
+        service_exec_parameters={"operation": "open"},
+        context={
+            "destination_target": "rackspace_core",
+            "ticket_id": "TICKET-1",
+            "communication_reuse_mode": "reopen",
+        },
+    )
+
+    result = await adapter.dispatch(ctx)
+
+    assert result.status in {"dispatched", "succeeded"}
+    assert len(updates) == 1
+    assert updates[0]["payload"] == {"context": {"attributes": {"status": "Feedback Received"}}}
+    assert len(comments) == 1
+    assert comments[0]["ticket_id"] == "TICKET-1"
+    assert result.context_updates.get("bakery_comms_id") == "TICKET-1"
 
 
 def test_plugin_credentials_encrypt_without_plaintext(monkeypatch) -> None:

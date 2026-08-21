@@ -91,6 +91,7 @@ TICKET_TERMINAL_STATES = {
 TICKET_REOPENABLE_STATES = {
     "closed",
     "resolved",
+    "confirmed_solved",
 }
 
 # ---------------------------------------------------------------------------
@@ -490,7 +491,7 @@ def _open_payload(order: Order, ingredient: DishIngredient) -> dict[str, Any]:
 
 def _reopen_payload(target: str) -> dict[str, Any]:
     if target == "rackspace_core":
-        return {"context": {"attributes": {"status": "New"}}}
+        return {"context": {"attributes": {"status": "Feedback Received"}}}
     return {"state": "open"}
 
 
